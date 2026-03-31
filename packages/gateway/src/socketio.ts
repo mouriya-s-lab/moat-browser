@@ -4,10 +4,23 @@ import { verifyToken } from "./auth.js";
 import { handleClientEvent } from "./handler.js";
 import * as sessionMgr from "./session.js";
 import { sendToController } from "./controller-client.js";
+import { isNekoRequest, handleNekoProxy } from "./neko-proxy.js";
 import { config } from "./config.js";
 
 export function createGateway() {
-  const httpServer = createServer();
+  const httpServer = createServer((req, res) => {
+    // neko reverse proxy
+    if (isNekoRequest(req)) {
+      handleNekoProxy(req, res);
+      return;
+    }
+    // Health endpoint
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+  });
   const io = new Server(httpServer, {
     cors: { origin: "*" },
     maxHttpBufferSize: config.maxHttpBufferSize,

@@ -8,6 +8,8 @@ import {
 } from "@moat-browser/types";
 import { sendToController } from "./controller-client.js";
 import * as sessionMgr from "./session.js";
+import { checkUrl } from "./acl.js";
+import { checkBudget, clearBudget } from "./budget.js";
 import { config } from "./config.js";
 
 function errorEvent(error: GatewayError): ServerEvent {
@@ -100,6 +102,7 @@ async function handleDeregister(
   });
 
   sessionMgr.removeSession(event.sessionId);
+  clearBudget(event.sessionId);
 
   return { _tag: "Deregistered", sessionId: event.sessionId };
 }
@@ -117,7 +120,17 @@ async function handleCommand(
     return { _tag: "SessionExpired", sessionId: event.sessionId, reason: "session timeout" };
   }
 
-  // TODO: Forward command to agent-chrome container via socket
+  // Budget check
+  const budgetError = checkBudget(event.sessionId);
+  if (budgetError) return errorEvent(budgetError);
+
+  // ACL check for Navigate commands
+  if (event.command._tag === "Navigate") {
+    const aclError = checkUrl(event.command.url);
+    if (aclError) return errorEvent(aclError);
+  }
+
+  // TODO: Forward command to agent-chrome container via CDP socket
   // For now, return a placeholder
   return {
     _tag: "CommandResult",
