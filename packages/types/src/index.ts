@@ -30,3 +30,36 @@ export {
   HealthCheckSchema,
   ControllerRequestSchema,
 } from "./schemas.js";
+
+export type {
+  CookieInfo,
+  BrowserCommand,
+  BrowserResult,
+  ClientEvent,
+  ServerEvent,
+  GatewayError,
+} from "./messages.js";
+
+export {
+  BrowserCommandSchema,
+  NavigateCommandSchema,
+  ClickCommandSchema,
+  FillCommandSchema,
+  SnapshotCommandSchema,
+  ScreenshotCommandSchema,
+  WaitCommandSchema,
+  EvaluateCommandSchema,
+  GetCookiesCommandSchema,
+  NewTabCommandSchema,
+  SwitchTabCommandSchema,
+  CloseTabCommandSchema,
+  RegisterEventSchema,
+  DeregisterEventSchema,
+  CommandEventSchema,
+  StartUserChromeEventSchema,
+  StopUserChromeEventSchema,
+  FreezeProfileEventSchema,
+  ListProfilesEventSchema,
+  PingEventSchema,
+  ClientEventSchema,
+} from "./message-schemas.js";
