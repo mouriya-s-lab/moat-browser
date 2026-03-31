@@ -77,3 +77,17 @@ export {
   FrozenMetaSchema,
   validateProfileAction,
 } from "./profile.js";
+
+export type {
+  ExpireReason,
+  SessionState,
+  SessionEvent,
+  TokenPayload,
+  TokenResult,
+  RegistryResult,
+} from "./registration.js";
+
+export {
+  transitionSession,
+  TokenPayloadSchema,
+} from "./registration.js";
