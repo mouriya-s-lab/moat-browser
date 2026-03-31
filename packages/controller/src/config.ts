@@ -2,6 +2,7 @@ export const config = {
   get profilesBase() { return process.env["MOAT_PROFILES_BASE"] ?? "/data/profiles"; },
   frozenDir: "frozen",
   liveDir: "live",
+  archiveDir: "archive",
 
   get agentChromeImage() { return process.env["MOAT_AGENT_CHROME_IMAGE"] ?? "moat-browser/agent-chrome:latest"; },
   get userChromeImage() { return process.env["MOAT_USER_CHROME_IMAGE"] ?? "moat-browser/user-chrome:latest"; },
@@ -29,4 +30,8 @@ export function frozenPath(profileName: string): string {
 
 export function livePath(profileName: string): string {
   return `${config.profilesBase}/${config.liveDir}/${profileName}`;
+}
+
+export function archivePath(name: string): string {
+  return `${config.profilesBase}/${config.archiveDir}/${name}`;
 }

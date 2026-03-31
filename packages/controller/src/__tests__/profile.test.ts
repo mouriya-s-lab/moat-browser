@@ -69,8 +69,9 @@ describe("profile operations", () => {
 
   test("freezeProfile moves live to frozen with metadata", async () => {
     const liveProfile = join(liveDir, "to-freeze");
-    await mkdir(liveProfile);
-    await writeFile(join(liveProfile, "Cookies"), "data");
+    await mkdir(join(liveProfile, "Default"), { recursive: true });
+    await writeFile(join(liveProfile, "Local State"), "{}");
+    await writeFile(join(liveProfile, "Default/Cookies"), "data");
 
     const result = await freezeProfile("to-freeze");
     expect(typeof result).toBe("object");
@@ -79,11 +80,11 @@ describe("profile operations", () => {
 
     // Verify moved to frozen
     const frozenProfile = join(frozenDir, "to-freeze");
-    const cookies = await readFile(join(frozenProfile, "Cookies"), "utf-8");
+    const cookies = await readFile(join(frozenProfile, "Default/Cookies"), "utf-8");
     expect(cookies).toBe("data");
 
-    // Verify .moat-frozen metadata exists
-    const meta = JSON.parse(await readFile(join(frozenProfile, ".moat-frozen"), "utf-8"));
+    // Verify .frozen.json metadata exists
+    const meta = JSON.parse(await readFile(join(frozenProfile, ".frozen.json"), "utf-8"));
     expect(meta.profileName).toBe("to-freeze");
 
     // Verify live is gone

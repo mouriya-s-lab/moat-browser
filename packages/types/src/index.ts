@@ -63,3 +63,17 @@ export {
   PingEventSchema,
   ClientEventSchema,
 } from "./message-schemas.js";
+
+export type {
+  FrozenMeta,
+  ProfileState,
+  ProfileAction,
+  ProfileResult,
+  ProfileError,
+  CopyStrategy,
+} from "./profile.js";
+
+export {
+  FrozenMetaSchema,
+  validateProfileAction,
+} from "./profile.js";

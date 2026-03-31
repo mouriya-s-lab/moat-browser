@@ -1,5 +1,5 @@
 import { getTimedOutAgents, destroyAgentContainer, listAgentContainers } from "./docker.js";
-import { cleanOrphanProfiles } from "./profile.js";
+import { cleanOrphanProfiles, cleanOldArchives } from "./profile.js";
 import { config } from "./config.js";
 
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -31,6 +31,12 @@ async function runCleanup(): Promise<void> {
     const cleaned = await cleanOrphanProfiles(activeIds);
     if (cleaned.length > 0) {
       console.log(`cleanup: removed orphan profiles: ${cleaned.join(", ")}`);
+    }
+
+    // 3. Clean old archives (>7 days)
+    const archivedCleaned = await cleanOldArchives(7);
+    if (archivedCleaned.length > 0) {
+      console.log(`cleanup: removed old archives: ${archivedCleaned.join(", ")}`);
     }
   } catch (err) {
     console.error("cleanup error:", err);
