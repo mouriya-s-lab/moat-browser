@@ -1,0 +1,14 @@
+{
+  "name": "@moat-browser/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@moat-browser/types": "workspace:*",
+    "@moat-browser/shim": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.8.0"
+  }
+}

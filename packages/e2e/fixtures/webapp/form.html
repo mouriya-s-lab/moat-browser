@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head><title>Form Test</title></head>
+<body>
+  <h1>Form Test</h1>
+  <form id="test-form">
+    <input id="name" type="text" placeholder="Name" />
+    <input id="email" type="email" placeholder="Email" />
+    <textarea id="message" placeholder="Message"></textarea>
+    <button id="submit-btn" type="submit">Submit</button>
+  </form>
+  <div id="result" style="display:none">
+    <h2>Submitted</h2>
+    <p id="result-text"></p>
+  </div>
+  <script>
+    document.getElementById("test-form").addEventListener("submit", function(e) {
+      e.preventDefault();
+      var name = document.getElementById("name").value;
+      var email = document.getElementById("email").value;
+      document.getElementById("result-text").textContent = "Name: " + name + ", Email: " + email;
+      document.getElementById("result").style.display = "block";
+      document.getElementById("test-form").style.display = "none";
+    });
+  </script>
+</body>
+</html>

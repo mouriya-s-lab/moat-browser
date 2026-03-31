@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head><title>Dynamic Content</title></head>
+<body>
+  <h1>Dynamic Content</h1>
+  <div id="counter">Count: 0</div>
+  <button id="increment" onclick="increment()">Increment</button>
+  <div id="timestamp"></div>
+  <script>
+    var count = 0;
+    function increment() {
+      count++;
+      document.getElementById("counter").textContent = "Count: " + count;
+    }
+    document.getElementById("timestamp").textContent = "Loaded at: " + new Date().toISOString();
+  </script>
+</body>
+</html>

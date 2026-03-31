@@ -1,0 +1,57 @@
+services:
+  test-webapp:
+    image: nginx:alpine
+    volumes:
+      - ./fixtures/webapp:/usr/share/nginx/html:ro
+    ports:
+      - "8888:80"
+
+  controller:
+    build:
+      context: ../..
+      dockerfile: packages/controller/Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - profiles:/data/profiles
+      - controller-sock:/run/moat-browser
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: packages/gateway/Dockerfile
+    ports:
+      - "9800:9800"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - profiles:/data/profiles
+      - controller-sock:/run/moat-browser
+    environment:
+      MOAT_BROWSER_JWT_SECRET: ""
+      MOAT_CONTROLLER_SOCKET: /run/moat-browser/controller.sock
+    depends_on:
+      - controller
+
+  user-chrome:
+    build: ../../images/user-chrome
+    environment:
+      NEKO_SCREEN: "1280x720@30"
+    ports:
+      - "9080:8080"
+      - "9081:8081"
+    volumes:
+      - profiles:/data/profile
+    shm_size: 2g
+    profiles:
+      - with-chrome
+
+  agent-chrome:
+    build: ../../images/agent-chrome
+    volumes:
+      - profiles:/data/profile
+    shm_size: 2g
+    profiles:
+      - with-chrome
+
+volumes:
+  profiles:
+  controller-sock:

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head><title>Login</title></head>
+<body>
+  <h1>Login</h1>
+  <form id="login-form">
+    <input id="username" type="text" placeholder="Username" />
+    <input id="password" type="password" placeholder="Password" />
+    <button id="submit" type="submit">Login</button>
+  </form>
+  <script>
+    document.getElementById("login-form").addEventListener("submit", function(e) {
+      e.preventDefault();
+      document.cookie = "session=logged-in; path=/";
+      window.location.href = "/dashboard.html";
+    });
+  </script>
+</body>
+</html>

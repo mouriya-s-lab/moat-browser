@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><title>Dashboard</title></head>
+<body>
+  <div id="dashboard">
+    <h1>Welcome</h1>
+    <p>You are logged in.</p>
+    <button id="logout" onclick="document.cookie='session=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'; location.href='/login.html'">Logout</button>
+  </div>
+  <script>
+    if (!document.cookie.includes("session=logged-in")) {
+      window.location.href = "/login.html";
+    }
+  </script>
+</body>
+</html>
