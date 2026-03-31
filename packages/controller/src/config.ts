@@ -1,10 +1,10 @@
 export const config = {
-  profilesBase: process.env["MOAT_PROFILES_BASE"] ?? "/data/profiles",
+  get profilesBase() { return process.env["MOAT_PROFILES_BASE"] ?? "/data/profiles"; },
   frozenDir: "frozen",
   liveDir: "live",
 
-  agentChromeImage: process.env["MOAT_AGENT_CHROME_IMAGE"] ?? "moat-browser/agent-chrome:latest",
-  userChromeImage: process.env["MOAT_USER_CHROME_IMAGE"] ?? "moat-browser/user-chrome:latest",
+  get agentChromeImage() { return process.env["MOAT_AGENT_CHROME_IMAGE"] ?? "moat-browser/agent-chrome:latest"; },
+  get userChromeImage() { return process.env["MOAT_USER_CHROME_IMAGE"] ?? "moat-browser/user-chrome:latest"; },
 
   containerPrefix: "mb-",
   userChromeContainerName: "mb-user-chrome",
@@ -16,12 +16,12 @@ export const config = {
   nekoPortRangeStart: 9080,
   nekoPortRangeEnd: 9099,
 
-  socketDir: process.env["MOAT_SOCKET_DIR"] ?? "/run/moat-browser",
+  get socketDir() { return process.env["MOAT_SOCKET_DIR"] ?? "/run/moat-browser"; },
   controllerSocket: "controller.sock",
 
   cleanupIntervalMs: 5 * 60 * 1000, // 5 minutes
   containerTimeoutMs: 60 * 60 * 1000, // 1 hour
-} as const;
+};
 
 export function frozenPath(profileName: string): string {
   return `${config.profilesBase}/${config.frozenDir}/${profileName}`;
