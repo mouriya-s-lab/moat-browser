@@ -5,11 +5,9 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@moat-browser/types": "workspace:*",
-    "dockerode": "^4.0.0"
+    "@moat-browser/types": "workspace:*"
   },
   "devDependencies": {
-    "@types/dockerode": "^3.3.0",
     "@types/node": "^25.5.0",
     "typescript": "^5.8.0"
   }

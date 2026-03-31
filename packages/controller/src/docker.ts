@@ -1,15 +1,45 @@
-import Docker from "dockerode";
 import type { ContainerInfo, ControllerError } from "@moat-browser/types";
 import { config } from "./config.js";
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const DOCKER_SOCKET = "/var/run/docker.sock";
 
-// Track container metadata not stored in Docker labels
+// Track container metadata
 const containerMeta = new Map<string, { createdAt: string; lastActivity: number }>();
 
 function containerName(agentId: string): string {
   return `${config.containerPrefix}${agentId}`;
 }
+
+// Docker Engine API via Unix socket (Bun native support)
+async function dockerFetch(
+  path: string,
+  init?: RequestInit
+): Promise<Response> {
+  return fetch(`http://localhost${path}`, {
+    ...init,
+    // @ts-expect-error -- Bun supports unix option on fetch
+    unix: DOCKER_SOCKET,
+  });
+}
+
+async function dockerJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await dockerFetch(path, init);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Docker API ${path}: ${res.status} ${text}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function dockerVoid(path: string, init?: RequestInit): Promise<void> {
+  const res = await dockerFetch(path, init);
+  if (!res.ok && res.status !== 304 && res.status !== 404) {
+    const text = await res.text();
+    throw new Error(`Docker API ${path}: ${res.status} ${text}`);
+  }
+}
+
+// ---- Container operations ----
 
 export async function createAgentContainer(
   agentId: string,
@@ -19,46 +49,54 @@ export async function createAgentContainer(
 
   // Check if already exists
   try {
-    const existing = docker.getContainer(name);
-    const info = await existing.inspect();
+    const info = await dockerJson<{ State: { Running: boolean } }>(
+      `/containers/${name}/json`
+    );
     if (info.State.Running) {
       return { _tag: "AgentAlreadyExists", agentId };
     }
-    // Exists but not running — remove and recreate
-    await existing.remove({ force: true });
+    await dockerVoid(`/containers/${name}?force=true`, { method: "DELETE" });
   } catch {
-    // Doesn't exist, continue
+    // Doesn't exist
   }
 
   try {
-    const container = await docker.createContainer({
-      name,
+    const body = {
       Image: config.agentChromeImage,
+      Labels: {
+        "moat-browser": "agent-chrome",
+        "moat-browser.agent-id": agentId,
+      },
       HostConfig: {
         Binds: [`${profilePath}:/data/profile`],
         Memory: config.agentMemoryLimit,
         CpuQuota: config.agentCpuQuota,
         ShmSize: config.agentShmSize,
       },
-      Labels: {
-        "moat-browser": "agent-chrome",
-        "moat-browser.agent-id": agentId,
-      },
-    });
+    };
 
-    await container.start();
-    const containerId = container.id;
-    const socketPath = `/run/agent-browser/main.sock`;
+    const created = await dockerJson<{ Id: string }>(
+      `/containers/create?name=${name}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+
+    await dockerVoid(`/containers/${created.Id}/start`, { method: "POST" });
 
     containerMeta.set(agentId, {
       createdAt: new Date().toISOString(),
       lastActivity: Date.now(),
     });
 
-    // Wait for healthy
-    await waitForHealth(containerId, 30_000);
+    await waitForHealth(created.Id, 30_000);
 
-    return { containerId, socketPath };
+    return {
+      containerId: created.Id,
+      socketPath: `/run/agent-browser/main.sock`,
+    };
   } catch (err) {
     return { _tag: "ContainerStartFailed", reason: String(err) };
   }
@@ -70,9 +108,8 @@ export async function destroyAgentContainer(
   const name = containerName(agentId);
 
   try {
-    const container = docker.getContainer(name);
-    await container.stop({ t: 5 }).catch(() => {});
-    await container.remove({ force: true });
+    await dockerVoid(`/containers/${name}/stop?t=5`, { method: "POST" }).catch(() => {});
+    await dockerVoid(`/containers/${name}?force=true`, { method: "DELETE" });
     containerMeta.delete(agentId);
     return true;
   } catch {
@@ -86,8 +123,12 @@ export async function getAgentInfo(
   const name = containerName(agentId);
 
   try {
-    const container = docker.getContainer(name);
-    const info = await container.inspect();
+    const info = await dockerJson<{
+      Id: string;
+      State: { Running: boolean };
+      Created: string;
+    }>(`/containers/${name}/json`);
+
     const meta = containerMeta.get(agentId);
 
     return {
@@ -104,10 +145,15 @@ export async function getAgentInfo(
 }
 
 export async function listAgentContainers(): Promise<ContainerInfo[]> {
-  const containers = await docker.listContainers({
-    all: true,
-    filters: { label: ["moat-browser=agent-chrome"] },
-  });
+  const filters = JSON.stringify({ label: ["moat-browser=agent-chrome"] });
+  const containers = await dockerJson<
+    Array<{
+      Id: string;
+      State: string;
+      Created: number;
+      Labels: Record<string, string>;
+    }>
+  >(`/containers/json?all=true&filters=${encodeURIComponent(filters)}`);
 
   return containers.map((c) => {
     const agentId = c.Labels["moat-browser.agent-id"] ?? "unknown";
@@ -116,7 +162,7 @@ export async function listAgentContainers(): Promise<ContainerInfo[]> {
       containerId: c.Id,
       agentId,
       profileName: agentId,
-      state: c.State === "running" ? "running" as const : "stopping" as const,
+      state: c.State === "running" ? ("running" as const) : ("stopping" as const),
       createdAt: meta?.createdAt ?? new Date(c.Created * 1000).toISOString(),
     };
   });
@@ -128,11 +174,10 @@ export async function startUserChromeContainer(
 ): Promise<{ containerId: string; nekoPort: number } | ControllerError> {
   const name = config.userChromeContainerName;
 
-  // Stop existing if any
+  // Stop existing
   try {
-    const existing = docker.getContainer(name);
-    await existing.stop({ t: 5 }).catch(() => {});
-    await existing.remove({ force: true });
+    await dockerVoid(`/containers/${name}/stop?t=5`, { method: "POST" }).catch(() => {});
+    await dockerVoid(`/containers/${name}?force=true`, { method: "DELETE" });
   } catch {
     // Doesn't exist
   }
@@ -140,31 +185,37 @@ export async function startUserChromeContainer(
   const nekoPort = config.nekoPortRangeStart;
 
   try {
-    const container = await docker.createContainer({
-      name,
+    const body = {
       Image: config.userChromeImage,
       ExposedPorts: { "8080/tcp": {}, "8081/tcp": {} },
+      Env: ["NEKO_SCREEN=1920x1080@30"],
+      Labels: {
+        "moat-browser": "user-chrome",
+        "moat-browser.profile": profileName,
+      },
       HostConfig: {
         Binds: [`${profilePath}:/data/profile`],
         PortBindings: {
           "8080/tcp": [{ HostPort: String(nekoPort) }],
           "8081/tcp": [{ HostPort: String(nekoPort + 1) }],
         },
-        ShmSize: 2 * 1024 * 1024 * 1024, // 2GB
+        ShmSize: 2 * 1024 * 1024 * 1024,
       },
-      Env: [
-        `NEKO_SCREEN=1920x1080@30`,
-      ],
-      Labels: {
-        "moat-browser": "user-chrome",
-        "moat-browser.profile": profileName,
-      },
-    });
+    };
 
-    await container.start();
-    await waitForHealth(container.id, 30_000);
+    const created = await dockerJson<{ Id: string }>(
+      `/containers/create?name=${name}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
 
-    return { containerId: container.id, nekoPort };
+    await dockerVoid(`/containers/${created.Id}/start`, { method: "POST" });
+    await waitForHealth(created.Id, 30_000);
+
+    return { containerId: created.Id, nekoPort };
   } catch (err) {
     return { _tag: "ContainerStartFailed", reason: String(err) };
   }
@@ -174,9 +225,8 @@ export async function stopUserChromeContainer(): Promise<true | ControllerError>
   const name = config.userChromeContainerName;
 
   try {
-    const container = docker.getContainer(name);
-    await container.stop({ t: 10 }).catch(() => {});
-    await container.remove({ force: true });
+    await dockerVoid(`/containers/${name}/stop?t=10`, { method: "POST" }).catch(() => {});
+    await dockerVoid(`/containers/${name}?force=true`, { method: "DELETE" });
     return true;
   } catch {
     return { _tag: "DockerError", message: "user-chrome container not found" };
@@ -186,13 +236,11 @@ export async function stopUserChromeContainer(): Promise<true | ControllerError>
 export function getTimedOutAgents(timeoutMs: number): string[] {
   const now = Date.now();
   const timedOut: string[] = [];
-
   for (const [agentId, meta] of containerMeta) {
     if (now - meta.lastActivity > timeoutMs) {
       timedOut.push(agentId);
     }
   }
-
   return timedOut;
 }
 
@@ -205,16 +253,16 @@ export function touchActivity(agentId: string): void {
 
 async function waitForHealth(containerId: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  const container = docker.getContainer(containerId);
-
   while (Date.now() < deadline) {
     try {
-      const info = await container.inspect();
+      const info = await dockerJson<{
+        State: { Running: boolean; Health?: { Status: string } };
+      }>(`/containers/${containerId}/json`);
       if (info.State.Health?.Status === "healthy" || info.State.Running) {
         return;
       }
     } catch {
-      // Container might not be ready yet
+      // Not ready yet
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
