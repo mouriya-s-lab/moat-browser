@@ -1,32 +1,27 @@
-export { exhaustive } from "./exhaustive.js";
-
+export type { BrowserCommand, BrowserResult, GatewayError } from "./messages.js";
 export type {
-  ContainerInfo,
-  ProfileInfo,
-  HealthInfo,
-  UserChromeState,
-  AgentChromeState,
-} from "./container.js";
-
-export type {
-  ControllerRequest,
-  ControllerResult,
-  ControllerError,
-} from "./controller.js";
-
+  SessionState,
+  SessionEvent,
+  ExpireReason,
+  TransitionResult,
+} from "./session.js";
+export { transitionSession } from "./session.js";
 export {
-  ContainerInfoSchema,
-  ProfileInfoSchema,
-  HealthInfoSchema,
-  CreateAgentBrowserSchema,
-  DestroyAgentBrowserSchema,
-  GetAgentBrowserSchema,
-  ListAgentBrowsersSchema,
-  StartUserChromeSchema,
-  StopUserChromeSchema,
-  FreezeProfileSchema,
-  ListProfilesSchema,
-  DeleteProfileSchema,
-  HealthCheckSchema,
-  ControllerRequestSchema,
+  TokenPayloadSchema,
+  BrowserCommandSchema,
+  RegisterPayloadSchema,
+  ResumePayloadSchema,
+  DeregisterPayloadSchema,
+  NavigateSchema,
+  ClickSchema,
+  FillSchema,
+  SnapshotSchema,
+  ScreenshotSchema,
+  EvaluateSchema,
+  NewTabSchema,
+  SwitchTabSchema,
+  CloseTabSchema,
+  WaitSchema,
 } from "./schemas.js";
+export type { TokenPayload } from "./schemas.js";
+export { exhaustive } from "./exhaustive.js";
