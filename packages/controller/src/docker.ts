@@ -1,221 +1,195 @@
-import Docker from "dockerode";
-import type { ContainerInfo, ControllerError } from "@moat-browser/types";
+// Docker Engine API via fetch + Unix socket (design.md §4.6)
+// No dockerode — uses Bun's native fetch with unix socket option
+import type { GatewayError } from "@moat-browser/types";
 import { config } from "./config.js";
+import { execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
-
-// Track container metadata not stored in Docker labels
-const containerMeta = new Map<string, { createdAt: string; lastActivity: number }>();
-
-function containerName(agentId: string): string {
-  return `${config.containerPrefix}${agentId}`;
+// Low-level fetch helper for Docker Engine API
+async function dockerFetch(
+  path: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  return fetch(`http://localhost${path}`, {
+    ...options,
+    // @ts-expect-error — Bun-specific unix socket option
+    unix: config.dockerSocket,
+  });
 }
 
-export async function createAgentContainer(
-  agentId: string,
-  profilePath: string
-): Promise<{ containerId: string; socketPath: string } | ControllerError> {
-  const name = containerName(agentId);
-
-  // Check if already exists
+// POST /containers/create + POST /containers/{id}/start
+// Returns {containerId, profilePath} or GatewayError
+export async function createAgentChrome(
+  agentId: string
+): Promise<{ containerId: string; profilePath: string } | GatewayError> {
+  // Copy profile: cp -a config.profileDir → config.agentProfilesDir/{agentId}-{uuid}/
+  const profilePath = `${config.agentProfilesDir}/${agentId}-${randomUUID()}`;
   try {
-    const existing = docker.getContainer(name);
-    const info = await existing.inspect();
-    if (info.State.Running) {
-      return { _tag: "AgentAlreadyExists", agentId };
-    }
-    // Exists but not running — remove and recreate
-    await existing.remove({ force: true });
-  } catch {
-    // Doesn't exist, continue
-  }
-
-  try {
-    const container = await docker.createContainer({
-      name,
-      Image: config.agentChromeImage,
-      HostConfig: {
-        Binds: [`${profilePath}:/data/profile`],
-        Memory: config.agentMemoryLimit,
-        CpuQuota: config.agentCpuQuota,
-        ShmSize: config.agentShmSize,
-      },
-      Labels: {
-        "moat-browser": "agent-chrome",
-        "moat-browser.agent-id": agentId,
-      },
-    });
-
-    await container.start();
-    const containerId = container.id;
-    const socketPath = `/run/agent-browser/main.sock`;
-
-    containerMeta.set(agentId, {
-      createdAt: new Date().toISOString(),
-      lastActivity: Date.now(),
-    });
-
-    // Wait for healthy
-    await waitForHealth(containerId, 30_000);
-
-    return { containerId, socketPath };
+    execSync(`cp -a "${config.profileDir}/." "${profilePath}/"`, { stdio: "pipe" });
   } catch (err) {
-    return { _tag: "ContainerStartFailed", reason: String(err) };
-  }
-}
-
-export async function destroyAgentContainer(
-  agentId: string
-): Promise<true | ControllerError> {
-  const name = containerName(agentId);
-
-  try {
-    const container = docker.getContainer(name);
-    await container.stop({ t: 5 }).catch(() => {});
-    await container.remove({ force: true });
-    containerMeta.delete(agentId);
-    return true;
-  } catch {
-    return { _tag: "AgentNotFound", agentId };
-  }
-}
-
-export async function getAgentInfo(
-  agentId: string
-): Promise<ContainerInfo | ControllerError> {
-  const name = containerName(agentId);
-
-  try {
-    const container = docker.getContainer(name);
-    const info = await container.inspect();
-    const meta = containerMeta.get(agentId);
-
-    return {
-      containerId: info.Id,
-      agentId,
-      profileName: agentId,
-      state: info.State.Running ? "running" : "stopping",
-      createdAt: meta?.createdAt ?? info.Created,
-      socketPath: `/run/agent-browser/main.sock`,
-    };
-  } catch {
-    return { _tag: "AgentNotFound", agentId };
-  }
-}
-
-export async function listAgentContainers(): Promise<ContainerInfo[]> {
-  const containers = await docker.listContainers({
-    all: true,
-    filters: { label: ["moat-browser=agent-chrome"] },
-  });
-
-  return containers.map((c) => {
-    const agentId = c.Labels["moat-browser.agent-id"] ?? "unknown";
-    const meta = containerMeta.get(agentId);
-    return {
-      containerId: c.Id,
-      agentId,
-      profileName: agentId,
-      state: c.State === "running" ? "running" as const : "stopping" as const,
-      createdAt: meta?.createdAt ?? new Date(c.Created * 1000).toISOString(),
-    };
-  });
-}
-
-export async function startUserChromeContainer(
-  profileName: string,
-  profilePath: string
-): Promise<{ containerId: string; nekoPort: number } | ControllerError> {
-  const name = config.userChromeContainerName;
-
-  // Stop existing if any
-  try {
-    const existing = docker.getContainer(name);
-    await existing.stop({ t: 5 }).catch(() => {});
-    await existing.remove({ force: true });
-  } catch {
-    // Doesn't exist
+    return { _tag: "ContainerError", message: `Profile copy failed: ${String(err)}` };
   }
 
-  const nekoPort = config.nekoPortRangeStart;
-
+  // Create container
+  let containerId: string;
   try {
-    const container = await docker.createContainer({
-      name,
-      Image: config.userChromeImage,
-      ExposedPorts: { "8080/tcp": {}, "8081/tcp": {} },
-      HostConfig: {
-        Binds: [`${profilePath}:/data/profile`],
-        PortBindings: {
-          "8080/tcp": [{ HostPort: String(nekoPort) }],
-          "8081/tcp": [{ HostPort: String(nekoPort + 1) }],
+    const createRes = await dockerFetch("/containers/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        Image: config.agentChromeImage,
+        HostConfig: {
+          Binds: [`${profilePath}:/data/profile`],
+          ShmSize: 2 * 1024 * 1024 * 1024, // 2GB
+          NetworkMode: config.dockerNetwork,
         },
-        ShmSize: 2 * 1024 * 1024 * 1024, // 2GB
-      },
-      Env: [
-        `NEKO_SCREEN=1920x1080@30`,
-      ],
-      Labels: {
-        "moat-browser": "user-chrome",
-        "moat-browser.profile": profileName,
-      },
+        ExposedPorts: { "9222/tcp": {} },
+        Labels: {
+          "moat-browser": "agent-chrome",
+          "moat-browser.agent-id": agentId,
+        },
+      }),
     });
 
-    await container.start();
-    await waitForHealth(container.id, 30_000);
+    if (!createRes.ok) {
+      const text = await createRes.text();
+      return { _tag: "ContainerError", message: `Create failed (${createRes.status}): ${text}` };
+    }
 
-    return { containerId: container.id, nekoPort };
+    const created = (await createRes.json()) as { Id: string };
+    containerId = created.Id;
   } catch (err) {
-    return { _tag: "ContainerStartFailed", reason: String(err) };
+    return { _tag: "ContainerError", message: `Docker create error: ${String(err)}` };
   }
+
+  // Start container
+  try {
+    const startRes = await dockerFetch(`/containers/${containerId}/start`, {
+      method: "POST",
+    });
+
+    if (!startRes.ok && startRes.status !== 304) {
+      const text = await startRes.text();
+      return { _tag: "ContainerError", message: `Start failed (${startRes.status}): ${text}` };
+    }
+  } catch (err) {
+    return { _tag: "ContainerError", message: `Docker start error: ${String(err)}` };
+  }
+
+  return { containerId, profilePath };
 }
 
-export async function stopUserChromeContainer(): Promise<true | ControllerError> {
-  const name = config.userChromeContainerName;
+// POST /containers/{id}/stop + DELETE /containers/{id} + rm -rf profilePath
+export async function destroyAgentChrome(
+  containerId: string,
+  profilePath: string
+): Promise<true | GatewayError> {
+  try {
+    await dockerFetch(`/containers/${containerId}/stop?t=5`, { method: "POST" });
+  } catch {
+    // Ignore stop errors — container may already be stopped
+  }
 
   try {
-    const container = docker.getContainer(name);
-    await container.stop({ t: 10 }).catch(() => {});
-    await container.remove({ force: true });
-    return true;
-  } catch {
-    return { _tag: "DockerError", message: "user-chrome container not found" };
-  }
-}
-
-export function getTimedOutAgents(timeoutMs: number): string[] {
-  const now = Date.now();
-  const timedOut: string[] = [];
-
-  for (const [agentId, meta] of containerMeta) {
-    if (now - meta.lastActivity > timeoutMs) {
-      timedOut.push(agentId);
+    const deleteRes = await dockerFetch(`/containers/${containerId}`, { method: "DELETE" });
+    if (!deleteRes.ok && deleteRes.status !== 404) {
+      const text = await deleteRes.text();
+      return { _tag: "ContainerError", message: `Delete failed (${deleteRes.status}): ${text}` };
     }
+  } catch (err) {
+    return { _tag: "ContainerError", message: `Docker delete error: ${String(err)}` };
   }
 
-  return timedOut;
+  try {
+    execSync(`rm -rf "${profilePath}"`, { stdio: "pipe" });
+  } catch {
+    // Best-effort profile cleanup — don't fail the destroy
+  }
+
+  return true;
 }
 
-export function touchActivity(agentId: string): void {
-  const meta = containerMeta.get(agentId);
-  if (meta) {
-    meta.lastActivity = Date.now();
+// GET /containers/{id}/json → IP from NetworkSettings.Networks[dockerNetwork].IPAddress
+export async function inspectContainer(
+  containerId: string
+): Promise<{ ip: string } | GatewayError> {
+  try {
+    const res = await dockerFetch(`/containers/${containerId}/json`);
+    if (!res.ok) {
+      const text = await res.text();
+      return { _tag: "ContainerError", message: `Inspect failed (${res.status}): ${text}` };
+    }
+
+    const info = (await res.json()) as {
+      NetworkSettings: {
+        Networks: Record<string, { IPAddress: string } | undefined>;
+      };
+    };
+
+    const network = info.NetworkSettings.Networks[config.dockerNetwork];
+    if (!network) {
+      return {
+        _tag: "ContainerError",
+        message: `Container not on network ${config.dockerNetwork}`,
+      };
+    }
+
+    return { ip: network.IPAddress };
+  } catch (err) {
+    return { _tag: "ContainerError", message: `Inspect error: ${String(err)}` };
   }
 }
 
-async function waitForHealth(containerId: string, timeoutMs: number): Promise<void> {
+// GET /containers/json?filters=... with label filter
+export async function listContainers(
+  labelFilter: string = "moat-browser=agent-chrome"
+): Promise<Array<{ id: string; agentId: string; state: string }> | GatewayError> {
+  try {
+    const filters = encodeURIComponent(JSON.stringify({ label: [labelFilter] }));
+    const res = await dockerFetch(`/containers/json?all=1&filters=${filters}`);
+
+    if (!res.ok) {
+      const text = await res.text();
+      return { _tag: "ContainerError", message: `List failed (${res.status}): ${text}` };
+    }
+
+    const containers = (await res.json()) as Array<{
+      Id: string;
+      Labels: Record<string, string>;
+      State: string;
+    }>;
+
+    return containers.map((c) => ({
+      id: c.Id,
+      agentId: c.Labels["moat-browser.agent-id"] ?? "unknown",
+      state: c.State,
+    }));
+  } catch (err) {
+    return { _tag: "ContainerError", message: `List error: ${String(err)}` };
+  }
+}
+
+// Poll http://{host}:{port}/json/version every 500ms until response or timeout
+export async function waitForCDP(
+  host: string,
+  port: number,
+  timeoutMs: number
+): Promise<true | GatewayError> {
   const deadline = Date.now() + timeoutMs;
-  const container = docker.getContainer(containerId);
+  const url = `http://${host}:${port}/json/version`;
 
   while (Date.now() < deadline) {
     try {
-      const info = await container.inspect();
-      if (info.State.Health?.Status === "healthy" || info.State.Running) {
-        return;
-      }
+      const res = await fetch(url, { signal: AbortSignal.timeout(1000) });
+      if (res.ok) return true;
     } catch {
-      // Container might not be ready yet
+      // Not ready yet
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 500));
   }
+
+  return {
+    _tag: "ContainerError",
+    message: `CDP not ready at ${host}:${port} after ${timeoutMs}ms`,
+  };
 }

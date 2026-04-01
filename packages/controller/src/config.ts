@@ -1,32 +1,24 @@
+// Controller configuration — environment variables per design.md §8
+
+function requireEnv(name: string): string {
+  const val = process.env[name];
+  if (!val) throw new Error(`Required environment variable ${name} is not set`);
+  return val;
+}
+
 export const config = {
-  profilesBase: process.env["MOAT_PROFILES_BASE"] ?? "/data/profiles",
-  frozenDir: "frozen",
-  liveDir: "live",
+  // Required
+  jwtSecret: requireEnv("MOAT_BROWSER_JWT_SECRET"),
 
-  agentChromeImage: process.env["MOAT_AGENT_CHROME_IMAGE"] ?? "moat-browser/agent-chrome:latest",
-  userChromeImage: process.env["MOAT_USER_CHROME_IMAGE"] ?? "moat-browser/user-chrome:latest",
-
-  containerPrefix: "mb-",
-  userChromeContainerName: "mb-user-chrome",
-
-  agentMemoryLimit: 1024 * 1024 * 1024, // 1GB
-  agentCpuQuota: 100_000, // 1 core
-  agentShmSize: 256 * 1024 * 1024, // 256MB
-
-  nekoPortRangeStart: 9080,
-  nekoPortRangeEnd: 9099,
-
-  socketDir: process.env["MOAT_SOCKET_DIR"] ?? "/run/moat-browser",
-  controllerSocket: "controller.sock",
-
-  cleanupIntervalMs: 5 * 60 * 1000, // 5 minutes
-  containerTimeoutMs: 60 * 60 * 1000, // 1 hour
+  // Optional with defaults
+  port: Number(process.env["MOAT_BROWSER_PORT"] ?? "9800"),
+  dockerSocket: process.env["MOAT_BROWSER_DOCKER_SOCKET"] ?? "/var/run/docker.sock",
+  profileDir: process.env["MOAT_BROWSER_PROFILE_DIR"] ?? "/data/profile",
+  agentProfilesDir: process.env["MOAT_BROWSER_AGENT_PROFILES_DIR"] ?? "/data/agent-profiles",
+  userChromeImage: process.env["MOAT_BROWSER_USER_CHROME_IMAGE"] ?? "moat-browser/user-chrome",
+  agentChromeImage: process.env["MOAT_BROWSER_AGENT_CHROME_IMAGE"] ?? "moat-browser/agent-chrome",
+  idleTimeoutMs: Number(process.env["MOAT_BROWSER_IDLE_TIMEOUT_MS"] ?? "300000"),
+  reconnectTimeoutMs: Number(process.env["MOAT_BROWSER_RECONNECT_TIMEOUT_MS"] ?? "5000"),
+  cleanupIntervalMs: Number(process.env["MOAT_BROWSER_CLEANUP_INTERVAL_MS"] ?? "300000"),
+  dockerNetwork: process.env["MOAT_BROWSER_DOCKER_NETWORK"] ?? "moat-browser",
 } as const;
-
-export function frozenPath(profileName: string): string {
-  return `${config.profilesBase}/${config.frozenDir}/${profileName}`;
-}
-
-export function livePath(profileName: string): string {
-  return `${config.profilesBase}/${config.liveDir}/${profileName}`;
-}
