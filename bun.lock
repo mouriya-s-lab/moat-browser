@@ -10,6 +10,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@moat-browser/types": "workspace:*",
+        "patchright": "^1.59.0",
       },
       "devDependencies": {
         "bun-types": "latest",
@@ -43,6 +44,12 @@
     "arktype": ["arktype@2.2.0", "", { "dependencies": { "@ark/schema": "0.56.0", "@ark/util": "0.56.0", "arkregex": "0.0.5" } }, "sha512-t54MZ7ti5BhOEvzEkgKnWvqj+UbDfWig+DHr5I34xatymPusKLS0lQpNJd8M6DzmIto2QGszHfNKoFIT8tMCZQ=="],
 
     "bun-types": ["bun-types@1.3.11", "", { "dependencies": { "@types/node": "*" } }, "sha512-1KGPpoxQWl9f6wcZh57LvrPIInQMn2TQ7jsgxqpRzg+l0QPOFvJVH7HmvHo/AiPgwXy+/Thf6Ov3EdVn1vOabg=="],
+
+    "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
+
+    "patchright": ["patchright@1.59.0", "", { "dependencies": { "patchright-core": "1.59.0" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "patchright": "cli.js" } }, "sha512-imHXKKbgJkYRPqsX5yeNtNLzkIH58S714qOl5nRTXSXZh8O9F0+jylDjYlKTahtD2bmNeuY0hd52GdmD0T8TiQ=="],
+
+    "patchright-core": ["patchright-core@1.59.0", "", { "bin": { "patchright-core": "cli.js" } }, "sha512-grTL2WUZ/BjUlJryayTPiMOBu6fdtFkTRt/34BKINuMJPI6hSJXs/kXrT7vKPcRwadsOiKixmz6Ljp+qD/C6Pg=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

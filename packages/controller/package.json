@@ -8,7 +8,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@moat-browser/types": "workspace:*"
+    "@moat-browser/types": "workspace:*",
+    "patchright": "^1.59.0"
   },
   "devDependencies": {
     "typescript": "^5.0.0",
