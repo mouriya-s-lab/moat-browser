@@ -5,7 +5,8 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@moat-browser/types": "workspace:*"
+    "@moat-browser/types": "workspace:*",
+    "patchright": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
