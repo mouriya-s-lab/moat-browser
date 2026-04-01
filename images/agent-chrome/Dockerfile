@@ -1,28 +1,29 @@
-FROM debian:13-slim
+FROM ghcr.io/m1k1o/neko/chromium:latest
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
-    xvfb \
-    curl \
-    socat \
-    jq \
+# Remove neko server, GStreamer pipeline, and audio components.
+# Keep: Chromium, Xorg (xserver-xorg-video-dummy), openbox, supervisord.
+RUN apt-get remove -y \
+      neko \
+      gstreamer1.0-plugins-base \
+      gstreamer1.0-plugins-good \
+      gstreamer1.0-plugins-bad \
+      gstreamer1.0-plugins-ugly \
+      gstreamer1.0-libav \
+      gstreamer1.0-x \
+      pulseaudio \
+      libpulse0 \
+    && apt-get autoremove -y \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Bun runtime
-COPY --from=oven/bun:latest /usr/local/bin/bun /usr/local/bin/bun
+# Replace supervisord config with agent-only processes:
+# supervisord → Xorg → openbox → Chromium (CDP :9222)
+COPY supervisord/ /etc/supervisor/conf.d/
 
-# Entrypoint and scripts
-COPY entrypoint.sh /entrypoint.sh
-COPY scripts/ /opt/agent-chrome/scripts/
-RUN chmod +x /entrypoint.sh /opt/agent-chrome/scripts/*.sh
+# Xorg Dummy display configuration
+COPY xorg.conf /etc/X11/xorg.conf
 
-# Profile mount point and socket directory
-RUN mkdir -p /data/profile /run/agent-browser
-
-HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
-    CMD /opt/agent-chrome/scripts/healthcheck.sh
+# Profile directory (Controller mounts COW copy at runtime)
+VOLUME /data/profile
 
 EXPOSE 9222
-VOLUME ["/data/profile"]
-
-ENTRYPOINT ["/entrypoint.sh"]
