@@ -15,6 +15,7 @@ export {
 } from "./client.js";
 
 export { runDaemon, type DaemonOptions } from "./daemon.js";
+export { loadConfig, type ShimConfig } from "./config.js";
 
 export {
   toBrowserCommand,

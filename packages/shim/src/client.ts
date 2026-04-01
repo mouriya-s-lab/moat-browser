@@ -46,6 +46,7 @@ export class MoatBrowserClient {
   private readonly opts: ClientOptions;
   private socket: Socket | null = null;
   private sessionId: string | undefined;
+  private reconnecting = false;
   private readonly handlers = new Map<string, Set<EventHandler>>();
 
   constructor(opts: ClientOptions) {
@@ -107,6 +108,9 @@ export class MoatBrowserClient {
 
   // Low-level: send any BrowserCommand and receive BrowserResult | GatewayError
   async command(cmd: BrowserCommand): Promise<BrowserResult | GatewayError> {
+    if (this.reconnecting) {
+      return { _tag: "CommandError", message: "Reconnecting" };
+    }
     if (!this.socket?.connected) {
       return { _tag: "SessionNotReady", state: "disconnected" };
     }
@@ -196,23 +200,59 @@ export class MoatBrowserClient {
     });
 
     socket.on("disconnect", () => {
+      this.reconnecting = true;
       this._emit("disconnected", undefined);
     });
 
     socket.on("reconnect", () => {
-      // Re-register after reconnection (design.md §6.3)
-      socket.emit(
-        "register",
-        { agentId: this.opts.agentId },
-        (result: RegisterResult | GatewayError) => {
-          if (!isGatewayError(result as GatewayError)) {
-            this.sessionId = (result as RegisterResult).sessionId;
-            this._emit("reconnected", undefined);
-          } else {
-            this._emit("error", result as GatewayError);
+      // design.md §6.3: try resume first, fall back to register
+      const savedSessionId = this.sessionId;
+
+      if (savedSessionId) {
+        socket.emit(
+          "resume",
+          { sessionId: savedSessionId },
+          (result: { _tag: string; sessionId?: string } | GatewayError) => {
+            if (!isGatewayError(result)) {
+              // resume succeeded — session restored
+              this.reconnecting = false;
+              this._emit("reconnected", undefined);
+            } else {
+              // SessionNotFound or other error — fall back to register
+              socket.emit(
+                "register",
+                { agentId: this.opts.agentId },
+                (regResult: RegisterResult | GatewayError) => {
+                  if (!isGatewayError(regResult)) {
+                    this.sessionId = (regResult as RegisterResult).sessionId;
+                    this.reconnecting = false;
+                    this._emit("reconnected", undefined);
+                  } else {
+                    this.reconnecting = false;
+                    this._emit("error", regResult as GatewayError);
+                  }
+                }
+              );
+            }
           }
-        }
-      );
+        );
+      } else {
+        // No prior session — just register
+        socket.emit(
+          "register",
+          { agentId: this.opts.agentId },
+          (result: RegisterResult | GatewayError) => {
+            if (!isGatewayError(result)) {
+              this.sessionId = (result as RegisterResult).sessionId;
+              this.reconnecting = false;
+              this._emit("reconnected", undefined);
+            } else {
+              this.reconnecting = false;
+              this._emit("error", result as GatewayError);
+            }
+          }
+        );
+      }
     });
   }
 
