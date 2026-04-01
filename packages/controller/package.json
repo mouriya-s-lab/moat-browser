@@ -6,7 +6,9 @@
   "main": "src/index.ts",
   "dependencies": {
     "@moat-browser/types": "workspace:*",
-    "patchright": "^1.0.0"
+    "jose": "^5.0.0",
+    "patchright": "^1.0.0",
+    "socket.io": "^4.8.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
