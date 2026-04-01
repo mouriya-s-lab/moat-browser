@@ -1,0 +1,20 @@
+{
+  "name": "@moat-browser/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test src/",
+    "test:up": "docker compose -f docker-compose.test.yml up -d --build --wait",
+    "test:down": "docker compose -f docker-compose.test.yml down -v",
+    "test:e2e": "bun run test:up && bun test src/ ; bun run test:down"
+  },
+  "dependencies": {
+    "@moat-browser/types": "workspace:*",
+    "@moat-browser/shim": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "bun-types": "latest"
+  }
+}

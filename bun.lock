@@ -19,6 +19,18 @@
         "typescript": "^5.0.0",
       },
     },
+    "packages/e2e": {
+      "name": "@moat-browser/e2e",
+      "version": "0.1.0",
+      "dependencies": {
+        "@moat-browser/shim": "workspace:*",
+        "@moat-browser/types": "workspace:*",
+      },
+      "devDependencies": {
+        "bun-types": "latest",
+        "typescript": "^5.0.0",
+      },
+    },
     "packages/shim": {
       "name": "@moat-browser/shim",
       "version": "0.1.0",
@@ -51,6 +63,8 @@
     "@ark/util": ["@ark/util@0.56.0", "", {}, "sha512-BghfRC8b9pNs3vBoDJhcta0/c1J1rsoS1+HgVUreMFPdhz/CRAKReAu57YEllNaSy98rWAdY1gE+gFup7OXpgA=="],
 
     "@moat-browser/controller": ["@moat-browser/controller@workspace:packages/controller"],
+
+    "@moat-browser/e2e": ["@moat-browser/e2e@workspace:packages/e2e"],
 
     "@moat-browser/shim": ["@moat-browser/shim@workspace:packages/shim"],
 

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moat Browser Test App</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 2rem; max-width: 800px; margin: 0 auto; }
+    nav a { margin-right: 1rem; }
+    .hero { background: #f0f4f8; padding: 2rem; border-radius: 8px; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Moat Browser Test App</h1>
+    <nav>
+      <a href="/" id="nav-home">Home</a>
+      <a href="/form.html" id="nav-form">Form Test</a>
+      <a href="/dynamic.html" id="nav-dynamic">Dynamic Content</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <h2 id="main-heading">Welcome to the E2E Test App</h2>
+      <p id="description">
+        This page is used by the moat-browser E2E test suite to verify
+        browser navigation, ARIA snapshot, screenshot, and interaction capabilities.
+      </p>
+    </div>
+
+    <section id="links-section">
+      <h3>Test Links</h3>
+      <ul>
+        <li><a href="/form.html" id="link-form">Go to Form</a></li>
+        <li><a href="/dynamic.html" id="link-dynamic">Go to Dynamic Page</a></li>
+      </ul>
+    </section>
+
+    <section id="buttons-section">
+      <h3>Test Buttons</h3>
+      <button id="btn-alert" onclick="document.getElementById('btn-result').textContent = 'clicked'">
+        Click Me
+      </button>
+      <span id="btn-result"></span>
+    </section>
+  </main>
+
+  <footer>
+    <p>moat-browser E2E test fixture — do not use in production</p>
+  </footer>
+</body>
+</html>

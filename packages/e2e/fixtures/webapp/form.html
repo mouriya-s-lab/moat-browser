@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Form Test — Moat Browser</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 2rem; max-width: 600px; margin: 0 auto; }
+    .form-group { margin-bottom: 1rem; }
+    label { display: block; margin-bottom: 0.3rem; font-weight: bold; }
+    input, select, textarea { width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; }
+    button { padding: 0.6rem 1.5rem; background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    #submit-result { margin-top: 1rem; padding: 1rem; background: #e8f5e9; border-radius: 4px; display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Form Test Page</h1>
+    <nav><a href="/">← Home</a></nav>
+  </header>
+
+  <main>
+    <form id="test-form" onsubmit="handleSubmit(event)">
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input
+          type="text"
+          id="username"
+          name="username"
+          placeholder="Enter username"
+          aria-label="Username"
+          autocomplete="off"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="email">Email Address</label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          placeholder="Enter email"
+          aria-label="Email Address"
+          autocomplete="off"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="message">Message</label>
+        <textarea
+          id="message"
+          name="message"
+          rows="4"
+          placeholder="Enter your message"
+          aria-label="Message"
+        ></textarea>
+      </div>
+
+      <div class="form-group">
+        <label for="role">Role</label>
+        <select id="role" name="role" aria-label="Role">
+          <option value="">Select a role</option>
+          <option value="admin">Admin</option>
+          <option value="user">User</option>
+          <option value="viewer">Viewer</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="terms" name="terms" aria-label="Accept terms" />
+          I accept the terms and conditions
+        </label>
+      </div>
+
+      <button type="submit" id="submit-btn" aria-label="Submit form">
+        Submit
+      </button>
+    </form>
+
+    <div id="submit-result">
+      <h3>Form Submitted!</h3>
+      <p id="submitted-data"></p>
+    </div>
+  </main>
+
+  <script>
+    function handleSubmit(event) {
+      event.preventDefault();
+      const data = {
+        username: document.getElementById('username').value,
+        email: document.getElementById('email').value,
+        message: document.getElementById('message').value,
+        role: document.getElementById('role').value,
+      };
+      const resultEl = document.getElementById('submit-result');
+      const dataEl = document.getElementById('submitted-data');
+      resultEl.style.display = 'block';
+      dataEl.textContent = JSON.stringify(data);
+    }
+  </script>
+</body>
+</html>

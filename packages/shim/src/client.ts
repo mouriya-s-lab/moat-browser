@@ -205,9 +205,48 @@ export class MoatBrowserClient {
     });
   }
 
+  async wait(ms: number): Promise<Extract<BrowserResult, { _tag: "WaitResult" }> | CommandError> {
+    return this._typed<Extract<BrowserResult, { _tag: "WaitResult" }>>({
+      _tag: "Wait",
+      ms,
+    });
+  }
+
   /** Low-level command — send any BrowserCommand, receive BrowserResult or GatewayError. */
   async command(cmd: BrowserCommand): Promise<BrowserResult | GatewayError> {
     return this._sendCommand(cmd);
+  }
+
+  /**
+   * Resume a previously-established session by its ID.
+   * Used in reconnect scenarios and E2E tests.
+   */
+  async resume(sessionId: string): Promise<RegisterResult | CommandError> {
+    if (!this._socket?.connected) {
+      return { _tag: "InternalError", message: "Not connected" };
+    }
+    return new Promise((resolve) => {
+      this._socket!.emit("resume", { sessionId }, (err, result) => {
+        if (err) {
+          resolve(err);
+          return;
+        }
+        if (!result) {
+          resolve({ _tag: "InternalError", message: "No result from resume" });
+          return;
+        }
+        this._sessionId = result.sessionId;
+        resolve({ sessionId: result.sessionId });
+      });
+    });
+  }
+
+  /**
+   * Drop the transport connection without deregistering.
+   * Simulates an abnormal disconnect for testing reconnect behaviour.
+   */
+  forceDisconnect(): void {
+    this._socket?.disconnect();
   }
 
   // -------------------------------------------------------------------------

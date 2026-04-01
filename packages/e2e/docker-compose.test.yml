@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  controller:
+    build:
+      context: ../..
+      dockerfile: packages/controller/Dockerfile
+    ports:
+      - "9800:9800"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - profile:/data/profiles/base
+      - agent-profiles:/data/profiles/agents
+    environment:
+      PORT: "9800"
+      MOAT_BROWSER_JWT_SECRET: "test-secret-do-not-use-in-prod"
+      AGENT_CHROME_IMAGE: "moat-browser/agent-chrome:latest"
+      DOCKER_NETWORK: "e2e_default"
+      PROFILE_BASE_DIR: "/data/profiles/base"
+      PROFILE_AGENTS_DIR: "/data/profiles/agents"
+      SESSION_IDLE_TIMEOUT_MS: "60000"
+      RECONNECT_TIMEOUT_MS: "5000"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "bun -e \"fetch('http://localhost:9800/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))\""]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+
+  test-webapp:
+    image: nginx:alpine
+    volumes:
+      - ./fixtures/webapp:/usr/share/nginx/html:ro
+    ports:
+      - "8888:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  profile:
+  agent-profiles:

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dynamic Content — Moat Browser</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 2rem; max-width: 600px; margin: 0 auto; }
+    #loading { color: #666; }
+    #dynamic-content { background: #fff3cd; padding: 1rem; border-radius: 4px; margin-top: 1rem; }
+    #items-list { list-style: disc; padding-left: 1.5rem; }
+    .item { padding: 0.25rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dynamic Content Test Page</h1>
+    <nav><a href="/">← Home</a></nav>
+  </header>
+
+  <main>
+    <p id="loading">Loading dynamic content…</p>
+
+    <div id="dynamic-content" style="display: none;">
+      <h2 id="dynamic-title">Dynamic Section Loaded</h2>
+      <p id="dynamic-text">
+        This content was rendered by JavaScript. It should be visible in snapshots
+        taken after the page has fully loaded.
+      </p>
+      <ul id="items-list"></ul>
+      <p id="timestamp"></p>
+    </div>
+
+    <section id="interaction-section" style="display: none; margin-top: 2rem;">
+      <h3>Interactive Elements</h3>
+      <button id="load-more-btn" onclick="loadMore()">Load More Items</button>
+      <div id="extra-items"></div>
+    </section>
+  </main>
+
+  <script>
+    // Simulate async data loading (500ms delay)
+    setTimeout(function() {
+      const items = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon'];
+      const list = document.getElementById('items-list');
+      items.forEach(function(name) {
+        const li = document.createElement('li');
+        li.className = 'item';
+        li.textContent = name;
+        list.appendChild(li);
+      });
+
+      document.getElementById('timestamp').textContent =
+        'Rendered at: ' + new Date().toISOString();
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('dynamic-content').style.display = 'block';
+      document.getElementById('interaction-section').style.display = 'block';
+    }, 500);
+
+    function loadMore() {
+      const extra = document.getElementById('extra-items');
+      const p = document.createElement('p');
+      p.id = 'extra-loaded';
+      p.textContent = 'Extra items loaded at ' + new Date().toISOString();
+      extra.appendChild(p);
+      document.getElementById('load-more-btn').disabled = true;
+    }
+  </script>
+</body>
+</html>
