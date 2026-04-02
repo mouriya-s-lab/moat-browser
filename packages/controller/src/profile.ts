@@ -88,6 +88,10 @@ export async function copyProfile(
     // Remove the .frozen marker from the copy — agent profile should be writable
     const copiedMarker = path.join(targetDir, FROZEN_MARKER);
     await fs.unlink(copiedMarker).catch(() => {});
+    // Remove Chrome lock files — stale locks from the source prevent Chrome from starting
+    for (const lockFile of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+      await fs.unlink(path.join(targetDir, lockFile)).catch(() => {});
+    }
     execSync(`chown -R 1000:1000 ${targetDir}`);
   } catch (err) {
     return {
