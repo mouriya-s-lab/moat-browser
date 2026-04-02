@@ -1,7 +1,6 @@
 import * as http from "node:http";
-import * as fs from "node:fs/promises";
-import { execSync } from "node:child_process";
 import type { Config } from "./config";
+import { copyProfile, cleanupProfile } from "./profile";
 
 interface DockerResponse {
   readonly status: number;
@@ -57,13 +56,11 @@ export async function createAgentContainer(
 ): Promise<ContainerInfo | ContainerError> {
   const profileDir = `${config.profilesDir}/agent-${sessionId}`;
 
-  try {
-    await fs.cp(config.profileSourceDir, profileDir, { recursive: true });
-    execSync(`chown -R 1000:1000 ${profileDir}`);
-  } catch (err) {
+  const profileResult = await copyProfile(config, sessionId);
+  if (profileResult !== undefined) {
     return {
       _tag: "ContainerError",
-      message: `Failed to copy profile: ${err instanceof Error ? err.message : String(err)}`,
+      message: profileResult.message,
     };
   }
 
@@ -140,12 +137,7 @@ export async function destroyAgentContainer(
     };
   }
 
-  try {
-    const profileDir = `${config.profilesDir}/agent-${sessionId}`;
-    await fs.rm(profileDir, { recursive: true, force: true });
-  } catch {
-    // Best effort cleanup
-  }
+  await cleanupProfile(config, sessionId);
 }
 
 export async function waitForCdp(

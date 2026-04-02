@@ -11,6 +11,11 @@ import {
 } from "./docker";
 import type { CdpConnection } from "./cdp-bridge";
 import { connectCdp, executeCommand, disconnectCdp } from "./cdp-bridge";
+import {
+  freezeProfile,
+  unfreezeProfile,
+  isProfileFrozen,
+} from "./profile";
 
 export function createServer(config: Config): Server {
   const io = new Server(config.port, {
@@ -22,6 +27,46 @@ export function createServer(config: Config): Server {
 
   io.on("connection", (socket) => {
     console.log(`[controller] socket connected: ${socket.id}`);
+
+    socket.on(
+      "freezeProfile",
+      async (callback?: (res: unknown) => void) => {
+        const result = await freezeProfile(config);
+        if (result !== undefined) {
+          if (callback) return callback(result);
+          return socket.emit("error", result);
+        }
+        console.log("[controller] profile frozen");
+        const response = { ok: true };
+        if (callback) return callback(response);
+        socket.emit("profileFrozen", response);
+      }
+    );
+
+    socket.on(
+      "unfreezeProfile",
+      async (callback?: (res: unknown) => void) => {
+        const result = await unfreezeProfile(config);
+        if (result !== undefined) {
+          if (callback) return callback(result);
+          return socket.emit("error", result);
+        }
+        console.log("[controller] profile unfrozen");
+        const response = { ok: true };
+        if (callback) return callback(response);
+        socket.emit("profileUnfrozen", response);
+      }
+    );
+
+    socket.on(
+      "profileStatus",
+      async (callback?: (res: unknown) => void) => {
+        const frozen = await isProfileFrozen(config);
+        const response = { frozen };
+        if (callback) return callback(response);
+        socket.emit("profileStatus", response);
+      }
+    );
 
     socket.on(
       "register",
