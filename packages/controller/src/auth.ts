@@ -4,37 +4,69 @@ type AuthResult =
   | { readonly _tag: "Ok"; readonly agentId: string }
   | AuthError;
 
-export function verifyToken(token: string, secret: string): AuthResult {
-  // JWT: header.payload.signature (base64url encoded)
+function base64UrlDecode(input: string): Uint8Array {
+  const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function base64UrlEncode(data: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < data.length; i++) {
+    binary += String.fromCharCode(data[i]!);
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+export async function verifyToken(token: string, secret: string): Promise<AuthResult> {
   const parts = token.split(".");
   if (parts.length !== 3) {
     return { _tag: "AuthError", message: "malformed token" };
   }
 
+  const headerB64 = parts[0]!;
+  const payloadB64 = parts[1]!;
+  const signatureB64 = parts[2]!;
+
   try {
-    const payloadB64 = parts[1]!;
-    // base64url → base64
-    const base64 = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
-    const json = atob(base64);
+    // Verify HMAC-SHA256 signature
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+
+    const signatureInput = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
+    const signature = base64UrlDecode(signatureB64);
+
+    const valid = await crypto.subtle.verify("HMAC", key, signature, signatureInput);
+    if (!valid) {
+      return { _tag: "AuthError", message: "invalid signature" };
+    }
+
+    // Decode payload
+    const payloadBytes = base64UrlDecode(payloadB64);
+    const json = new TextDecoder().decode(payloadBytes);
     const payload: unknown = JSON.parse(json);
 
     if (typeof payload !== "object" || payload === null) {
       return { _tag: "AuthError", message: "invalid payload" };
     }
 
-    const obj = payload as Record<string, unknown>;
-
-    // Verify signature using HMAC-SHA256
-    const signatureInput = `${parts[0]}.${parts[1]}`;
-    const key = new TextEncoder().encode(secret);
-    const data = new TextEncoder().encode(signatureInput);
-
-    // Use synchronous approach: compare provided signature
-    // For dev simplicity, we verify the structure and trust the secret match
-    // In production this would use crypto.subtle
-    const expectedSig = parts[2]!;
-    if (expectedSig.length === 0) {
-      return { _tag: "AuthError", message: "empty signature" };
+    // Type-narrow without `as` — check each field
+    const obj: Record<string, unknown> = Object.create(null);
+    for (const [k, v] of Object.entries(payload)) {
+      obj[k] = v;
     }
 
     // Check expiry
@@ -54,8 +86,8 @@ export function verifyToken(token: string, secret: string): AuthResult {
   }
 }
 
-// Helper to create a simple JWT for testing
-export function createTestToken(agentId: string, secret: string): string {
+// Helper to create a JWT with real HMAC-SHA256 for testing
+export async function createTestToken(agentId: string, secret: string): Promise<string> {
   const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -72,11 +104,23 @@ export function createTestToken(agentId: string, secret: string): string {
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-  // Simple HMAC placeholder - in production use crypto.subtle
-  const signature = btoa(`${secret}:${header}.${payload}`)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  const signingInput = `${header}.${payload}`;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const signatureBuffer = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(signingInput)
+  );
+
+  const signature = base64UrlEncode(new Uint8Array(signatureBuffer));
 
   return `${header}.${payload}.${signature}`;
 }

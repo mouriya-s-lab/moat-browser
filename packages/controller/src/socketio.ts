@@ -34,7 +34,7 @@ export function createSocketServer(httpServer: HttpServer, config: Config): Serv
       }
 
       // Verify JWT
-      const authResult = verifyToken(token, config.jwtSecret);
+      const authResult = await verifyToken(token, config.jwtSecret);
       if (authResult._tag === "AuthError") {
         respond(authResult);
         return;

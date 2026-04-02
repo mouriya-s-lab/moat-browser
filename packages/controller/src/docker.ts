@@ -3,6 +3,25 @@ import type { Config } from "./config";
 
 type DockerResult<T> = { readonly _tag: "Ok"; readonly value: T } | ContainerError;
 
+// Type-safe field extraction for Docker API JSON responses (external boundary)
+function extractString(data: unknown, field: string): string | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const val = (data as Record<string, unknown>)[field];
+  return typeof val === "string" ? val : undefined;
+}
+
+function extractContainerIp(data: unknown): string {
+  if (typeof data !== "object" || data === null) return "";
+  const ns = (data as Record<string, unknown>)["NetworkSettings"];
+  if (typeof ns !== "object" || ns === null) return "";
+  const networks = (ns as Record<string, unknown>)["Networks"];
+  if (typeof networks !== "object" || networks === null) return "";
+  const first = Object.values(networks)[0];
+  if (typeof first !== "object" || first === null) return "";
+  const ip = (first as Record<string, unknown>)["IPAddress"];
+  return typeof ip === "string" ? ip : "";
+}
+
 interface ContainerInfo {
   readonly id: string;
   readonly ip: string;
@@ -17,7 +36,6 @@ async function dockerFetch(
   const url = `http://localhost${path}`;
   return fetch(url, {
     ...options,
-    // @ts-ignore Bun supports unix socket in fetch
     unix: socketPath,
   });
 }
@@ -62,8 +80,11 @@ export async function createAgentContainer(
       return { _tag: "ContainerError", message: `container create failed: ${errText}` };
     }
 
-    const createData = (await createRes.json()) as { Id: string };
-    const containerId = createData.Id;
+    const createJson: unknown = await createRes.json();
+    const containerId = extractString(createJson, "Id");
+    if (containerId === undefined) {
+      return { _tag: "ContainerError", message: "unexpected create response: missing Id" };
+    }
 
     // 3. Start container
     const startRes = await dockerFetch(config.dockerSocket, `/containers/${containerId}/start`, {
@@ -81,13 +102,8 @@ export async function createAgentContainer(
       return { _tag: "ContainerError", message: "container inspect failed" };
     }
 
-    const inspectData = (await inspectRes.json()) as {
-      NetworkSettings: { Networks: Record<string, { IPAddress: string }> };
-    };
-
-    const networks = inspectData.NetworkSettings.Networks;
-    const firstNetwork = Object.values(networks)[0];
-    const ip = firstNetwork?.IPAddress ?? "";
+    const inspectJson: unknown = await inspectRes.json();
+    const ip = extractContainerIp(inspectJson);
 
     if (ip === "") {
       return { _tag: "ContainerError", message: "container has no IP address" };
