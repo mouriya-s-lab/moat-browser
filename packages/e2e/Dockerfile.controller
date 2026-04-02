@@ -1,10 +1,20 @@
 FROM oven/bun:latest
 WORKDIR /app
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+# Patchright's internal CDP transport (Happy Eyeballs agent) is incompatible
+# with Bun's runtime. Install real Node.js + tsx to run the controller.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSL https://raw.githubusercontent.com/tj/n/master/bin/n -o /usr/local/bin/n \
+    && chmod +x /usr/local/bin/n \
+    && n lts \
+    && npm install -g tsx \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json bun.lock bunfig.toml tsconfig.json ./
 COPY packages/types/ packages/types/
 COPY packages/controller/ packages/controller/
 COPY packages/shim/ packages/shim/
 COPY packages/e2e/package.json packages/e2e/
 RUN bun install
-CMD ["bun", "run", "packages/controller/src/index.ts"]
+CMD ["tsx", "packages/controller/src/index.ts"]

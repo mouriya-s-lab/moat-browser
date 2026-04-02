@@ -8,10 +8,33 @@ describe("Phase 4: controller", () => {
 
   beforeAll(async () => {
     await ensureEnvironment();
+    // Ensure profile is frozen for agent registration (copyProfile requires frozen state)
+    const setupSocket = io(TEST_CONFIG.controllerUrl, {
+      autoConnect: false,
+      timeout: 10000,
+    });
+    await new Promise<void>((resolve) => {
+      setupSocket.on("connect", () => resolve());
+      setupSocket.connect();
+    });
+    await new Promise<unknown>((r) => setupSocket.emit("unfreezeProfile", r)).catch(() => {});
+    await new Promise<unknown>((r) => setupSocket.emit("freezeProfile", r));
+    setupSocket.disconnect();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     if (socket?.connected) socket.disconnect();
+    // Unfreeze for cleanup
+    const cleanupSocket = io(TEST_CONFIG.controllerUrl, {
+      autoConnect: false,
+      timeout: 10000,
+    });
+    await new Promise<void>((resolve) => {
+      cleanupSocket.on("connect", () => resolve());
+      cleanupSocket.connect();
+    });
+    await new Promise<unknown>((r) => cleanupSocket.emit("unfreezeProfile", r)).catch(() => {});
+    cleanupSocket.disconnect();
   });
 
   test("Socket.IO connection succeeds", async () => {

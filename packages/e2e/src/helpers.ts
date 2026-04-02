@@ -65,11 +65,12 @@ export async function waitForPort(
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`http://${host}:${port}/`, {
+      await fetch(`http://${host}:${port}/`, {
         signal: controller.signal,
       });
       clearTimeout(timeout);
-      if (res.ok) return true;
+      // Any response (even 404) means the port is open
+      return true;
     } catch {
       // Not ready
     }
