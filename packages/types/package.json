@@ -1,0 +1,17 @@
+{
+  "name": "@moat-browser/types",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun && bun x tsc --emitDeclarationOnly"
+  },
+  "dependencies": {
+    "arktype": "^2.1.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.0",
+    "typescript": "^5.7.0"
+  }
+}
