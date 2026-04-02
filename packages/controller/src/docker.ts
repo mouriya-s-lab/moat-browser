@@ -1,0 +1,171 @@
+import * as http from "node:http";
+import * as fs from "node:fs/promises";
+import { execSync } from "node:child_process";
+import type { Config } from "./config";
+
+interface DockerResponse {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+function dockerRequest(
+  socketPath: string,
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<DockerResponse> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        socketPath,
+        path: `/v1.43${path}`,
+        method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk: Buffer) => {
+          data += chunk.toString();
+        });
+        res.on("end", () => {
+          let parsed: unknown;
+          try {
+            parsed = data ? JSON.parse(data) : null;
+          } catch {
+            parsed = data;
+          }
+          resolve({ status: res.statusCode ?? 500, body: parsed });
+        });
+      }
+    );
+    req.on("error", reject);
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+export interface ContainerInfo {
+  readonly id: string;
+  readonly ip: string;
+}
+
+type ContainerError = { readonly _tag: "ContainerError"; readonly message: string };
+
+export async function createAgentContainer(
+  config: Config,
+  sessionId: string
+): Promise<ContainerInfo | ContainerError> {
+  const profileDir = `${config.profilesDir}/agent-${sessionId}`;
+
+  try {
+    await fs.cp(config.profileSourceDir, profileDir, { recursive: true });
+    execSync(`chown -R 1000:1000 ${profileDir}`);
+  } catch (err) {
+    return {
+      _tag: "ContainerError",
+      message: `Failed to copy profile: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const createRes = await dockerRequest(config.dockerSocket, "POST", "/containers/create", {
+    Image: config.agentChromeImage,
+    HostConfig: {
+      Binds: [`${profileDir}:/data/profile`],
+    },
+  });
+
+  if (createRes.status !== 201) {
+    return {
+      _tag: "ContainerError",
+      message: `Failed to create container: ${JSON.stringify(createRes.body)}`,
+    };
+  }
+
+  const containerId = (createRes.body as { Id: string }).Id;
+
+  const startRes = await dockerRequest(
+    config.dockerSocket,
+    "POST",
+    `/containers/${containerId}/start`
+  );
+
+  if (startRes.status !== 204 && startRes.status !== 304) {
+    return {
+      _tag: "ContainerError",
+      message: `Failed to start container: ${JSON.stringify(startRes.body)}`,
+    };
+  }
+
+  const inspectRes = await dockerRequest(
+    config.dockerSocket,
+    "GET",
+    `/containers/${containerId}/json`
+  );
+
+  if (inspectRes.status !== 200) {
+    return {
+      _tag: "ContainerError",
+      message: `Failed to inspect container: ${JSON.stringify(inspectRes.body)}`,
+    };
+  }
+
+  const inspectBody = inspectRes.body as {
+    NetworkSettings: { IPAddress: string };
+  };
+
+  return { id: containerId, ip: inspectBody.NetworkSettings.IPAddress };
+}
+
+export async function destroyAgentContainer(
+  config: Config,
+  containerId: string,
+  sessionId: string
+): Promise<void | ContainerError> {
+  await dockerRequest(
+    config.dockerSocket,
+    "POST",
+    `/containers/${containerId}/stop?t=5`
+  );
+
+  const removeRes = await dockerRequest(
+    config.dockerSocket,
+    "DELETE",
+    `/containers/${containerId}?force=true`
+  );
+
+  if (removeRes.status !== 204) {
+    return {
+      _tag: "ContainerError",
+      message: `Failed to remove container: ${JSON.stringify(removeRes.body)}`,
+    };
+  }
+
+  try {
+    const profileDir = `${config.profilesDir}/agent-${sessionId}`;
+    await fs.rm(profileDir, { recursive: true, force: true });
+  } catch {
+    // Best effort cleanup
+  }
+}
+
+export async function waitForCdp(
+  ip: string,
+  timeoutMs: number = 30000
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`http://${ip}:9222/json/version`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (res.ok) return true;
+    } catch {
+      // Not ready yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
