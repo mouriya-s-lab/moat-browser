@@ -1,0 +1,18 @@
+{
+  "name": "@moat-browser/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test --timeout 120000"
+  },
+  "dependencies": {
+    "@moat-browser/types": "workspace:*",
+    "@moat-browser/shim": "workspace:*",
+    "socket.io-client": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}

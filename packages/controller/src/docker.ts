@@ -64,12 +64,22 @@ export async function createAgentContainer(
     };
   }
 
-  const createRes = await dockerRequest(config.dockerSocket, "POST", "/containers/create", {
+  const createBody: Record<string, unknown> = {
     Image: config.agentChromeImage,
     HostConfig: {
       Binds: [`${profileDir}:/data/profile`],
     },
-  });
+  };
+
+  if (config.dockerNetwork) {
+    createBody.NetworkingConfig = {
+      EndpointsConfig: {
+        [config.dockerNetwork]: {},
+      },
+    };
+  }
+
+  const createRes = await dockerRequest(config.dockerSocket, "POST", "/containers/create", createBody);
 
   if (createRes.status !== 201) {
     return {
@@ -107,10 +117,18 @@ export async function createAgentContainer(
   }
 
   const inspectBody = inspectRes.body as {
-    NetworkSettings: { IPAddress: string };
+    NetworkSettings: {
+      IPAddress: string;
+      Networks: Record<string, { IPAddress: string }>;
+    };
   };
 
-  return { id: containerId, ip: inspectBody.NetworkSettings.IPAddress };
+  const ip = config.dockerNetwork
+    ? inspectBody.NetworkSettings.Networks[config.dockerNetwork]?.IPAddress ??
+      inspectBody.NetworkSettings.IPAddress
+    : inspectBody.NetworkSettings.IPAddress;
+
+  return { id: containerId, ip };
 }
 
 export async function destroyAgentContainer(

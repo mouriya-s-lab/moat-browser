@@ -7,6 +7,7 @@ export interface Config {
   readonly agentChromeImage: string;
   readonly idleTimeoutMs: number;
   readonly reconnectTimeoutMs: number;
+  readonly dockerNetwork: string | undefined;
 }
 
 export function loadConfig(): Config {
@@ -19,5 +20,6 @@ export function loadConfig(): Config {
     agentChromeImage: process.env.AGENT_CHROME_IMAGE ?? "moat-agent-chrome",
     idleTimeoutMs: parseInt(process.env.IDLE_TIMEOUT_MS ?? "300000", 10),
     reconnectTimeoutMs: parseInt(process.env.RECONNECT_TIMEOUT_MS ?? "5000", 10),
+    dockerNetwork: process.env.DOCKER_NETWORK ?? undefined,
   };
 }

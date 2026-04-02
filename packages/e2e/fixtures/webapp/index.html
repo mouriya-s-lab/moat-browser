@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Moat Test Page</title>
+</head>
+<body>
+  <h1 id="title">Moat Browser Test Page</h1>
+  <form id="test-form">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" placeholder="Username">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" placeholder="Password">
+    <button type="button" id="login-btn">Login</button>
+  </form>
+  <div id="result" style="display:none">
+    <span id="message"></span>
+  </div>
+  <script>
+    document.getElementById("login-btn").addEventListener("click", function () {
+      var name = document.getElementById("username").value;
+      document.getElementById("result").style.display = "block";
+      document.getElementById("message").textContent = "Hello, " + name + "!";
+    });
+  </script>
+</body>
+</html>

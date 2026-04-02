@@ -1,0 +1,10 @@
+FROM oven/bun:latest
+WORKDIR /app
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+COPY package.json bun.lock bunfig.toml tsconfig.json ./
+COPY packages/types/ packages/types/
+COPY packages/controller/ packages/controller/
+COPY packages/shim/ packages/shim/
+COPY packages/e2e/package.json packages/e2e/
+RUN bun install
+CMD ["bun", "run", "packages/controller/src/index.ts"]

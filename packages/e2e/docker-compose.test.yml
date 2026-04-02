@@ -1,0 +1,47 @@
+networks:
+  moat-test:
+    name: moat-test
+
+services:
+  test-webapp:
+    image: nginx:alpine
+    networks:
+      - moat-test
+    volumes:
+      - ./fixtures/webapp:/usr/share/nginx/html:ro
+
+  user-chrome:
+    build:
+      context: ../../images/user-chrome/
+    networks:
+      - moat-test
+    environment:
+      NEKO_SCREEN: "1280x720@24"
+      NEKO_PASSWORD: test
+      NEKO_PASSWORD_ADMIN: test
+    volumes:
+      - /tmp/moat-e2e/profile:/data/profile
+
+  controller:
+    build:
+      context: ../../
+      dockerfile: packages/e2e/Dockerfile.controller
+    networks:
+      - moat-test
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/moat-e2e/profile:/tmp/moat-e2e/profile
+      - /tmp/moat-e2e/profiles:/tmp/moat-e2e/profiles
+    environment:
+      PORT: "3000"
+      JWT_SECRET: test-secret
+      DOCKER_SOCKET: /var/run/docker.sock
+      PROFILE_SOURCE_DIR: /tmp/moat-e2e/profile
+      PROFILES_DIR: /tmp/moat-e2e/profiles
+      AGENT_CHROME_IMAGE: moat-agent-chrome
+      DOCKER_NETWORK: moat-test
+    depends_on:
+      - user-chrome
+      - test-webapp
