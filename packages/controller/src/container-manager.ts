@@ -1,4 +1,5 @@
 import { execFile as execFileCb } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { promisify } from "node:util";
 import type { ControllerError } from "@moat-browser/types";
 
@@ -31,6 +32,7 @@ export type ContainerInfo = {
 export type ContainerManagerConfig = {
   readonly profileSource: string;
   readonly profilesWork: string;
+  readonly profilesHostPath: string;
   readonly dockerNetwork: string;
   readonly agentChromeImage: string;
   readonly cdpReadyTimeout: number;
@@ -39,10 +41,31 @@ export type ContainerManagerConfig = {
 // ─── Docker Engine API ───
 
 async function dockerFetch(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`http://localhost${path}`, {
-    ...init,
-    // @ts-expect-error — Node.js fetch 支持 Unix socket
-    unix: "/var/run/docker.sock",
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        socketPath: "/var/run/docker.sock",
+        path,
+        method: (init?.method as string) ?? "GET",
+        headers: init?.headers as Record<string, string> | undefined,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const status = res.statusCode ?? 500;
+          const body = Buffer.concat(chunks).toString();
+          // 204/304 responses must not have a body per HTTP spec
+          const responseBody = status === 204 || status === 304 ? null : body;
+          resolve(new Response(responseBody, { status }));
+        });
+      },
+    );
+    req.on("error", reject);
+    if (init?.body) {
+      req.write(String(init.body));
+    }
+    req.end();
   });
 }
 
@@ -75,7 +98,21 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       });
     }
 
-    // Step 2: chown -R 1000:1000
+    // Step 2: Clean copied profile for agent-chrome compatibility
+    // Source profile is from Debian Chromium (user-chrome), destination is Chrome for Testing.
+    // Remove lock files and incompatible per-profile data; keep top-level config.
+    try {
+      await execFile("find", [profileDest, "-maxdepth", "1", "-name", "Singleton*", "-delete"]);
+    } catch {
+      // best-effort
+    }
+    try {
+      await execFile("rm", ["-rf", `${profileDest}/Default`]);
+    } catch {
+      // best-effort — Default may not exist
+    }
+
+    // Step 3: chown -R 1000:1000
     try {
       await execFile("chown", ["-R", "1000:1000", profileDest]);
     } catch (err) {
@@ -94,7 +131,7 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
         body: JSON.stringify({
           Image: config.agentChromeImage,
           HostConfig: {
-            Binds: [`${profileDest}:/data/profile`],
+            Binds: [`${config.profilesHostPath}/agent-${sessionId}:/data/profile`],
             NetworkMode: config.dockerNetwork,
             ShmSize: 2147483648,
           },

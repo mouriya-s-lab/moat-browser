@@ -1,0 +1,14 @@
+{
+  "name": "@moat-browser/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "compose:up": "docker compose -f docker-compose.test.yml up -d --build",
+    "compose:down": "docker compose -f docker-compose.test.yml down -v"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
