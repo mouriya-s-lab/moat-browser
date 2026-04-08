@@ -15,10 +15,13 @@
   },
   "dependencies": {
     "@moat-browser/types": "workspace:*",
-    "patchright": "^1.59.2"
+    "arktype": "^2.1.0",
+    "patchright": "^1.59.2",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
     "typescript": "^5.7.0"
   }
 }
