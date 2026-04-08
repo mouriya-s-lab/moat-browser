@@ -4,7 +4,41 @@ Controller 是 moat-browser 的唯一服务端进程。接收 SDK 的 wire 协�
 
 ---
 
-## 1. 定位
+## 1. 设计原则：全链路 ADT，零 any
+
+**禁止所有不具名类型**。从 WebSocket 入口到 Patchright 执行再到响应返回，每一个数据结构都必须是具名的、可穷举的 discriminated union 或 product type。
+
+具体约束：
+
+| 禁止 | 替代 | 理由 |
+|------|------|------|
+| `any` | 具名 ADT 变体 | 破坏类型追踪，编译器无法检查穷举 |
+| `unknown` | 具名 union（如 `EvalResult`） | 同上，且下游消费者被迫 type assertion |
+| `as` 类型断言 | 类型收窄（switch/if + _tag） | 断言绕过编译器，运行时可能不一致 |
+| `Record<string, any>` | 具名 type 的字段 | 丢失结构信息 |
+| `...` 省略字段 | 显式列出每个字段 | wire 协议是契约，省略即歧义 |
+| `object` 作为类型 | 具名 type | 无结构信息 |
+
+**全链路含义**：
+
+```
+WebSocket JSON 进入
+  → arktype schema 验证（运行时保证结构）
+  → WireRequest ADT（编译时类型）
+  → BrowserCommand ADT（exhaustive switch 路由）
+  → Patchright API 调用
+  → CommandResultData ADT（每个 action 对应一个具名 result variant）
+  → WireResponse ADT
+  → JSON 序列化发出
+```
+
+链路中任何一环出现 `any` / `unknown` / untyped object，都意味着类型追踪断裂——上游的变更不会在下游产生编译错误，bug 只能在运行时发现。
+
+**唯一例外**：Patchright/Playwright 库的返回类型如果是 `any`（如 `page.evaluate` 的返回值），在 Controller 边界处**立即收窄**为具名类型，不允许 `any` 向外传播。
+
+---
+
+## 2. 定位
 
 ```
 SDK (TS / Rust)  ──WebSocket──►  Controller  ──CDP──►  agent-chrome
@@ -18,7 +52,7 @@ SDK (TS / Rust)  ──WebSocket──►  Controller  ──CDP──►  agent
 
 ---
 
-## 2. 技术栈
+## 3. 技术栈
 
 | 技术 | 用途 | 选型理由 |
 |------|------|---------|
@@ -30,7 +64,7 @@ SDK (TS / Rust)  ──WebSocket──►  Controller  ──CDP──►  agent
 
 ---
 
-## 3. 模块架构
+## 4. 模块架构
 
 ```
 packages/controller/
@@ -58,15 +92,15 @@ packages/controller/
 
 ---
 
-## 4. Wire 协议
+## 5. Wire 协议
 
-### 4.1 传输
+### 5.1 传输
 
 - WebSocket，JSON 文本帧
 - 端口 3000（可配置）
 - 无认证（Phase 1，内网环境）
 
-### 4.2 请求格式
+### 5.2 请求格式
 
 所有请求共享 session envelope + command body：
 
@@ -78,7 +112,7 @@ type WireRequest =
   | { readonly type: "command"; readonly sessionId: string; readonly command: BrowserCommand };
 ```
 
-### 4.3 BrowserCommand
+### 5.3 BrowserCommand
 
 对齐 agent-browser daemon JSON 格式。`action` 字段做 discriminant：
 
@@ -168,7 +202,7 @@ type BrowserCommand =
   | { readonly action: "cookies_clear" };
 ```
 
-### 4.4 响应格式
+### 5.4 响应格式
 
 ```typescript
 type WireResponse =
@@ -204,28 +238,114 @@ type WireResponse =
     };
 ```
 
-### 4.5 CommandResultData
+### 5.5 CommandResultData
 
-不同命令返回不同 data 结构：
+**每个 action 对应一个具名 result variant，禁止 `unknown` 和省略字段（见 §1 设计原则）。**
 
-| action | data 内容 |
-|--------|----------|
-| navigate / back / forward / reload | `{ url: string, title: string }` |
-| getbyrole / getbylabel / ... (click 等无返回值动作) | `{}` |
-| getbyrole / getbylabel / ... (无 subaction，纯定位) | `{ found: true, count: number }` |
-| click / fill / type / hover (@ref) | `{}` |
-| snapshot | `{ aria: string }` — 带 `[ref=eN]` 标记的 ARIA 树文本 |
-| screenshot | `{ base64: string, format: string }` |
-| eval | `{ result: unknown }` |
-| press | `{}` |
-| scroll | `{}` |
-| tab_list | `{ tabs: Array<{ index: number, url: string, title: string, active: boolean }> }` |
-| tab_new / tab_switch / tab_close | `{ tabs: ... }` 同上 |
-| cookies_get | `{ cookies: Array<{ name, value, domain, path, ... }> }` |
-| cookies_clear | `{}` |
-| wait | `{}` |
+```typescript
+/** 导航结果 */
+type NavigateResult = {
+  readonly _tag: "NavigateResult";
+  readonly url: string;
+  readonly title: string;
+};
 
-### 4.6 ContentBoundary
+/** 无返回值的动作（click / fill / type / hover / check / uncheck / press / scroll / wait / cookies_clear） */
+type VoidResult = {
+  readonly _tag: "VoidResult";
+};
+
+/** 纯定位（语义定位器无 subaction） */
+type LocatorResult = {
+  readonly _tag: "LocatorResult";
+  readonly found: true;
+  readonly count: number;
+};
+
+/** ARIA 快照 */
+type SnapshotResult = {
+  readonly _tag: "SnapshotResult";
+  readonly aria: string;  // 带 [ref=eN] 标记的 ARIA 树文本
+};
+
+/** 截图 */
+type ScreenshotResult = {
+  readonly _tag: "ScreenshotResult";
+  readonly base64: string;
+  readonly format: "png" | "jpeg";
+};
+
+/**
+ * eval 结果。
+ * page.evaluate() 返回 Playwright 的 Serializable（本质是 any）。
+ * Controller 在 CDP Bridge 边界处立即 JSON.stringify，收窄为 string。
+ * 消费者 JSON.parse 后自行处理。这是 any 被截断的唯一位置。
+ */
+type EvalResult = {
+  readonly _tag: "EvalResult";
+  readonly json: string;  // JSON.stringify(page.evaluate(...))
+};
+
+/** Tab 信息 */
+type TabInfo = {
+  readonly index: number;
+  readonly url: string;
+  readonly title: string;
+  readonly active: boolean;
+};
+
+/** Tab 列表结果（tab_list / tab_new / tab_switch / tab_close 共用） */
+type TabResult = {
+  readonly _tag: "TabResult";
+  readonly tabs: ReadonlyArray<TabInfo>;
+};
+
+/** Cookie 条目 — 显式列出每个字段，不省略 */
+type CookieEntry = {
+  readonly name: string;
+  readonly value: string;
+  readonly domain: string;
+  readonly path: string;
+  readonly expires: number;
+  readonly httpOnly: boolean;
+  readonly secure: boolean;
+  readonly sameSite: "Strict" | "Lax" | "None";
+};
+
+/** Cookie 查询结果 */
+type CookiesResult = {
+  readonly _tag: "CookiesResult";
+  readonly cookies: ReadonlyArray<CookieEntry>;
+};
+
+/** discriminated union — exhaustive switch on _tag */
+type CommandResultData =
+  | NavigateResult
+  | VoidResult
+  | LocatorResult
+  | SnapshotResult
+  | ScreenshotResult
+  | EvalResult
+  | TabResult
+  | CookiesResult;
+```
+
+action → result variant 映射：
+
+| action | result variant |
+|--------|---------------|
+| navigate / back / forward / reload | `NavigateResult` |
+| getbyrole / getbylabel / getbyplaceholder / getbytext / getbyalttext / getbytitle / getbytestid（有 subaction） | `VoidResult` |
+| getbyrole / getbylabel / getbyplaceholder / getbytext / getbyalttext / getbytitle / getbytestid（无 subaction） | `LocatorResult` |
+| click / fill / type / hover（@ref） | `VoidResult` |
+| press / scroll / wait / cookies_clear | `VoidResult` |
+| snapshot | `SnapshotResult` |
+| screenshot | `ScreenshotResult` |
+| eval | `EvalResult` |
+| tab_list / tab_new / tab_switch / tab_close | `TabResult` |
+| cookies_get | `CookiesResult` |
+
+### 5.6 ContentBoundary
 
 防 prompt injection，对齐 agent-browser 的 content boundary nonce：
 
@@ -238,7 +358,7 @@ type ContentBoundary = {
 
 仅在 snapshot / eval / screenshot 等包含页面内容的响应中附带。SDK 在输出时用 nonce 包裹页面内容，防止恶意页面伪造命令输出。
 
-### 4.7 错误码
+### 5.7 错误码
 
 对齐 agent-browser exit code + moat 新增：
 
@@ -259,9 +379,9 @@ type ContentBoundary = {
 
 ---
 
-## 5. Session Registry
+## 6. Session Registry
 
-### 5.1 状态机
+### 6.1 状态机
 
 ```
                     register
@@ -304,7 +424,7 @@ type ContentBoundary = {
                                  └─────────┘
 ```
 
-### 5.2 SessionState ADT
+### 6.2 SessionState ADT
 
 ```typescript
 type SessionState =
@@ -325,7 +445,7 @@ type SessionState =
   | { readonly _tag: "Expired"; readonly reason: string };
 ```
 
-### 5.3 Session Registry 接口
+### 6.3 Session Registry 接口
 
 ```typescript
 interface SessionRegistry {
@@ -339,11 +459,11 @@ interface SessionRegistry {
 
 `getActive` 是命令执行的前置检查——从 registry 取 session，断言状态为 Active，否则返回对应错误（SessionNotFound / SessionExpired / SessionNotReady）。
 
-### 5.4 idle 超时
+### 6.4 idle 超时
 
 Active session 维护 `lastActivity` 时间戳。每次命令执行更新。定时器每 30s 扫描，超过阈值（默认 10 分钟）的 session 转入 Expired，触发容器清理。
 
-### 5.5 WebSocket 断连处理
+### 6.5 WebSocket 断连处理
 
 1. WebSocket `close` 事件触发
 2. session 转入 Reconnecting，记录 `since` 时间戳
@@ -353,13 +473,13 @@ Active session 维护 `lastActivity` 时间戳。每次命令执行更新。定�
 
 ---
 
-## 6. Container Manager
+## 7. Container Manager
 
-### 6.1 职责
+### 7.1 职责
 
 通过 Docker Engine API（fetch + Unix socket `/var/run/docker.sock`）管理 agent-chrome 容器。
 
-### 6.2 接口
+### 7.2 接口
 
 ```typescript
 interface ContainerManager {
@@ -375,7 +495,7 @@ type ContainerInfo = {
 };
 ```
 
-### 6.3 创建流程
+### 7.3 创建流程
 
 ```
 create(sessionId, profilePath):
@@ -398,7 +518,7 @@ create(sessionId, profilePath):
 
 步骤 1-2 通过 `child_process.execFile` 执行（cp -a 和 chown 是文件系统操作）。步骤 3-6 通过 fetch + Unix socket。
 
-### 6.4 销毁流程
+### 7.4 销毁流程
 
 ```
 destroy(sessionId):
@@ -407,7 +527,7 @@ destroy(sessionId):
   3. rm -rf <PROFILES_WORK>/agent-<sessionId>
 ```
 
-### 6.5 Docker Engine API 调用封装
+### 7.5 Docker Engine API 调用封装
 
 所有 Docker API 调用通过统一的 fetch 封装：
 
@@ -423,18 +543,23 @@ async function dockerFetch(path: string, init?: RequestInit): Promise<Response> 
 
 ---
 
-## 7. CDP Bridge
+## 8. CDP Bridge
 
-### 7.1 职责
+### 8.1 职责
 
-持有 Patchright Browser/BrowserContext/Page 实例，将 BrowserCommand 翻译为 Playwright API 调用。
+持有 Patchright Browser/BrowserContext/Page 实例，将 BrowserCommand 翻译为 Playwright API 调用。**每个 return 都必须构造具名 ADT variant（见 §1），不允许返回匿名对象字面量。**
 
-### 7.2 连接
+### 8.2 连接
 
 ```typescript
 import { chromium } from "patchright";
 
-async function connectCDP(cdpUrl: string): Promise<{ browser: Browser; context: BrowserContext }> {
+type CdpConnection = {
+  readonly browser: Browser;
+  readonly context: BrowserContext;
+};
+
+async function connectCDP(cdpUrl: string): Promise<CdpConnection> {
   const browser = await chromium.connectOverCDP(cdpUrl);
   const context = browser.contexts()[0];  // agent-chrome 只有一个 context
   return { browser, context };
@@ -443,9 +568,9 @@ async function connectCDP(cdpUrl: string): Promise<{ browser: Browser; context: 
 
 `connectOverCDP` 连接到已运行的 Chrome for Testing 实例。返回的 Browser 对象可获取已有的 BrowserContext 和 Page。
 
-### 7.3 命令执行
+### 8.3 命令执行
 
-核心是一个 exhaustive switch on `command.action`：
+核心是一个 exhaustive switch on `command.action`。**每个 case 返回具名 CommandResultData variant，不返回匿名 `{}`。**
 
 ```typescript
 async function executeCommand(
@@ -457,21 +582,29 @@ async function executeCommand(
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
 
   switch (command.action) {
-    case "navigate":
+    case "navigate": {
       await page.goto(command.url, { waitUntil: "domcontentloaded" });
-      return ok({ url: page.url(), title: await page.title() });
+      const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
+      return ok(result);
+    }
 
-    case "back":
+    case "back": {
       await page.goBack({ waitUntil: "domcontentloaded" });
-      return ok({ url: page.url(), title: await page.title() });
+      const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
+      return ok(result);
+    }
 
-    case "forward":
+    case "forward": {
       await page.goForward({ waitUntil: "domcontentloaded" });
-      return ok({ url: page.url(), title: await page.title() });
+      const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
+      return ok(result);
+    }
 
-    case "reload":
+    case "reload": {
       await page.reload({ waitUntil: "domcontentloaded" });
-      return ok({ url: page.url(), title: await page.title() });
+      const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
+      return ok(result);
+    }
 
     case "getbyrole":
       return executeLocatorAction(
@@ -485,7 +618,35 @@ async function executeCommand(
         command.subaction, command.value,
       );
 
-    // ... 其余 getbyplaceholder / getbytext / getbyalttext / getbytitle / getbytestid 同理
+    case "getbyplaceholder":
+      return executeLocatorAction(
+        page.getByPlaceholder(command.placeholder, { exact: command.exact }),
+        command.subaction, command.value,
+      );
+
+    case "getbytext":
+      return executeLocatorAction(
+        page.getByText(command.text, { exact: command.exact }),
+        command.subaction,
+      );
+
+    case "getbyalttext":
+      return executeLocatorAction(
+        page.getByAltText(command.text, { exact: command.exact }),
+        command.subaction,
+      );
+
+    case "getbytitle":
+      return executeLocatorAction(
+        page.getByTitle(command.text, { exact: command.exact }),
+        command.subaction,
+      );
+
+    case "getbytestid":
+      return executeLocatorAction(
+        page.getByTestId(command.testId),
+        command.subaction, command.value,
+      );
 
     case "click":
       return executeRefAction(refStore, command.ref, "click");
@@ -493,109 +654,166 @@ async function executeCommand(
     case "fill":
       return executeRefAction(refStore, command.ref, "fill", command.value);
 
-    case "snapshot":
-      // 获取 ARIA 树，标记 [ref=eN]，存入 refStore
-      ...
+    case "type":
+      return executeRefAction(refStore, command.ref, "type", command.value);
 
-    case "screenshot":
+    case "hover":
+      return executeRefAction(refStore, command.ref, "hover");
+
+    case "snapshot": {
+      const aria = await buildAriaSnapshot(page, refStore, sessionId);
+      const result: SnapshotResult = { _tag: "SnapshotResult", aria };
+      return ok(result);
+    }
+
+    case "screenshot": {
+      const format = command.format ?? "png";
       const buf = await page.screenshot({
-        type: command.format ?? "png",
-        quality: command.format === "jpeg" ? (command.quality ?? 80) : undefined,
+        type: format,
+        quality: format === "jpeg" ? (command.quality ?? 80) : undefined,
       });
-      return ok({ base64: buf.toString("base64"), format: command.format ?? "png" });
+      const result: ScreenshotResult = {
+        _tag: "ScreenshotResult",
+        base64: buf.toString("base64"),
+        format,
+      };
+      return ok(result);
+    }
 
-    case "eval":
-      const result = await page.evaluate(command.code);
-      return ok({ result });
+    case "eval": {
+      // page.evaluate 返回 Playwright Serializable (any)。
+      // 在此处立即 JSON.stringify 截断 any，不允许向外传播。
+      const raw = await page.evaluate(command.code);
+      const result: EvalResult = { _tag: "EvalResult", json: JSON.stringify(raw) };
+      return ok(result);
+    }
 
     case "press":
       await page.keyboard.press(command.key);
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     case "scroll":
       await page.evaluate(({ dir, amt }) => {
-        const m = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[dir];
-        window.scrollBy(m[0] * amt, m[1] * amt);
+        const m: Record<string, [number, number]> = {
+          up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0],
+        };
+        const [x, y] = m[dir]!;
+        window.scrollBy(x * amt, y * amt);
       }, { dir: command.direction, amt: command.amount ?? 300 });
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
-    case "tab_list":
-      return ok({
-        tabs: context.pages().map((p, i) => ({
-          index: i, url: p.url(), title: /* await */ p.title(), active: i === activeTabIndex,
-        })),
-      });
+    case "tab_list": {
+      const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
+      return ok(result);
+    }
 
-    case "tab_new":
+    case "tab_new": {
       const newPage = await context.newPage();
       if (command.url) await newPage.goto(command.url);
-      return ok({ /* tabs */ });
+      const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
+      return ok(result);
+    }
 
-    case "tab_switch":
+    case "tab_switch": {
       activeTabIndex = command.index;
-      return ok({ /* tabs */ });
+      const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
+      return ok(result);
+    }
 
-    case "tab_close":
+    case "tab_close": {
       await context.pages()[command.index ?? activeTabIndex].close();
-      return ok({ /* tabs */ });
+      const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
+      return ok(result);
+    }
 
-    case "cookies_get":
-      return ok({ cookies: await context.cookies(command.url ? [command.url] : undefined) });
+    case "cookies_get": {
+      const raw = await context.cookies(command.url ? [command.url] : undefined);
+      const cookies: ReadonlyArray<CookieEntry> = raw.map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        expires: c.expires,
+        httpOnly: c.httpOnly,
+        secure: c.secure,
+        sameSite: c.sameSite as CookieEntry["sameSite"],
+      }));
+      const result: CookiesResult = { _tag: "CookiesResult", cookies };
+      return ok(result);
+    }
 
     case "cookies_clear":
       await context.clearCookies();
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     case "wait":
-      await new Promise(r => setTimeout(r, command.time ?? 1000));
-      return ok({});
+      await new Promise<void>((r) => setTimeout(r, command.time ?? 1000));
+      return ok({ _tag: "VoidResult" } as const);
 
     default:
       return exhaustive(command);
   }
 }
+
+/** 构建 TabInfo 列表 — 具名类型，不返回匿名对象 */
+async function buildTabList(
+  context: BrowserContext,
+  activeIndex: number,
+): Promise<ReadonlyArray<TabInfo>> {
+  return Promise.all(
+    context.pages().map(async (p, i): Promise<TabInfo> => ({
+      index: i,
+      url: p.url(),
+      title: await p.title(),
+      active: i === activeIndex,
+    })),
+  );
+}
 ```
 
-### 7.4 Locator 动作执行
+### 8.4 Locator 动作执行
 
-语义定位器命令（getbyrole / getbylabel / ...）共享一个执行函数：
+语义定位器命令共享一个执行函数。**subaction 是字面量 union，不是 `string`；返回值是具名 ADT variant。**
 
 ```typescript
+type LocatorSubaction = "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+
 async function executeLocatorAction(
   locator: Locator,
-  subaction?: string,
+  subaction: LocatorSubaction | undefined,
   value?: string,
 ): Promise<Result<CommandResultData, ControllerError>> {
   switch (subaction) {
-    case undefined:
-      // 纯定位，返回匹配数量
+    case undefined: {
       const count = await locator.count();
       if (count === 0) return err({ _tag: "ElementNotFound" });
-      return ok({ found: true, count });
+      const result: LocatorResult = { _tag: "LocatorResult", found: true, count };
+      return ok(result);
+    }
 
     case "click":
       await locator.click();
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     case "fill":
       await locator.fill(value!);
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     case "type":
       await locator.pressSequentially(value!);  // type() 已废弃，用 pressSequentially
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     case "check":
       await locator.check();
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     case "uncheck":
       await locator.uncheck();
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     case "hover":
       await locator.hover();
-      return ok({});
+      return ok({ _tag: "VoidResult" } as const);
 
     default:
       return exhaustive(subaction);
@@ -603,7 +821,7 @@ async function executeLocatorAction(
 }
 ```
 
-### 7.5 nth 定位
+### 8.5 nth 定位
 
 当语义定位器匹配多个元素时，通过 `nth` 参数选择：
 
@@ -614,7 +832,7 @@ if (command.nth !== undefined) {
 }
 ```
 
-### 7.6 @eN 引用系统
+### 8.6 @eN 引用系统
 
 **Snapshot 阶段**：遍历页面 accessibility tree，每个可交互元素分配递增 ID（e1, e2, ...），存入 RefStore。
 
@@ -635,7 +853,7 @@ interface RefStore {
 - tab 切换 → 引用失效（每个 tab 独立）
 - 引用不跨 session
 
-### 7.7 错误映射
+### 8.7 错误映射
 
 Patchright/Playwright 异常 → ControllerError → 错误码：
 
@@ -651,9 +869,9 @@ Patchright/Playwright 异常 → ControllerError → 错误码：
 
 ---
 
-## 8. WebSocket Server
+## 9. WebSocket Server
 
-### 8.1 连接模型
+### 9.1 连接模型
 
 一个 WebSocket 连接绑定一个 session。连接建立后，client 必须先发 `register` 或 `resume`，之后才能发 `command`。
 
@@ -677,7 +895,7 @@ Client                          Server
   └── ws close ──────────────────►│
 ```
 
-### 8.2 消息路由
+### 9.2 消息路由
 
 ```typescript
 ws.on("message", async (raw) => {
@@ -710,7 +928,7 @@ ws.on("message", async (raw) => {
 });
 ```
 
-### 8.3 请求-响应对齐
+### 9.3 请求-响应对齐
 
 wire 协议是严格的 request-response 模式（不是 pub-sub）。每条请求恰好产生一条响应。SDK 侧可以据此简化实现——发一条 JSON，等一条 JSON 回来。
 
@@ -718,7 +936,7 @@ wire 协议是严格的 request-response 模式（不是 pub-sub）。每条请�
 
 ---
 
-## 9. register 全链路
+## 10. register 全链路
 
 将 Session Registry、Container Manager、CDP Bridge 三个模块串联：
 
@@ -752,9 +970,9 @@ SDK                     Controller
 
 ---
 
-## 10. 错误处理
+## 11. 错误处理
 
-### 10.1 ControllerError ADT
+### 11.1 ControllerError ADT
 
 ```typescript
 type ControllerError =
@@ -771,7 +989,7 @@ type ControllerError =
   | { readonly _tag: "ValidationFailed"; readonly message: string };
 ```
 
-### 10.2 错误到 Wire 响应的映射
+### 11.2 错误到 Wire 响应的映射
 
 ```typescript
 function errorToWireResponse(sessionId: string, error: ControllerError): WireResponse {
@@ -799,7 +1017,7 @@ function errorToWireResponse(sessionId: string, error: ControllerError): WireRes
 }
 ```
 
-### 10.3 CDP 断连恢复
+### 11.3 CDP 断连恢复
 
 Patchright Browser 实例的 `disconnected` 事件触发时：
 1. session 转入 Expired（reason: "CDP disconnected"）
@@ -811,7 +1029,7 @@ Patchright Browser 实例的 `disconnected` 事件触发时：
 
 ---
 
-## 11. 配置
+## 12. 配置
 
 ```typescript
 type ControllerConfig = {
