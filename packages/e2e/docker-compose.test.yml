@@ -1,0 +1,49 @@
+services:
+  user-chrome:
+    build: ../../images/user-chrome
+    shm_size: "2gb"
+    cap_add:
+      - SYS_ADMIN
+    ports:
+      - "8080:8080"
+      - "52000-52100:52000-52100/udp"
+    volumes:
+      - profile-data:/home/neko/.config/chromium
+    environment:
+      NEKO_DESKTOP_SCREEN: "1920x1080@30"
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: neko
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: admin
+      NEKO_WEBRTC_EPR: "52000-52100"
+      NEKO_WEBRTC_ICELITE: "1"
+      NEKO_WEBRTC_NAT1TO1: "192.168.1.200"
+    networks:
+      - moat
+
+  controller:
+    build:
+      context: ../..
+      dockerfile: packages/controller/Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - profile-data:/data/profile:ro
+      - /tmp/moat-profiles:/data/profiles
+    ports:
+      - "3000:3000"
+    environment:
+      PROFILE_SOURCE: /data/profile
+      PROFILES_WORK: /data/profiles
+      PROFILES_HOST_PATH: /tmp/moat-profiles
+      DOCKER_NETWORK: moat
+      AGENT_CHROME_IMAGE: agent-chrome:latest
+    depends_on:
+      - user-chrome
+    networks:
+      - moat
+
+networks:
+  moat:
+    driver: bridge
+    name: moat
+
+volumes:
+  profile-data:

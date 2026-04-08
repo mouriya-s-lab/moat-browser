@@ -10,6 +10,7 @@ export type ControllerConfig = {
   readonly port: number;
   readonly profileSource: string;
   readonly profilesWork: string;
+  readonly profilesHostPath: string;
   readonly dockerNetwork: string;
   readonly agentChromeImage: string;
   readonly sessionIdleTimeout: number;
@@ -23,6 +24,7 @@ function loadConfig(): ControllerConfig {
     port: parseInt(process.env.PORT ?? "3000", 10),
     profileSource: process.env.PROFILE_SOURCE ?? "/data/profile",
     profilesWork: process.env.PROFILES_WORK ?? "/data/profiles",
+    profilesHostPath: process.env.PROFILES_HOST_PATH ?? process.env.PROFILES_WORK ?? "/data/profiles",
     dockerNetwork: process.env.DOCKER_NETWORK ?? "moat",
     agentChromeImage: process.env.AGENT_CHROME_IMAGE ?? "agent-chrome:latest",
     sessionIdleTimeout: parseInt(process.env.SESSION_IDLE_TIMEOUT ?? "600000", 10),
@@ -39,6 +41,7 @@ const config = loadConfig();
 const containerManager = createContainerManager({
   profileSource: config.profileSource,
   profilesWork: config.profilesWork,
+  profilesHostPath: config.profilesHostPath,
   dockerNetwork: config.dockerNetwork,
   agentChromeImage: config.agentChromeImage,
   cdpReadyTimeout: config.cdpReadyTimeout,
