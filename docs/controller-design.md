@@ -1,0 +1,853 @@
+# Controller 设计
+
+Controller 是 moat-browser 的唯一服务端进程。接收 SDK 的 wire 协议请求，通过 Patchright CDP 在 agent-chrome 上执行浏览器命令，管理 session 和容器生命周期。
+
+---
+
+## 1. 定位
+
+```
+SDK (TS / Rust)  ──WebSocket──►  Controller  ──CDP──►  agent-chrome
+                                     │
+                                     ├── Session Registry（session 状态机）
+                                     ├── Container Manager（Docker Engine API）
+                                     └── CDP Bridge（Patchright connectOverCDP）
+```
+
+**唯一服务端**：不拆 Gateway、daemon、注册服务。所有逻辑（WebSocket 服务端、session 管理、容器管理、CDP 桥接）集中在一个 Node.js 进程。
+
+---
+
+## 2. 技术栈
+
+| 技术 | 用途 | 选型理由 |
+|------|------|---------|
+| Node.js + TypeScript | 运行时 | Patchright 与 Bun 有 CDP 兼容性问题（README §11.6） |
+| ws (原生 WebSocket) | 对外 API | 不用 socket.io，wire 协议是简单的 JSON request/response |
+| patchright | connectOverCDP → agent-chrome | 反检测 Playwright fork，API 与 Playwright 完全兼容 |
+| arktype | 运行时消息验证 | wire 协议 JSON schema 的运行时检查 |
+| Docker Engine API | 管理 agent-chrome 容器 | fetch + Unix socket，不用 dockerode |
+
+---
+
+## 3. 模块架构
+
+```
+packages/controller/
+├── src/
+│   ├── index.ts              # 入口：启动 WebSocket Server
+│   ├── ws-server.ts          # WebSocket 服务端：协议解码、路由、编码
+│   ├── session-registry.ts   # Session 状态机 + session → 容器映射
+│   ├── container-manager.ts  # Docker Engine API 封装
+│   ├── cdp-bridge.ts         # Patchright connectOverCDP + 命令执行
+│   ├── ref-store.ts          # @eN 引用存储（每 session 独立）
+│   └── types.ts              # 内部 ADT（re-export from @moat-browser/types）
+├── package.json
+└── tsconfig.json
+```
+
+四个核心模块的职责边界：
+
+| 模块 | 输入 | 输出 | 状态 |
+|------|------|------|------|
+| **ws-server** | WebSocket 消息 (JSON) | WebSocket 消息 (JSON) | 无（纯路由） |
+| **session-registry** | register / resume / deregister 请求 | session 状态变更 | SessionState Map |
+| **container-manager** | create / destroy / inspect 请求 | 容器 ID、IP | 无（Docker 是状态源） |
+| **cdp-bridge** | BrowserCommand + CDP URL | BrowserResponse | Patchright Browser/Page 实例 |
+| **ref-store** | snapshot 结果 | @eN → Playwright Locator 映射 | RefMap per session |
+
+---
+
+## 4. Wire 协议
+
+### 4.1 传输
+
+- WebSocket，JSON 文本帧
+- 端口 3000（可配置）
+- 无认证（Phase 1，内网环境）
+
+### 4.2 请求格式
+
+所有请求共享 session envelope + command body：
+
+```typescript
+type WireRequest =
+  | { readonly type: "register"; readonly profile?: string }
+  | { readonly type: "resume"; readonly sessionId: string }
+  | { readonly type: "deregister"; readonly sessionId: string }
+  | { readonly type: "command"; readonly sessionId: string; readonly command: BrowserCommand };
+```
+
+### 4.3 BrowserCommand
+
+对齐 agent-browser daemon JSON 格式。`action` 字段做 discriminant：
+
+```typescript
+type BrowserCommand =
+  // 导航
+  | { readonly action: "navigate"; readonly url: string }
+  | { readonly action: "back" }
+  | { readonly action: "forward" }
+  | { readonly action: "reload" }
+  | { readonly action: "wait"; readonly time?: number }
+
+  // 语义定位器 + 动作
+  | {
+      readonly action: "getbyrole";
+      readonly role: string;
+      readonly name?: string;
+      readonly exact?: boolean;
+      readonly subaction?: "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+      readonly value?: string;
+      readonly nth?: number;
+    }
+  | {
+      readonly action: "getbylabel";
+      readonly label: string;
+      readonly exact?: boolean;
+      readonly subaction?: "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+      readonly value?: string;
+    }
+  | {
+      readonly action: "getbyplaceholder";
+      readonly placeholder: string;
+      readonly exact?: boolean;
+      readonly subaction?: "click" | "fill" | "type";
+      readonly value?: string;
+    }
+  | {
+      readonly action: "getbytext";
+      readonly text: string;
+      readonly exact?: boolean;
+      readonly subaction?: "click" | "hover";
+    }
+  | {
+      readonly action: "getbyalttext";
+      readonly text: string;
+      readonly exact?: boolean;
+      readonly subaction?: "click" | "hover";
+    }
+  | {
+      readonly action: "getbytitle";
+      readonly text: string;
+      readonly exact?: boolean;
+      readonly subaction?: "click" | "hover";
+    }
+  | {
+      readonly action: "getbytestid";
+      readonly testId: string;
+      readonly subaction?: "click" | "fill" | "type";
+      readonly value?: string;
+    }
+
+  // @eN 引用操作
+  | { readonly action: "click"; readonly ref: string }
+  | { readonly action: "fill"; readonly ref: string; readonly value: string }
+  | { readonly action: "type"; readonly ref: string; readonly value: string }
+  | { readonly action: "hover"; readonly ref: string }
+
+  // 页面信息
+  | { readonly action: "snapshot" }
+  | { readonly action: "screenshot"; readonly format?: "png" | "jpeg"; readonly quality?: number }
+  | { readonly action: "eval"; readonly code: string }
+
+  // 键盘
+  | { readonly action: "press"; readonly key: string }
+
+  // 滚动
+  | { readonly action: "scroll"; readonly direction: "up" | "down" | "left" | "right"; readonly amount?: number }
+
+  // Tab 管理
+  | { readonly action: "tab_new"; readonly url?: string }
+  | { readonly action: "tab_switch"; readonly index: number }
+  | { readonly action: "tab_close"; readonly index?: number }
+  | { readonly action: "tab_list" }
+
+  // Cookie
+  | { readonly action: "cookies_get"; readonly url?: string }
+  | { readonly action: "cookies_clear" };
+```
+
+### 4.4 响应格式
+
+```typescript
+type WireResponse =
+  | {
+      readonly type: "register_result";
+      readonly success: true;
+      readonly sessionId: string;
+    }
+  | {
+      readonly type: "register_result";
+      readonly success: false;
+      readonly error: string;
+      readonly code: number;
+    }
+  | {
+      readonly type: "command_result";
+      readonly sessionId: string;
+      readonly success: true;
+      readonly data: CommandResultData;
+      readonly boundary?: ContentBoundary;
+    }
+  | {
+      readonly type: "command_result";
+      readonly sessionId: string;
+      readonly success: false;
+      readonly error: string;
+      readonly code: number;
+    }
+  | {
+      readonly type: "deregister_result";
+      readonly sessionId: string;
+      readonly success: boolean;
+    };
+```
+
+### 4.5 CommandResultData
+
+不同命令返回不同 data 结构：
+
+| action | data 内容 |
+|--------|----------|
+| navigate / back / forward / reload | `{ url: string, title: string }` |
+| getbyrole / getbylabel / ... (click 等无返回值动作) | `{}` |
+| getbyrole / getbylabel / ... (无 subaction，纯定位) | `{ found: true, count: number }` |
+| click / fill / type / hover (@ref) | `{}` |
+| snapshot | `{ aria: string }` — 带 `[ref=eN]` 标记的 ARIA 树文本 |
+| screenshot | `{ base64: string, format: string }` |
+| eval | `{ result: unknown }` |
+| press | `{}` |
+| scroll | `{}` |
+| tab_list | `{ tabs: Array<{ index: number, url: string, title: string, active: boolean }> }` |
+| tab_new / tab_switch / tab_close | `{ tabs: ... }` 同上 |
+| cookies_get | `{ cookies: Array<{ name, value, domain, path, ... }> }` |
+| cookies_clear | `{}` |
+| wait | `{}` |
+
+### 4.6 ContentBoundary
+
+防 prompt injection，对齐 agent-browser 的 content boundary nonce：
+
+```typescript
+type ContentBoundary = {
+  readonly nonce: string;   // 16 字节 hex（CSPRNG）
+  readonly origin: string;  // 页面 origin
+};
+```
+
+仅在 snapshot / eval / screenshot 等包含页面内容的响应中附带。SDK 在输出时用 nonce 包裹页面内容，防止恶意页面伪造命令输出。
+
+### 4.7 错误码
+
+对齐 agent-browser exit code + moat 新增：
+
+| code | 含义 | 场景 |
+|------|------|------|
+| 0 | 成功 | — |
+| 1 | 通用错误 | 命令执行失败 |
+| 2 | 用法错误 | 无效命令格式（arktype 验证失败） |
+| 66 | 元素未找到 | 语义定位器或 @ref 无匹配 |
+| 69 | Controller 不可达 | SDK 连不上 Controller（SDK 侧使用） |
+| 75 | 超时 | Patchright 操作超时 |
+| 77 | 无 session | 未 register 就发 command |
+| 78 | 配置错误 | 缺少必要配置 |
+| 80 | 容器创建失败 | Docker API 返回错误 |
+| 81 | CDP 不可达 | agent-chrome 的 CDP 端口无响应 |
+| 82 | Profile 拷贝失败 | cp -a 失败 |
+| 83 | Session 已过期 | session 因 idle/断连已销毁 |
+
+---
+
+## 5. Session Registry
+
+### 5.1 状态机
+
+```
+                    register
+                       │
+                       ▼
+                 ┌───────────┐
+                 │Registering│
+                 └─────┬─────┘
+                       │ profile cp -a 成功
+                       ▼
+              ┌──────────────────┐
+              │CreatingContainer │
+              └────────┬─────────┘
+                       │ docker create + start 成功
+                       ▼
+              ┌──────────────────┐
+              │ ConnectingCDP    │
+              └────────┬─────────┘
+                       │ /json/version 返回 200
+                       │ + Patchright connectOverCDP 成功
+                       ▼
+                 ┌───────────┐
+                 │  Active   │◄──────── resume（WebSocket 重连）
+                 └─────┬─────┘
+                       │
+          ┌────────────┼────────────────┐
+          │            │                │
+     idle 超时    CDP 断连       WebSocket 断连
+          │            │                │
+          ▼            ▼                ▼
+     ┌─────────┐ ┌─────────┐    ┌──────────────┐
+     │ Expired │ │ Expired │    │ Reconnecting │
+     └─────────┘ └─────────┘    └──────┬───────┘
+                                       │
+                                  5s 内无 resume
+                                       │
+                                       ▼
+                                 ┌─────────┐
+                                 │ Expired │
+                                 └─────────┘
+```
+
+### 5.2 SessionState ADT
+
+```typescript
+type SessionState =
+  | { readonly _tag: "Registering" }
+  | { readonly _tag: "CreatingContainer"; readonly profilePath: string }
+  | { readonly _tag: "ConnectingCDP"; readonly containerId: string }
+  | {
+      readonly _tag: "Active";
+      readonly containerId: string;
+      readonly containerIp: string;
+      readonly cdpUrl: string;
+      readonly browser: Browser;         // Patchright Browser 实例
+      readonly context: BrowserContext;   // 默认 context
+      readonly createdAt: number;
+      readonly lastActivity: number;
+    }
+  | { readonly _tag: "Reconnecting"; readonly since: number; readonly containerId: string }
+  | { readonly _tag: "Expired"; readonly reason: string };
+```
+
+### 5.3 Session Registry 接口
+
+```typescript
+interface SessionRegistry {
+  register(profile?: string): Promise<Result<string, ControllerError>>;
+  resume(sessionId: string): Promise<Result<void, ControllerError>>;
+  deregister(sessionId: string): Promise<Result<void, ControllerError>>;
+  get(sessionId: string): SessionState | undefined;
+  getActive(sessionId: string): Result<ActiveSession, ControllerError>;
+}
+```
+
+`getActive` 是命令执行的前置检查——从 registry 取 session，断言状态为 Active，否则返回对应错误（SessionNotFound / SessionExpired / SessionNotReady）。
+
+### 5.4 idle 超时
+
+Active session 维护 `lastActivity` 时间戳。每次命令执行更新。定时器每 30s 扫描，超过阈值（默认 10 分钟）的 session 转入 Expired，触发容器清理。
+
+### 5.5 WebSocket 断连处理
+
+1. WebSocket `close` 事件触发
+2. session 转入 Reconnecting，记录 `since` 时间戳
+3. 5 秒内 SDK 可通过新 WebSocket 连接发送 `resume` 请求
+4. resume 成功：session 回到 Active（容器和 CDP 连接不动）
+5. resume 超时：session 转入 Expired，触发容器清理
+
+---
+
+## 6. Container Manager
+
+### 6.1 职责
+
+通过 Docker Engine API（fetch + Unix socket `/var/run/docker.sock`）管理 agent-chrome 容器。
+
+### 6.2 接口
+
+```typescript
+interface ContainerManager {
+  create(sessionId: string, profilePath: string): Promise<Result<ContainerInfo, ControllerError>>;
+  destroy(sessionId: string): Promise<Result<void, ControllerError>>;
+  inspect(containerId: string): Promise<Result<ContainerInfo, ControllerError>>;
+}
+
+type ContainerInfo = {
+  readonly containerId: string;
+  readonly ip: string;
+  readonly cdpPort: number;  // 固定 9222
+};
+```
+
+### 6.3 创建流程
+
+```
+create(sessionId, profilePath):
+  1. cp -a <PROFILE_SOURCE> → <PROFILES_WORK>/agent-<sessionId>
+  2. chown -R 1000:1000 <PROFILES_WORK>/agent-<sessionId>
+  3. POST /containers/create
+     {
+       Image: "agent-chrome:latest",
+       HostConfig: {
+         Binds: ["<PROFILES_WORK>/agent-<sessionId>:/data/profile"],
+         NetworkMode: "moat",
+         ShmSize: 2147483648
+       }
+     }
+  4. POST /containers/<id>/start
+  5. GET /containers/<id>/json → 提取 IP
+  6. 轮询 http://<ip>:9222/json/version（最多 30s，间隔 500ms）
+  7. 返回 { containerId, ip, cdpPort: 9222 }
+```
+
+步骤 1-2 通过 `child_process.execFile` 执行（cp -a 和 chown 是文件系统操作）。步骤 3-6 通过 fetch + Unix socket。
+
+### 6.4 销毁流程
+
+```
+destroy(sessionId):
+  1. POST /containers/<id>/stop?t=5   （5s graceful shutdown）
+  2. DELETE /containers/<id>
+  3. rm -rf <PROFILES_WORK>/agent-<sessionId>
+```
+
+### 6.5 Docker Engine API 调用封装
+
+所有 Docker API 调用通过统一的 fetch 封装：
+
+```typescript
+async function dockerFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`http://localhost${path}`, {
+    ...init,
+    // @ts-expect-error — Node.js fetch 支持 Unix socket
+    unix: "/var/run/docker.sock",
+  });
+}
+```
+
+---
+
+## 7. CDP Bridge
+
+### 7.1 职责
+
+持有 Patchright Browser/BrowserContext/Page 实例，将 BrowserCommand 翻译为 Playwright API 调用。
+
+### 7.2 连接
+
+```typescript
+import { chromium } from "patchright";
+
+async function connectCDP(cdpUrl: string): Promise<{ browser: Browser; context: BrowserContext }> {
+  const browser = await chromium.connectOverCDP(cdpUrl);
+  const context = browser.contexts()[0];  // agent-chrome 只有一个 context
+  return { browser, context };
+}
+```
+
+`connectOverCDP` 连接到已运行的 Chrome for Testing 实例。返回的 Browser 对象可获取已有的 BrowserContext 和 Page。
+
+### 7.3 命令执行
+
+核心是一个 exhaustive switch on `command.action`：
+
+```typescript
+async function executeCommand(
+  context: BrowserContext,
+  command: BrowserCommand,
+  refStore: RefStore,
+): Promise<Result<CommandResultData, ControllerError>> {
+
+  const page = context.pages()[activeTabIndex] ?? context.pages()[0];
+
+  switch (command.action) {
+    case "navigate":
+      await page.goto(command.url, { waitUntil: "domcontentloaded" });
+      return ok({ url: page.url(), title: await page.title() });
+
+    case "back":
+      await page.goBack({ waitUntil: "domcontentloaded" });
+      return ok({ url: page.url(), title: await page.title() });
+
+    case "forward":
+      await page.goForward({ waitUntil: "domcontentloaded" });
+      return ok({ url: page.url(), title: await page.title() });
+
+    case "reload":
+      await page.reload({ waitUntil: "domcontentloaded" });
+      return ok({ url: page.url(), title: await page.title() });
+
+    case "getbyrole":
+      return executeLocatorAction(
+        page.getByRole(command.role, { name: command.name, exact: command.exact }),
+        command.subaction, command.value,
+      );
+
+    case "getbylabel":
+      return executeLocatorAction(
+        page.getByLabel(command.label, { exact: command.exact }),
+        command.subaction, command.value,
+      );
+
+    // ... 其余 getbyplaceholder / getbytext / getbyalttext / getbytitle / getbytestid 同理
+
+    case "click":
+      return executeRefAction(refStore, command.ref, "click");
+
+    case "fill":
+      return executeRefAction(refStore, command.ref, "fill", command.value);
+
+    case "snapshot":
+      // 获取 ARIA 树，标记 [ref=eN]，存入 refStore
+      ...
+
+    case "screenshot":
+      const buf = await page.screenshot({
+        type: command.format ?? "png",
+        quality: command.format === "jpeg" ? (command.quality ?? 80) : undefined,
+      });
+      return ok({ base64: buf.toString("base64"), format: command.format ?? "png" });
+
+    case "eval":
+      const result = await page.evaluate(command.code);
+      return ok({ result });
+
+    case "press":
+      await page.keyboard.press(command.key);
+      return ok({});
+
+    case "scroll":
+      await page.evaluate(({ dir, amt }) => {
+        const m = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[dir];
+        window.scrollBy(m[0] * amt, m[1] * amt);
+      }, { dir: command.direction, amt: command.amount ?? 300 });
+      return ok({});
+
+    case "tab_list":
+      return ok({
+        tabs: context.pages().map((p, i) => ({
+          index: i, url: p.url(), title: /* await */ p.title(), active: i === activeTabIndex,
+        })),
+      });
+
+    case "tab_new":
+      const newPage = await context.newPage();
+      if (command.url) await newPage.goto(command.url);
+      return ok({ /* tabs */ });
+
+    case "tab_switch":
+      activeTabIndex = command.index;
+      return ok({ /* tabs */ });
+
+    case "tab_close":
+      await context.pages()[command.index ?? activeTabIndex].close();
+      return ok({ /* tabs */ });
+
+    case "cookies_get":
+      return ok({ cookies: await context.cookies(command.url ? [command.url] : undefined) });
+
+    case "cookies_clear":
+      await context.clearCookies();
+      return ok({});
+
+    case "wait":
+      await new Promise(r => setTimeout(r, command.time ?? 1000));
+      return ok({});
+
+    default:
+      return exhaustive(command);
+  }
+}
+```
+
+### 7.4 Locator 动作执行
+
+语义定位器命令（getbyrole / getbylabel / ...）共享一个执行函数：
+
+```typescript
+async function executeLocatorAction(
+  locator: Locator,
+  subaction?: string,
+  value?: string,
+): Promise<Result<CommandResultData, ControllerError>> {
+  switch (subaction) {
+    case undefined:
+      // 纯定位，返回匹配数量
+      const count = await locator.count();
+      if (count === 0) return err({ _tag: "ElementNotFound" });
+      return ok({ found: true, count });
+
+    case "click":
+      await locator.click();
+      return ok({});
+
+    case "fill":
+      await locator.fill(value!);
+      return ok({});
+
+    case "type":
+      await locator.pressSequentially(value!);  // type() 已废弃，用 pressSequentially
+      return ok({});
+
+    case "check":
+      await locator.check();
+      return ok({});
+
+    case "uncheck":
+      await locator.uncheck();
+      return ok({});
+
+    case "hover":
+      await locator.hover();
+      return ok({});
+
+    default:
+      return exhaustive(subaction);
+  }
+}
+```
+
+### 7.5 nth 定位
+
+当语义定位器匹配多个元素时，通过 `nth` 参数选择：
+
+```typescript
+let loc = page.getByRole(command.role, { name: command.name, exact: command.exact });
+if (command.nth !== undefined) {
+  loc = loc.nth(command.nth);
+}
+```
+
+### 7.6 @eN 引用系统
+
+**Snapshot 阶段**：遍历页面 accessibility tree，每个可交互元素分配递增 ID（e1, e2, ...），存入 RefStore。
+
+**引用阶段**：命令带 `ref: "@e3"` → RefStore 查找 → 返回 Playwright Locator → 执行动作。
+
+```typescript
+interface RefStore {
+  /** snapshot 时调用，清空旧引用，存入新引用 */
+  update(sessionId: string, refs: Map<string, Locator>): void;
+  /** 命令执行时调用，根据 @eN 返回 Locator */
+  resolve(sessionId: string, ref: string): Locator | undefined;
+}
+```
+
+**引用生命周期**：
+- 每次 `snapshot` 命令清空并重建整个 RefMap
+- 页面导航 → 引用全部失效（下次 snapshot 重建）
+- tab 切换 → 引用失效（每个 tab 独立）
+- 引用不跨 session
+
+### 7.7 错误映射
+
+Patchright/Playwright 异常 → ControllerError → 错误码：
+
+| Playwright 异常 | ControllerError._tag | code |
+|-----------------|---------------------|------|
+| `TimeoutError`（元素未找到） | ElementNotFound | 66 |
+| `TimeoutError`（导航超时） | Timeout | 75 |
+| `Error: Target closed` | CdpDisconnected | 81 |
+| `Error: Execution context destroyed` | CdpDisconnected | 81 |
+| 其他 | CommandFailed | 1 |
+
+区分两种 TimeoutError：检查 error message 是否包含定位器相关关键词（`waiting for locator`、`waiting for selector`）。包含则为 ElementNotFound (66)，否则为 Timeout (75)。
+
+---
+
+## 8. WebSocket Server
+
+### 8.1 连接模型
+
+一个 WebSocket 连接绑定一个 session。连接建立后，client 必须先发 `register` 或 `resume`，之后才能发 `command`。
+
+```
+Client                          Server
+  │                               │
+  ├── ws connect ────────────────►│
+  │                               │
+  ├── { type: "register" } ──────►│  创建 session
+  │◄── { type: "register_result"} │  返回 sessionId
+  │                               │
+  ├── { type: "command", ... } ──►│  执行命令
+  │◄── { type: "command_result" } │  返回结果
+  │                               │
+  ├── { type: "command", ... } ──►│  ...
+  │◄── { type: "command_result" } │
+  │                               │
+  ├── { type: "deregister" } ────►│  销毁 session
+  │◄── { type: "deregister_result"}│
+  │                               │
+  └── ws close ──────────────────►│
+```
+
+### 8.2 消息路由
+
+```typescript
+ws.on("message", async (raw) => {
+  const parsed = wireRequestSchema(JSON.parse(raw));  // arktype 验证
+  if (parsed instanceof type.errors) {
+    ws.send(JSON.stringify({ type: "error", error: "Invalid request", code: 2 }));
+    return;
+  }
+
+  switch (parsed.type) {
+    case "register":
+      const result = await registry.register(parsed.profile);
+      // ...
+      break;
+    case "resume":
+      // ...
+      break;
+    case "command":
+      const session = registry.getActive(parsed.sessionId);
+      if (session instanceof Error) { /* 返回错误 */ }
+      const cmdResult = await cdpBridge.execute(session, parsed.command);
+      // ...
+      break;
+    case "deregister":
+      // ...
+      break;
+    default:
+      exhaustive(parsed);
+  }
+});
+```
+
+### 8.3 请求-响应对齐
+
+wire 协议是严格的 request-response 模式（不是 pub-sub）。每条请求恰好产生一条响应。SDK 侧可以据此简化实现——发一条 JSON，等一条 JSON 回来。
+
+不使用 request ID 做多路复用。一个 WebSocket 连接同一时刻只有一个 in-flight 请求。这简化了 SDK 和 Controller 的实现，且 Agent 的使用模式本身是串行的（发命令 → 等结果 → 发下一条）。
+
+---
+
+## 9. register 全链路
+
+将 Session Registry、Container Manager、CDP Bridge 三个模块串联：
+
+```
+SDK                     Controller
+ │                         │
+ ├─ register ─────────────►│
+ │                         ├─ SessionRegistry: 创建 entry (Registering)
+ │                         │
+ │                         ├─ ContainerManager.create()
+ │                         │    ├─ cp -a profile
+ │                         │    ├─ chown 1000:1000
+ │                         │    ├─ SessionRegistry: → CreatingContainer
+ │                         │    ├─ docker create + start
+ │                         │    ├─ SessionRegistry: → ConnectingCDP
+ │                         │    ├─ 轮询 :9222/json/version
+ │                         │    └─ 返回 { containerId, ip }
+ │                         │
+ │                         ├─ CdpBridge.connect(ip:9222)
+ │                         │    ├─ patchright.chromium.connectOverCDP
+ │                         │    └─ 返回 { browser, context }
+ │                         │
+ │                         ├─ SessionRegistry: → Active
+ │                         │    (存入 containerId, ip, browser, context)
+ │                         │
+ │◄─ register_result ──────│  { success: true, sessionId }
+ │                         │
+```
+
+任何步骤失败 → 回滚已创建的资源（停容器、删 profile 拷贝）→ 返回对应错误码。
+
+---
+
+## 10. 错误处理
+
+### 10.1 ControllerError ADT
+
+```typescript
+type ControllerError =
+  | { readonly _tag: "SessionNotFound"; readonly sessionId: string }
+  | { readonly _tag: "SessionExpired"; readonly sessionId: string; readonly reason: string }
+  | { readonly _tag: "SessionNotReady"; readonly sessionId: string; readonly state: string }
+  | { readonly _tag: "ContainerCreateFailed"; readonly message: string }
+  | { readonly _tag: "CdpUnreachable"; readonly containerId: string }
+  | { readonly _tag: "CdpDisconnected"; readonly containerId: string }
+  | { readonly _tag: "ProfileCopyFailed"; readonly message: string }
+  | { readonly _tag: "ElementNotFound"; readonly selector?: string }
+  | { readonly _tag: "Timeout"; readonly operation: string }
+  | { readonly _tag: "CommandFailed"; readonly message: string }
+  | { readonly _tag: "ValidationFailed"; readonly message: string };
+```
+
+### 10.2 错误到 Wire 响应的映射
+
+```typescript
+function errorToWireResponse(sessionId: string, error: ControllerError): WireResponse {
+  const codeMap: Record<ControllerError["_tag"], number> = {
+    SessionNotFound: 77,
+    SessionExpired: 83,
+    SessionNotReady: 77,
+    ContainerCreateFailed: 80,
+    CdpUnreachable: 81,
+    CdpDisconnected: 81,
+    ProfileCopyFailed: 82,
+    ElementNotFound: 66,
+    Timeout: 75,
+    CommandFailed: 1,
+    ValidationFailed: 2,
+  };
+
+  return {
+    type: "command_result",
+    sessionId,
+    success: false,
+    error: formatError(error),  // 人类可读的错误描述
+    code: codeMap[error._tag],
+  };
+}
+```
+
+### 10.3 CDP 断连恢复
+
+Patchright Browser 实例的 `disconnected` 事件触发时：
+1. session 转入 Expired（reason: "CDP disconnected"）
+2. 触发容器清理
+3. 下次 SDK 发命令 → 收到 SessionExpired 错误 (code 83)
+4. SDK/CLI 需要重新 `connect`
+
+不尝试自动重连 CDP。agent-chrome 容器的 Chrome 崩溃意味着该 session 的浏览器状态已丢失，自动重连没有意义。
+
+---
+
+## 11. 配置
+
+```typescript
+type ControllerConfig = {
+  /** WebSocket 监听端口 */
+  readonly port: number;                    // 默认 3000
+  /** 源 profile 目录（user-chrome 挂载） */
+  readonly profileSource: string;           // 默认 /data/profile
+  /** profile 拷贝工作目录 */
+  readonly profilesWork: string;            // 默认 /data/profiles
+  /** Docker 网络名 */
+  readonly dockerNetwork: string;           // 默认 "moat"
+  /** agent-chrome 镜像 */
+  readonly agentChromeImage: string;        // 默认 "agent-chrome:latest"
+  /** session idle 超时（毫秒） */
+  readonly sessionIdleTimeout: number;      // 默认 600000 (10 分钟)
+  /** WebSocket 断连重连窗口（毫秒） */
+  readonly reconnectWindow: number;         // 默认 5000
+  /** CDP 就绪轮询超时（毫秒） */
+  readonly cdpReadyTimeout: number;         // 默认 30000
+  /** Patchright 命令默认超时（毫秒） */
+  readonly commandTimeout: number;          // 默认 25000
+};
+```
+
+来源优先级：环境变量 > 配置文件 > 代码默认值。
+
+环境变量映射：
+
+| 环境变量 | 配置字段 |
+|---------|---------|
+| `PORT` | port |
+| `PROFILE_SOURCE` | profileSource |
+| `PROFILES_WORK` | profilesWork |
+| `DOCKER_NETWORK` | dockerNetwork |
+| `AGENT_CHROME_IMAGE` | agentChromeImage |
+| `SESSION_IDLE_TIMEOUT` | sessionIdleTimeout |
+| `RECONNECT_WINDOW` | reconnectWindow |
+| `CDP_READY_TIMEOUT` | cdpReadyTimeout |
+| `COMMAND_TIMEOUT` | commandTimeout |
