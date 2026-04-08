@@ -1,6 +1,8 @@
 import type { WebSocket } from "ws";
 import type { Browser } from "patchright";
+import { randomBytes } from "node:crypto";
 import {
+  type ContentBoundary,
   type ControllerError,
   type WireRequest,
   type WireResponse,
@@ -301,11 +303,22 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       return errorToWireResponse(sessionId, result.error);
     }
 
+    // §5.6: Attach ContentBoundary for commands that return page content
+    const needsBoundary =
+      result.value._tag === "SnapshotResult" ||
+      result.value._tag === "ScreenshotResult" ||
+      result.value._tag === "EvalResult";
+
+    const boundary: ContentBoundary | undefined = needsBoundary
+      ? { nonce: randomBytes(16).toString("hex"), origin: activeResult.value.cdpUrl }
+      : undefined;
+
     return {
       type: "command_result",
       sessionId,
       success: true,
       data: result.value,
+      ...(boundary ? { boundary } : {}),
     };
   }
 
