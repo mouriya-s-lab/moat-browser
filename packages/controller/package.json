@@ -14,7 +14,8 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@moat-browser/types": "workspace:*"
+    "@moat-browser/types": "workspace:*",
+    "patchright": "^1.59.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
