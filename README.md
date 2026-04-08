@@ -41,42 +41,46 @@
 ```
                      Agent (Claude Code / Cursor)
                            │
-                           │ shell 命令
-                           ▼
-         ┌─────────────────────────────────────────────┐
-         │                                             │
-         │  moat CLI (Rust)          Shim SDK (TS)     │
-         │  ← fork 自 agent-browser  ← 独立 TS 库       │
-         │  ← 修改 transport 层      ← 程序化调用        │
-         │  ← Agent 主入口           ← 第三方 CLI 基座    │
-         │                                             │
-         └───────────────────┬─────────────────────────┘
-                             │ 相同 wire 协议
-                             │ (agent-browser daemon JSON + session envelope)
-                             ▼
-                        WebSocket
-                             │
-              ┌──────────────▼──────────┐
-              │       Controller        │
-              │                         │
-              │  WebSocket Server       │  ← 实现 agent-browser daemon 协议
-              │  Session Registry       │  ← session → 容器映射
-              │  Container Manager      │  ← Docker Engine API
-              │  Patchright CDP Bridge  │  ← connectOverCDP 执行命令
-              │                         │
-              └────────────┬────────────┘
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-   ┌──────▼──────┐  ┌─────▼──────┐  ┌──────▼─────┐
-   │ user-chrome  │  │ agent-chr  │  │ agent-chr  │
-   │              │  │ #1         │  │ #2         │
-   │ neko WebRTC  │  │ CDP :9222  │  │ CDP :9222  │
-   │ + Chromium   │  │ Chromium   │  │ Chromium   │
-   │              │  │            │  │            │
-   │ /data/profile│  │ /profile-1 │  │ /profile-2 │
-   │ (源 profile) │  │ (cp -a)   │  │ (cp -a)   │
-   └──────────────┘  └────────────┘  └────────────┘
+               ┌───────────┴───────────┐
+               │ shell 命令            │ TS import
+               ▼                       ▼
+        ┌─────────────┐        ┌─────────────┐
+        │ moat CLI    │        │ TS 程序      │
+        │ (Rust)      │        │ / 第三方 CLI  │
+        └──────┬──────┘        └──────┬──────┘
+               │                      │
+        ┌──────▼──────┐        ┌──────▼──────┐
+        │  Rust SDK   │        │   TS SDK    │
+        │  (RPC 客户端)│        │  (RPC 客户端)│
+        └──────┬──────┘        └──────┬──────┘
+               │                      │
+               └──────────┬───────────┘
+                          │ 相同 wire 协议
+                          │ (agent-browser daemon JSON + session envelope)
+                          ▼
+                     WebSocket
+                          │
+           ┌──────────────▼──────────┐
+           │       Controller        │
+           │                         │
+           │  WebSocket Server       │  ← 实现 wire 协议服务端
+           │  Session Registry       │  ← session → 容器映射
+           │  Container Manager      │  ← Docker Engine API
+           │  Patchright CDP Bridge  │  ← connectOverCDP 执行命令
+           │                         │
+           └────────────┬────────────┘
+                        │
+       ┌────────────────┼────────────────┐
+       │                │                │
+┌──────▼──────┐  ┌──────▼─────┐  ┌──────▼─────┐
+│ user-chrome  │  │ agent-chr  │  │ agent-chr  │
+│              │  │ #1         │  │ #2         │
+│ neko WebRTC  │  │ CDP :9222  │  │ CDP :9222  │
+│ + Chromium   │  │ Chromium   │  │ Chromium   │
+│              │  │            │  │            │
+│ /data/profile│  │ /profile-1 │  │ /profile-2 │
+│ (源 profile) │  │ (cp -a)   │  │ (cp -a)   │
+└──────────────┘  └────────────┘  └────────────┘
 ```
 
 ### 3.2 三个容器的职责
@@ -105,22 +109,34 @@ browser-rpc.md 原始设计是单容器：neko + Chromium + agent-browser-sessio
 
 ```
 Agent 侧                                 平台侧 (VM 104)
-┌──────────────────┐                ┌──────────────────────────┐
-│ moat CLI (Rust)  │   WebSocket    │ Controller (Node.js)     │
-│ fork 自          │◄──────────────►│                          │
-│ agent-browser    │  agent-browser │  实现 agent-browser       │
-│                  │  daemon JSON   │  daemon 协议              │
-│ $ moat find role │  + session     │                           │
-│     button ...   │  envelope      │  Session Registry         │
-│ $ moat find label│                │  → 定位 agent-chrome      │
-│     "Email" fill │                │                           │
-│ $ moat snapshot  │                │  Patchright               │
-│ $ moat screenshot│                │    connectOverCDP(:9222)  │
-│                  │                │    getByRole()            │
-└──────────────────┘                │    getByLabel()           │
-                                    │    click() / fill()       │
-                                    │    ariaSnapshot()         │
-                                    └──────────────┬───────────┘
+
+路径 A: Rust CLI
+┌──────────────────┐
+│ moat CLI (Rust)  │
+│                  │
+│ $ moat find role │
+│     button ...   │
+│ $ moat find label│
+│     "Email" fill │
+│ $ moat snapshot  │
+│ $ moat screenshot│
+└────────┬─────────┘
+         │ 调用
+┌────────▼─────────┐                ┌──────────────────────────┐
+│   Rust SDK       │   WebSocket    │ Controller (Node.js)     │
+│   (RPC 客户端)    │◄──────────────►│                          │
+└──────────────────┘  wire 协议      │  WebSocket Server        │
+                                    │  Session Registry         │
+路径 B: TS SDK                       │  → 定位 agent-chrome      │
+┌──────────────────┐                │                           │
+│ TS 程序 /        │                │  Patchright               │
+│ 第三方 TS CLI    │                │    connectOverCDP(:9222)  │
+└────────┬─────────┘                │    getByRole()            │
+         │ import                   │    getByLabel()           │
+┌────────▼─────────┐                │    click() / fill()       │
+│    TS SDK        │   WebSocket    │    ariaSnapshot()         │
+│   (RPC 客户端)    │◄──────────────►│                          │
+└──────────────────┘  wire 协议      └──────────────┬───────────┘
                                                    │
                                          ┌─────────▼─────────┐
                                          │ agent-chrome       │
@@ -129,16 +145,16 @@ Agent 侧                                 平台侧 (VM 104)
                                          └───────────────────┘
 ```
 
-命令完整路径：
+命令完整路径（以 Rust CLI 为例，TS SDK 路径等价）：
 
 1. Agent 在 shell 中执行 CLI 命令（如 `moat find role button --name "Submit"`）
-2. moat CLI（fork 自 agent-browser）解析命令为 agent-browser daemon JSON 格式
-3. fork 修改过的 transport 层通过 WebSocket 发送到远程 Controller（而非本地 Unix socket）
-4. Controller 实现了 agent-browser daemon 协议的服务端，通过 Session Registry 定位对应 agent-chrome 容器
+2. moat CLI 解析命令，调用 Rust SDK 的 RPC 方法
+3. Rust SDK 将命令序列化为 wire 协议 JSON，通过 WebSocket 发送到远程 Controller
+4. Controller 通过 Session Registry 定位对应 agent-chrome 容器
 5. Controller 通过 Patchright `connectOverCDP("http://<container_ip>:9222")` 执行命令，语义定位器直接映射到 Playwright 的 `getByRole()` / `getByLabel()` 等
-6. 结果以 agent-browser 相同的 JSON 格式回传 → CLI stdout → Agent
+6. 结果以 wire 协议 JSON 回传 → SDK 反序列化 → CLI 格式化输出 → Agent
 
-TypeScript 程序也可以绕过 CLI，直接用 Shim SDK（同样实现了客户端协议）调用 Controller。
+TS 程序可以直接 import TS SDK 调用，也可以通过 TS SDK 构建 opencli / CLI-Anything 风格的 CLI 包装。
 
 ---
 
@@ -300,27 +316,47 @@ rm -rf /data/profiles/agent-<id>/
 
 ---
 
-## 8. Shim SDK 设计
+## 8. SDK 设计
 
-### 8.1 定位：独立 TS 库，实现 wire 协议客户端
+### 8.1 定位：RPC 抽象层，CLI 的基座
 
-Shim SDK 是**独立的 TypeScript 库**，实现 Controller 的客户端协议（见 Section 9.4 的 wire 协议）。它和 moat CLI 是**两个并行的客户端实现**：
+SDK 是 moat-browser 的**核心客户端抽象**，实现 wire 协议（Section 10.1）的客户端侧。所有 CLI 和程序化调用都建在 SDK 之上，SDK 不是 CLI 的附属品。
 
-| 客户端 | 语言 | 消费者 | 来源 |
-|--------|------|--------|------|
-| moat CLI | Rust | Agent（shell 调用） | fork 自 agent-browser |
-| Shim SDK | TypeScript | TS/JS 程序、第三方 CLI 包装 | 独立实现 |
+**双实现**：TS 和 Rust 各一个 SDK，实现相同的 wire 协议：
 
-两者说**完全相同的 wire 协议**（agent-browser daemon JSON + session envelope），连到同一个 Controller。CLI 不 wrap SDK，SDK 不 wrap CLI —— 它们是独立实现，共享协议规范。
+| SDK | 语言 | 消费者 |
+|-----|------|--------|
+| TS SDK | TypeScript | TS/JS 程序、opencli 风格 CLI、CLI-Anything 风格 CLI |
+| Rust SDK | Rust | moat CLI（agent-browser 命令词汇） |
 
-这种双客户端的重复是刻意的：
-- moat CLI 跟上游 agent-browser 的 Rust 代码演进，尽量保持最小 diff
-- Shim SDK 服务 TS 生态 —— 其他团队想基于 opencli / CLI-Anything 风格做 CLI 包装，可以直接 import Shim SDK，不需要碰 Rust
+**分层关系**：
 
-### 8.2 API
+```
+┌─────────────────────────────────────────────────┐
+│                   CLI 层                         │
+│  moat CLI (Rust)  │  TS CLI 包装 (可选)           │
+│  命令解析 + 输出格式 │  opencli / CLI-Anything 风格  │
+├───────────────────┼─────────────────────────────┤
+│                   SDK 层                         │
+│    Rust SDK       │       TS SDK                 │
+│  WebSocket + 序列化 │  WebSocket + 序列化           │
+├─────────────────────────────────────────────────┤
+│              Wire 协议（单一契约）                  │
+│     agent-browser daemon JSON + session envelope │
+└─────────────────────────────────────────────────┘
+```
+
+这种双 SDK 不是冗余，而是服务两个生态：
+- **Rust SDK** → Rust CLI 二进制，Agent 的主入口（shell 调用零开销）
+- **TS SDK** → TS 生态，第三方团队可以直接 import 构建任意风格的 CLI 包装，也可以在 TS 程序中程序化调用
+
+SDK 的通用性要求：agent-browser CLI、opencli、CLI-Anything 三种风格的 CLI 都能在 SDK 基础上复刻，SDK 不假设任何特定的 CLI 模式。
+
+### 8.2 SDK 核心 API（两个实现共享的语义）
 
 ```typescript
-import { createSession } from "@moat-browser/shim";
+// TS SDK 示例（Rust SDK 暴露等价 API）
+import { createSession } from "@moat-browser/sdk";
 
 const session = await createSession({
   controller: "ws://192.168.1.200:3000",
@@ -345,30 +381,29 @@ await session.click("@e3");
 await session.disconnect();
 ```
 
-API 表面尽量跟 Playwright 的 locator API 对齐，因为 agent-browser 的语义定位器本来就是 Playwright 的封装。TS 消费者可以用熟悉的 `getByRole` / `getByLabel` 心智模型。
+API 表面对齐 Playwright locator API，因为 agent-browser 的语义定位器就是 Playwright 的封装。
 
-### 8.3 连接管理
+### 8.3 SDK 职责边界
 
-- `createSession()`：发送 session 建立请求 → Controller 创建容器 + CDP → 返回 session 对象
-- WebSocket 断连 → 5s 内自动重连 + session resume
-- `disconnect()`：Controller 销毁容器 + 清理 profile 拷贝
+SDK **负责**：
+- WebSocket 连接管理（建连、断连重连、心跳）
+- Session 生命周期（connect → active → disconnect）
+- 命令序列化 / 响应反序列化（wire 协议编解码）
+- 结构化结果返回（`Result | Error` union）
 
-### 8.4 Shim SDK 不负责的事
-
-- **不做 CLI 壳**：CLI 是 Rust fork，不走 Shim SDK
-- **不做 REPL**：Agent 不能用 REPL（见 Section 9.2 交互模型）
-- **不做输出格式化**：SDK 返回结构化对象，格式化是 CLI 壳的职责
-- **不做 exit code**：SDK 用异常和结果类型表达错误，exit code 是 CLI 壳的职责
+SDK **不负责**：
+- 命令解析（CLI 层的职责）
+- 输出格式化（CLI 层的职责）
+- Exit code（CLI 层的职责）
+- REPL（Agent 不能用 REPL，见 Section 9.2）
 
 ---
 
 ## 9. CLI 设计
 
-### 9.1 设计原则：fork agent-browser，只改 transport
+### 9.1 设计原则：fork agent-browser，transport 层换成 Rust SDK
 
-moat CLI **不是**重新设计的工具，**不是**从三个项目挑 pattern 拼出来的。
-
-moat CLI **是 agent-browser（`github.com/vercel-labs/agent-browser`）的 fork**，唯一实质修改是 transport 层：
+moat CLI **是 agent-browser（`github.com/vercel-labs/agent-browser`）的 fork**。upstream 更新时可以直接 merge，只有 transport 层有冲突。
 
 - **保留**（从 agent-browser 不动的）：
   - 命令词汇：`open`、`click`、`fill`、`find role/label/text/placeholder/alt/title/testid`、`snapshot`、`screenshot`、`eval`、`wait`、`press`、`scroll`、`tab`、`batch`、`cookies` 等全部
@@ -376,17 +411,18 @@ moat CLI **是 agent-browser（`github.com/vercel-labs/agent-browser`）的 fork
   - 输出格式：text 模式 + `--json` 模式 + content boundary nonce
   - Exit code 体系
   - 配置文件合并规则（user > project > CLI flag）
-- **修改**（只改这里）：
-  - `cli/src/connection.rs`：从"Unix socket → 本地 daemon → 本地 Chrome"改为"WebSocket → 远程 Controller → 远程容器 Chrome"
-  - 命令 JSON 加一层 session envelope（标识目标 session）
-- **新增**：
-  - `moat connect` / `moat disconnect` / `moat status`：session 生命周期管理（因为需要远程创建/销毁容器）
+- **修改**（唯一实质改动）：
+  - transport 层：原来直接走本地 Unix socket → 本地 daemon，改为调用 Rust SDK → 远程 WebSocket → Controller
+- **新增**（远程容器需要显式 session 管理）：
+  - `moat connect` / `moat disconnect` / `moat status`
+
+与旧设计的区别：旧设计是 CLI 自己内联 WebSocket 连接逻辑（改 `connection.rs`）。新设计是 CLI 调用 Rust SDK，SDK 封装 WebSocket + wire 协议。效果一样（CLI fork + 只改 transport），但 transport 实现被抽到 SDK 里，TS 侧可以复用同一抽象。
 
 理由：
-1. agent-browser 的设计已经被 Agent 实战验证，命令词汇 / 定位器 / 输出格式都是成熟方案，重新发明只会更差
+1. agent-browser 的设计已被 Agent 实战验证，命令词汇 / 定位器 / 输出格式都是成熟方案，重新发明只会更差
 2. Agent 迁移成本为零 —— 会用 agent-browser 的 Agent 直接能用 moat-browser
-3. 可以持续跟上游迭代
-4. 我们真正的独特价值是**把浏览器放到远程容器里**，其他都不是我们的创新空间
+3. 可以持续跟上游迭代（merge upstream，只有 transport 层冲突）
+4. transport 层抽到 SDK 后，TS SDK 复用同一 wire 协议抽象，第三方可用 TS SDK 构建 opencli / CLI-Anything 风格的 CLI 包装
 
 ### 9.2 Agent 交互模型：语义意图 → 语义定位器
 
@@ -438,7 +474,7 @@ moat find role button --name "Edit" --nth 3
 
 ### 9.3 命令参考
 
-CLI 命令词汇完整继承自 agent-browser，详见上游文档：`github.com/vercel-labs/agent-browser`。本文档不重复列表，只列出 moat-browser **新增**或**行为有差异**的命令。
+CLI 命令词汇完整继承自 agent-browser fork，详见上游文档：`github.com/vercel-labs/agent-browser`。本文档不重复列表，只列出 moat-browser **新增**或**行为有差异**的命令。
 
 **新增命令**（session 生命周期，因为远程容器需要显式管理）：
 
@@ -448,9 +484,9 @@ CLI 命令词汇完整继承自 agent-browser，详见上游文档：`github.com
 | `moat disconnect` | 销毁 session：Controller 停止并删除容器、清理 profile 拷贝。清除 `~/.moat/session` |
 | `moat status` | 查询当前 session：容器 IP、CDP 端口、profile 名称、存活时长 |
 
-**行为差异命令**：
+**与 agent-browser 的行为差异**：
 
-| 命令 | 上游行为 | moat 行为 |
+| 命令 | agent-browser 行为 | moat 行为 |
 |------|---------|----------|
 | （所有命令） | 隐式自动启动本地 daemon + 本地 Chrome | 需要先 `moat connect`，返回 exit 77 如未连接 |
 
@@ -472,7 +508,7 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 }
 ```
 
-`command` 字段的结构完全等同于 agent-browser daemon 收到的 JSON（见 `cli/src/commands.rs` 的 `parse_command` 和 `cli/src/connection.rs` 的 `send_command`）。Controller 实现这个协议的服务端即可。
+`command` 字段的结构就是 agent-browser daemon 的 JSON 格式（见 fork 中 `cli/src/commands.rs` 的 `parse_command`）。两个 SDK（TS + Rust）负责编码这个结构，Controller 实现服务端解码。
 
 响应也同样：
 
@@ -490,21 +526,23 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 
 ### 9.5 Session 管理（moat 新增）
 
-agent-browser 的 daemon 是本地进程，启动即绑定到本地 Chrome，不需要显式 session 管理。moat 因为容器在远程，必须显式管理 session 生命周期：
+agent-browser 的 daemon 是本地进程，启动即绑定到本地 Chrome，不需要显式 session 管理。moat 因为容器在远程，必须显式管理 session 生命周期。Session 管理由 SDK 层实现，CLI 只是调用 SDK 的 session API：
 
 ```
-moat connect
+moat connect  (CLI 命令)
     │
-    └─ WebSocket → Controller
+    └─ Rust SDK.connect()
          │
-         ├─ cp -a /data/profile → /data/profiles/<session-id>/
-         ├─ docker create agent-chrome（挂载 profile 拷贝）
-         ├─ 等待 CDP :9222 就绪
-         └─ Patchright connectOverCDP
+         └─ WebSocket → Controller
               │
-              └─ 返回 session-id
-                 │
-                 └─ CLI 写入 ~/.moat/session
+              ├─ cp -a /data/profile → /data/profiles/<session-id>/
+              ├─ docker create agent-chrome（挂载 profile 拷贝）
+              ├─ 等待 CDP :9222 就绪
+              └─ Patchright connectOverCDP
+                   │
+                   └─ 返回 session-id
+                      │
+                      └─ SDK 持有 session-id，CLI 写入 ~/.moat/session
 ```
 
 后续命令：
@@ -512,7 +550,7 @@ moat connect
 ```
 moat find role button --name "Submit"
     │
-    └─ 读 ~/.moat/session 拿 session-id
+    └─ CLI 读 ~/.moat/session → Rust SDK.command(sessionId, ...)
          │
          └─ WebSocket → Controller（带 sessionId）
               │
@@ -524,12 +562,14 @@ moat find role button --name "Submit"
 ```
 moat disconnect
     │
-    └─ WebSocket → Controller
+    └─ Rust SDK.disconnect()
          │
-         ├─ 停止并删除容器
-         └─ rm -rf /data/profiles/<session-id>/
-            │
-            └─ CLI 清除 ~/.moat/session
+         └─ WebSocket → Controller
+              │
+              ├─ 停止并删除容器
+              └─ rm -rf /data/profiles/<session-id>/
+                 │
+                 └─ CLI 清除 ~/.moat/session
 ```
 
 **配置**：
@@ -548,10 +588,10 @@ export MOAT_PROFILE="default"
 
 opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借鉴**：
 
-- **opencli 的 exit code 约定**：如果 agent-browser 上游没有覆盖某些场景（如 `NO_SESSION = 77`），借 opencli 的 sysexits.h 习惯补齐。
-- **CLI-Anything 的 SKILL.md 随包分发**：SKILL.md 文件打进 npm 包，装包即自动发现，不需要额外配置。
+- **opencli 的 exit code 约定**：借 sysexits.h 习惯补齐 session 相关错误码（如 `NO_SESSION = 77`）。
+- **CLI-Anything 的 SKILL.md 随包分发**：SKILL.md 文件打进包，装包即自动发现。
 
-第三方（或后续）要做 opencli 风格、CLI-Anything 风格、或任何其他 CLI 包装，直接基于 Shim SDK 实现客户端即可，不需要改 moat CLI。
+因为 SDK 是通用的 RPC 抽象，第三方可以基于 TS SDK 构建任意风格的 CLI 包装（opencli 风格、CLI-Anything 风格等），不需要碰 moat CLI 或 Rust SDK。
 
 ### 9.7 SKILL.md
 
@@ -617,28 +657,27 @@ moat batch                       — stdin: [[cmd, args...], ...]
 
 ## 10. ADT 类型系统
 
-### 10.1 Wire 协议命令 schema 对齐 agent-browser
+### 10.1 Wire 协议：SDK 与 Controller 之间的单一契约
 
-CLI ↔ Controller 之间传输的**命令 schema 不是本项目发明的**，而是 agent-browser daemon 协议的 JSON 格式（见上游 `cli/src/commands.rs` 的 `parse_command`）。本项目的 `packages/types` 只做两件事：
+Wire 协议是整个系统的中心契约 —— 两个 SDK（TS + Rust）编码同一个 JSON schema，Controller 解码。命令 schema 对齐 agent-browser daemon 协议格式，加上 session envelope（agent-browser 没有，moat 新增）。
 
-1. **定义 session envelope**（agent-browser 没有，moat 新增，因为多容器多 session）
-2. **用 arktype 给 upstream 命令 schema 做运行时验证**（TypeScript 侧解码 Rust CLI 发来的 JSON 时用）
+`packages/types` 是 wire 协议的 **canonical 定义**（TypeScript + arktype），Rust SDK 端需要保持等价的 schema。
 
 Session envelope：
 
 ```typescript
 type WireRequest = {
   readonly sessionId: string;
-  readonly command: UpstreamCommand;  // agent-browser 的命令 JSON（任何 action）
+  readonly command: BrowserCommand;  // 对齐 agent-browser daemon JSON
 };
 
 type WireResponse = {
   readonly sessionId: string;
-  readonly response: UpstreamResponse;  // agent-browser 的响应 JSON
+  readonly response: BrowserResponse;  // 对齐 agent-browser 响应 JSON
 };
 ```
 
-`UpstreamCommand` / `UpstreamResponse` 的字段结构跟着上游走，通过 arktype schema 表达，用于 Controller 端解析和 Shim SDK 构造。不重新发明 `BrowserCommand` / `BrowserResult` ADT。
+`BrowserCommand` / `BrowserResponse` 的字段结构对齐 agent-browser，通过 arktype schema 做运行时验证。TS SDK 和 Controller 直接使用这些类型，Rust SDK 维护等价的 Rust struct + serde 定义。
 
 ### 10.2 Controller 内部 ADT
 
@@ -670,7 +709,8 @@ ControllerError 在序列化到 wire 时，映射到 agent-browser 响应的 `er
 - arktype 做运行时验证，TypeScript 类型做编译时检查
 - 函数返回 `Result | Error` union，不 throw
 - 不使用 `any`、`as` 类型断言（除非与第三方库交互必须）
-- **不重新发明 agent-browser 的命令/响应 schema**，只加 session envelope 和 Controller 内部 ADT
+- 命令/响应 schema 对齐 agent-browser，不重新发明；moat 只加 session envelope 和 Controller 内部 ADT
+- `packages/types` 是 wire 协议的 canonical 定义，Rust SDK 保持等价 schema
 
 ---
 
@@ -726,21 +766,21 @@ Bun 在 qemu64 CPU 上会 hang。VM 必须使用 `cpu: host`。
 
 - 仓库：`github.com/vercel-labs/agent-browser`
 - 许可：Apache-2.0
-- 关系：**moat CLI 是这个项目的 fork**。保留命令词汇、语义定位器、`@eN` 引用、输出格式、exit code、batch 等全部设计，唯一实质修改是 `cli/src/connection.rs` 的 transport 层（本地 Unix socket → 远程 WebSocket）。Controller 实现它 daemon 协议的服务端。
+- 关系：**moat CLI 是这个项目的 fork**。保留命令词汇、语义定位器、`@eN` 引用、输出格式、exit code、batch 等全部代码。唯一实质修改是 transport 层：从本地 Unix socket 改为调用 Rust SDK（远程 WebSocket）。upstream 更新时可直接 merge，只有 transport 层会产生冲突。
 - 技术：Rust 原生二进制 + 本地 daemon + Chrome for Testing + CDP 直连
 
 ### opencli（增强参考）
 
 - 仓库：`github.com/jackwener/opencli`
 - 许可：MIT
-- 用途：**不是主设计**。特定维度借鉴：exit code 的 sysexits.h 约定（用于 moat 新增的 session 相关错误码，如 `NO_SESSION = 77`）。第三方可以基于 Shim SDK 实现 opencli 风格的 CLI 包装。
+- 用途：**不是主设计**。特定维度借鉴：exit code 的 sysexits.h 约定（如 `NO_SESSION = 77`）。第三方可以基于 TS SDK 实现 opencli 风格的 CLI 包装。
 - 技术：TypeScript + Node.js/Bun
 
 ### CLI-Anything（增强参考）
 
 - 仓库：`github.com/HKUDS/CLI-Anything`
 - 许可：MIT
-- 用途：**不是主设计**。特定维度借鉴：SKILL.md 随 npm 包自动分发的做法（`skills/moat/SKILL.md` 打进包里，Claude Code / Cursor 装包即自动发现）。第三方可以基于 Shim SDK 实现 CLI-Anything 风格的 CLI 包装。
+- 用途：**不是主设计**。特定维度借鉴：SKILL.md 随包自动分发的做法。第三方可以基于 TS SDK 实现 CLI-Anything 风格的 CLI 包装。
 - 技术：Python + Click
 
 ---
@@ -749,25 +789,29 @@ Bun 在 qemu64 CPU 上会 hang。VM 必须使用 `cpu: host`。
 
 ```
 moat-browser/
-├── cli/                # Rust crate — fork 自 vercel-labs/agent-browser
-│   ├── Cargo.toml      # (其他 TS 包是 Bun workspace，这里是独立 Rust crate)
-│   ├── src/
-│   │   ├── commands.rs    # 来自 upstream，不修改
-│   │   ├── connection.rs  # 唯一实质修改：本地 Unix socket → 远程 WebSocket
-│   │   ├── main.rs        # 加 session 管理命令（connect/disconnect/status）
+├── cli/                # Rust workspace — fork 自 vercel-labs/agent-browser
+│   ├── Cargo.toml      # Rust workspace root
+│   ├── sdk/            # Rust SDK crate — RPC 客户端库（moat 新增）
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── lib.rs     # WebSocket 连接、session 管理、命令编解码
+│   ├── src/            # CLI 二进制（fork 自 agent-browser）
+│   │   ├── commands.rs    # 来自 upstream，保持同步
+│   │   ├── connection.rs  # 唯一实质修改：transport 层改为调用 Rust SDK
+│   │   ├── main.rs        # 加 connect/disconnect/status 命令
 │   │   └── ...            # 其余文件保持 upstream 同步
 │   └── UPSTREAM.md     # 记录与 upstream 的 diff、合并策略
 ├── packages/           # Bun workspace（TS/Node）
-│   ├── types/          # 共享 ADT 类型 + arktype schema + wire 协议定义
-│   ├── controller/     # Node.js —— 实现 agent-browser daemon 协议服务端
-│   ├── shim/           # TS SDK —— 独立客户端，供 TS 程序和第三方 CLI 包装使用
+│   ├── types/          # Wire 协议 canonical 定义 + ADT + arktype schema
+│   ├── sdk/            # TS SDK — RPC 客户端库
+│   ├── controller/     # Node.js — wire 协议服务端
 │   └── e2e/            # E2E 测试
 ├── images/
 │   ├── user-chrome/    # User Chrome 镜像 (neko + Chromium)
 │   └── agent-chrome/   # Agent Chrome 镜像 (Chrome for Testing + CDP)
 ├── skills/
 │   └── moat/
-│       └── SKILL.md    # Agent 可发现性文档，随 CLI 包分发
+│       └── SKILL.md    # Agent 可发现性文档，随包分发
 ├── README.md           # 设计文档
 ├── CLAUDE.md           # 无人值守开发指南
 ├── package.json
@@ -775,7 +819,7 @@ moat-browser/
 └── tsconfig.json
 ```
 
-**关于 Rust + TS 混合**：`cli/` 是独立 Rust crate，不在 Bun workspace 里。构建和测试各自独立。理由：fork 自 Rust upstream，强行改语言会丢失跟上游合并的能力。
+**关于 Rust + TS 混合**：`cli/` 是 fork 自 agent-browser 的 Rust workspace，不在 Bun workspace 里。`cli/sdk/` 是 moat 新增的 crate，封装 wire 协议客户端；CLI 二进制的 `connection.rs` 改为调用 SDK 而非本地 Unix socket，其余代码保持 upstream 同步。`packages/types` 是 wire 协议的 canonical 定义，Rust SDK 维护等价的 serde schema。
 
 ---
 
@@ -786,11 +830,13 @@ moat-browser/
 | 1 | Browser VM IaC (Terraform + Ansible) | ✅ 完成 |
 | 2 | User Chrome Docker 镜像 (neko + Chromium) | Open |
 | 3 | Agent Chrome Docker 镜像 (从零组装，Chrome for Testing + CDP) | Open |
-| 4 | Wire 协议定义（agent-browser daemon JSON + session envelope）+ Controller 服务端实现（Node.js + Patchright） | Open |
-| 5 | Profile 管理（冻结/拷贝/快照） | Open |
-| 6 | CLI fork：fork `vercel-labs/agent-browser`，修改 `connection.rs` 走 WebSocket，加 `connect`/`disconnect`/`status` 命令，打包 SKILL.md | Open |
-| 7 | Shim SDK（独立 TS 库实现同 wire 协议，供 TS 程序和第三方 CLI 包装使用） | Open |
-| 8 | E2E 测试框架（覆盖 CLI 和 Shim SDK 两条路径） | Open |
+| 4 | Wire 协议定义（`packages/types`：agent-browser daemon JSON + session envelope） | Open |
+| 5 | TS SDK（`packages/sdk`：RPC 客户端库，实现 wire 协议） | Open |
+| 6 | Controller 服务端实现（`packages/controller`：Node.js + Patchright，wire 协议服务端） | Open |
+| 7 | Profile 管理（冻结/拷贝/快照） | Open |
+| 8 | Rust SDK（`cli/sdk`：RPC 客户端库，等价 TS SDK 的 wire 协议实现） | Open |
+| 9 | CLI fork（fork agent-browser，`connection.rs` 改为调用 Rust SDK，加 session 管理命令，打包 SKILL.md） | Open |
+| 10 | E2E 测试框架（覆盖 Rust CLI 和 TS SDK 两条路径） | Open |
 
 ---
 
