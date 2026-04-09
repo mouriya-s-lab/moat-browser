@@ -232,6 +232,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moat-cli"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "moat-sdk",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "moat-sdk"
 version = "0.1.0"
 dependencies = [
