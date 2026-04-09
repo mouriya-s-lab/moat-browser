@@ -87,6 +87,28 @@ export type WaitResult = {
   readonly result?: string;
 };
 
+export type GetTextResult = {
+  readonly _tag: "GetTextResult";
+  readonly text: string;
+};
+
+export type GetValueResult = {
+  readonly _tag: "GetValueResult";
+  readonly value: string;
+};
+
+export type GetHtmlResult = {
+  readonly _tag: "GetHtmlResult";
+  readonly html: string;
+};
+
+export type BooleanResult = {
+  readonly _tag: "BooleanResult";
+  readonly visible?: boolean;
+  readonly enabled?: boolean;
+  readonly checked?: boolean;
+};
+
 export type CommandResultData =
   | NavigateResult
   | VoidResult
@@ -96,7 +118,11 @@ export type CommandResultData =
   | EvalResult
   | TabResult
   | CookiesResult
-  | WaitResult;
+  | WaitResult
+  | GetTextResult
+  | GetValueResult
+  | GetHtmlResult
+  | BooleanResult;
 
 // ─── ControllerError ───
 
@@ -233,7 +259,19 @@ export type BrowserCommand =
 
   // Cookie
   | { readonly action: "cookies_get"; readonly url?: string }
-  | { readonly action: "cookies_clear" };
+  | { readonly action: "cookies_clear" }
+
+  // 元素属性查询 (get)
+  | { readonly action: "gettext"; readonly selector: string }
+  | { readonly action: "innertext"; readonly selector: string }
+  | { readonly action: "innerhtml"; readonly selector: string }
+  | { readonly action: "inputvalue"; readonly selector: string }
+  | { readonly action: "getattribute"; readonly selector: string; readonly attribute: string }
+
+  // 元素状态查询 (is)
+  | { readonly action: "isvisible"; readonly selector: string }
+  | { readonly action: "isenabled"; readonly selector: string }
+  | { readonly action: "ischecked"; readonly selector: string };
 
 // ─── WireRequest ───
 
@@ -359,7 +397,15 @@ const browserCommandSchema = type({
   .or({ action: "'tab_close'", "index?": "number" })
   .or({ action: "'tab_list'" })
   .or({ action: "'cookies_get'", "url?": "string" })
-  .or({ action: "'cookies_clear'" });
+  .or({ action: "'cookies_clear'" })
+  .or({ action: "'gettext'", selector: "string" })
+  .or({ action: "'innertext'", selector: "string" })
+  .or({ action: "'innerhtml'", selector: "string" })
+  .or({ action: "'inputvalue'", selector: "string" })
+  .or({ action: "'getattribute'", selector: "string", attribute: "string" })
+  .or({ action: "'isvisible'", selector: "string" })
+  .or({ action: "'isenabled'", selector: "string" })
+  .or({ action: "'ischecked'", selector: "string" });
 
 export const wireRequestSchema = type({
   type: "'register'",
