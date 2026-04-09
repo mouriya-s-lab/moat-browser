@@ -256,16 +256,16 @@ run_test "W4" 0 wait load
 "$MOAT" open "https://the-internet.herokuapp.com/login" >/dev/null 2>&1
 
 # TEST: G1 — get text
-run_test "G1" 0 get "#username" text
+run_test "G1" 0 get text "#username"
 
 # TEST: G2 — get value
-run_test "G2" 0 get "#username" value
+run_test "G2" 0 get value "#username"
 
 # TEST: G3 — is visible
-run_test "G3" 0 is "#username" visible
+run_test "G3" 0 is visible "#username"
 
 # TEST: G4 — is enabled
-run_test "G4" 0 is "#username" enabled
+run_test "G4" 0 is enabled "#username"
 
 "$MOAT" disconnect >/dev/null 2>&1 || true
 
@@ -328,7 +328,7 @@ run_test "P1a" 0 check "input[type=checkbox]:first-child"
 run_test "P1b" 0 uncheck "input[type=checkbox]:first-child"
 
 # TEST: P1c — is checked
-run_test "P1c" 0 is "input[type=checkbox]:first-child" checked
+run_test "P1c" 0 is checked "input[type=checkbox]:first-child"
 
 "$MOAT" open "https://the-internet.herokuapp.com/dropdown" >/dev/null 2>&1
 
@@ -345,7 +345,7 @@ run_test "P1f" 0 keyboard type "hello"
 
 # TEST: P1g — press key then get result
 "$MOAT" press "a" >/dev/null 2>&1
-run_test "P1g" 0 get "#result" text
+run_test "P1g" 0 get text "#result"
 
 "$MOAT" disconnect >/dev/null 2>&1 || true
 
@@ -366,10 +366,10 @@ run_test "J3" 0 eval --json "document.title"
 run_test "J4" 0 cookies --json
 
 # TEST: J5 — get text --json
-run_test "J5" 0 get --json "h1" text
+run_test "J5" 0 get --json text "h1"
 
 # TEST: J6 — is visible --json
-run_test "J6" 0 is --json "h1" visible
+run_test "J6" 0 is --json visible "h1"
 
 # TEST: J7 — tab list --json
 run_test "J7" 0 tab list --json
