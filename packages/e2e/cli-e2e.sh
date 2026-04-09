@@ -88,7 +88,7 @@ run_test "N5" 0 reload
 "$MOAT" open "https://example.com" >/dev/null 2>&1
 
 # TEST: L1 — find role link with name
-run_test "L1" 0 find role link --name "More information..."
+run_test "L1" 0 find role link --name "Learn more"
 
 # TEST: L2 — find role heading with name
 run_test "L2" 0 find role heading --name "Example Domain"
@@ -241,13 +241,13 @@ run_test "W1" 0 wait 2000
 
 # TEST: W2 — click Start then wait for text
 "$MOAT" find role button --name "Start" click >/dev/null 2>&1
-run_test "W2" 0 wait text "Hello World!"
+run_test "W2" 0 wait --text "Hello World!"
 
 # TEST: W3 — wait for URL pattern (already matching)
-run_test "W3" 0 wait url "*/dynamic_loading*"
+run_test "W3" 0 wait --url "*/dynamic_loading*"
 
 # TEST: W4 — wait for load state
-run_test "W4" 0 wait load
+run_test "W4" 0 wait --load load
 
 "$MOAT" disconnect >/dev/null 2>&1 || true
 
