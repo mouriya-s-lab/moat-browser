@@ -280,6 +280,11 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     sessionId: string,
     command: Parameters<typeof executeCommand>[1],
   ): Promise<WireResponse> {
+    // close → deregister
+    if (command.action === "close") {
+      return handleDeregister(conn, sessionId);
+    }
+
     // Verify session is active
     const activeResult = registry.getActive(sessionId);
     if (activeResult._tag === "Err") {
