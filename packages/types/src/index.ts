@@ -288,7 +288,26 @@ export type BrowserCommand =
   // evaluate alias + batch + close
   | { readonly action: "evaluate"; readonly script: string }
   | { readonly action: "batch"; readonly commands: ReadonlyArray<BrowserCommand>; readonly bail?: boolean }
-  | { readonly action: "close" };
+  | { readonly action: "close" }
+
+  // P1 元素操作
+  | { readonly action: "dblclick"; readonly selector: string }
+  | { readonly action: "check"; readonly selector: string }
+  | { readonly action: "uncheck"; readonly selector: string }
+  | { readonly action: "select"; readonly selector: string; readonly values: string | ReadonlyArray<string> }
+  | { readonly action: "focus"; readonly selector: string }
+  | { readonly action: "keyboard"; readonly subaction: "type" | "insertText"; readonly text: string }
+  | { readonly action: "keydown"; readonly key: string }
+  | { readonly action: "keyup"; readonly key: string }
+  | { readonly action: "scrollintoview"; readonly selector: string }
+  | { readonly action: "nth"; readonly selector: string; readonly index: number; readonly subaction?: string; readonly value?: string }
+  | { readonly action: "upload"; readonly selector: string; readonly files: ReadonlyArray<string> }
+  | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{ readonly name: string; readonly value: string; readonly url?: string; readonly domain?: string; readonly path?: string }> }
+  | { readonly action: "dialog"; readonly response: "accept" | "dismiss" | "status"; readonly text?: string }
+  | { readonly action: "frame"; readonly selector: string }
+  | { readonly action: "mainframe" }
+  | { readonly action: "console"; readonly clear?: boolean }
+  | { readonly action: "errors"; readonly clear?: boolean };
 
 // ─── WireRequest ───
 
@@ -425,7 +444,24 @@ const browserCommandSchema = type({
   .or({ action: "'ischecked'", selector: "string" })
   .or({ action: "'evaluate'", script: "string" })
   .or({ action: "'batch'", commands: type("object").array(), "bail?": "boolean" })
-  .or({ action: "'close'" });
+  .or({ action: "'close'" })
+  .or({ action: "'dblclick'", selector: "string" })
+  .or({ action: "'check'", selector: "string" })
+  .or({ action: "'uncheck'", selector: "string" })
+  .or({ action: "'select'", selector: "string", values: "string | string[]" })
+  .or({ action: "'focus'", selector: "string" })
+  .or({ action: "'keyboard'", subaction: "'type' | 'insertText'", text: "string" })
+  .or({ action: "'keydown'", key: "string" })
+  .or({ action: "'keyup'", key: "string" })
+  .or({ action: "'scrollintoview'", selector: "string" })
+  .or({ action: "'nth'", selector: "string", index: "number", "subaction?": "string", "value?": "string" })
+  .or({ action: "'upload'", selector: "string", files: "string[]" })
+  .or({ action: "'cookies_set'", cookies: type({ name: "string", value: "string", "url?": "string", "domain?": "string", "path?": "string" }).array() })
+  .or({ action: "'dialog'", response: "'accept' | 'dismiss' | 'status'", "text?": "string" })
+  .or({ action: "'frame'", selector: "string" })
+  .or({ action: "'mainframe'" })
+  .or({ action: "'console'", "clear?": "boolean" })
+  .or({ action: "'errors'", "clear?": "boolean" });
 
 export const wireRequestSchema = type({
   type: "'register'",

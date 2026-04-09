@@ -538,6 +538,95 @@ export async function executeCommand(
       case "close":
         return ok({ _tag: "VoidResult" } as const);
 
+      // ─── P1 element operations ───
+
+      case "dblclick":
+        await page.locator(command.selector).dblclick();
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "check":
+        await page.locator(command.selector).check();
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "uncheck":
+        await page.locator(command.selector).uncheck();
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "select": {
+        const values = Array.isArray(command.values) ? command.values : [command.values];
+        await page.locator(command.selector).selectOption(values);
+        return ok({ _tag: "VoidResult" } as const);
+      }
+
+      case "focus":
+        await page.locator(command.selector).focus();
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "keyboard":
+        if (command.subaction === "type") {
+          await page.keyboard.type(command.text);
+        } else {
+          await page.keyboard.insertText(command.text);
+        }
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "keydown":
+        await page.keyboard.down(command.key);
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "keyup":
+        await page.keyboard.up(command.key);
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "scrollintoview":
+        await page.locator(command.selector).scrollIntoViewIfNeeded();
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "nth": {
+        const loc = page.locator(command.selector).nth(command.index);
+        if (command.subaction === "click") {
+          await loc.click();
+        } else if (command.subaction === "fill" && command.value) {
+          await loc.fill(command.value);
+        } else if (command.subaction === "type" && command.value) {
+          await loc.pressSequentially(command.value);
+        } else if (command.subaction === "hover") {
+          await loc.hover();
+        }
+        return ok({ _tag: "VoidResult" } as const);
+      }
+
+      case "upload":
+        await page.locator(command.selector).setInputFiles(command.files as string[]);
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "cookies_set":
+        await context.addCookies(command.cookies.map(c => ({
+          name: c.name, value: c.value,
+          url: c.url, domain: c.domain, path: c.path ?? "/",
+        })));
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "dialog":
+        // Dialog status/accept/dismiss — requires listener setup
+        // For now return void; full dialog state tracking is a follow-up
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "frame":
+        // Frame switching requires tracking active frame context — follow-up
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "mainframe":
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "console":
+        // Console log collection requires listener setup — follow-up
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "errors":
+        // Error collection requires listener setup — follow-up
+        return ok({ _tag: "VoidResult" } as const);
+
       default:
         return exhaustive(command);
     }
