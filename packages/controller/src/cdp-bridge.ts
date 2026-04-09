@@ -97,17 +97,33 @@ async function executeLocatorAction(
   }
 }
 
-// ─── executeRefAction ───
+// ─── resolveLocator ───
 
-async function executeRefAction(
+function resolveLocator(
+  page: Page,
   refStore: RefStore,
   sessionId: string,
-  ref: string,
+  ref?: string,
+  selector?: string,
+): Locator | null {
+  if (ref) return refStore.resolve(sessionId, ref) ?? null;
+  if (selector) return page.locator(selector);
+  return null;
+}
+
+// ─── executeElementAction ───
+
+async function executeElementAction(
+  page: Page,
+  refStore: RefStore,
+  sessionId: string,
+  ref: string | undefined,
+  selector: string | undefined,
   action: "click" | "fill" | "type" | "hover",
   value?: string,
 ): Promise<Result<CommandResultData, ControllerError>> {
-  const locator = refStore.resolve(sessionId, ref);
-  if (!locator) return err({ _tag: "ElementNotFound", selector: ref } as const);
+  const locator = resolveLocator(page, refStore, sessionId, ref, selector);
+  if (!locator) return err({ _tag: "ElementNotFound", selector: ref ?? selector } as const);
 
   switch (action) {
     case "click":
@@ -296,16 +312,16 @@ export async function executeCommand(
         );
 
       case "click":
-        return executeRefAction(refStore, sessionId, command.ref, "click");
+        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "click");
 
       case "fill":
-        return executeRefAction(refStore, sessionId, command.ref, "fill", command.value);
+        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "fill", command.value);
 
       case "type":
-        return executeRefAction(refStore, sessionId, command.ref, "type", command.value);
+        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "type", command.text);
 
       case "hover":
-        return executeRefAction(refStore, sessionId, command.ref, "hover");
+        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "hover");
 
       case "snapshot": {
         const snapshot = await buildAriaSnapshot(page, refStore, sessionId);

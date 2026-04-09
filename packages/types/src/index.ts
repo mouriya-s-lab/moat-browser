@@ -196,11 +196,11 @@ export type BrowserCommand =
       readonly value?: string;
     }
 
-  // @eN 引用操作
-  | { readonly action: "click"; readonly ref: string }
-  | { readonly action: "fill"; readonly ref: string; readonly value: string }
-  | { readonly action: "type"; readonly ref: string; readonly value: string }
-  | { readonly action: "hover"; readonly ref: string }
+  // @eN 引用 / CSS selector 操作
+  | { readonly action: "click"; readonly ref?: string; readonly selector?: string; readonly newTab?: boolean }
+  | { readonly action: "fill"; readonly ref?: string; readonly selector?: string; readonly value: string }
+  | { readonly action: "type"; readonly ref?: string; readonly selector?: string; readonly text: string }
+  | { readonly action: "hover"; readonly ref?: string; readonly selector?: string }
 
   // 页面信息
   | { readonly action: "snapshot" }
@@ -322,10 +322,10 @@ const browserCommandSchema = type({
     "subaction?": "'click' | 'fill' | 'type'",
     "value?": "string",
   })
-  .or({ action: "'click'", ref: "string" })
-  .or({ action: "'fill'", ref: "string", value: "string" })
-  .or({ action: "'type'", ref: "string", value: "string" })
-  .or({ action: "'hover'", ref: "string" })
+  .or({ action: "'click'", "ref?": "string", "selector?": "string", "newTab?": "boolean" })
+  .or({ action: "'fill'", "ref?": "string", "selector?": "string", value: "string" })
+  .or({ action: "'type'", "ref?": "string", "selector?": "string", text: "string" })
+  .or({ action: "'hover'", "ref?": "string", "selector?": "string" })
   .or({ action: "'snapshot'" })
   .or({
     action: "'screenshot'",
