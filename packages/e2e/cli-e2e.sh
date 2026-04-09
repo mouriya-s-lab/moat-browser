@@ -5,6 +5,8 @@ set -uo pipefail
 # Phase 1: Session lifecycle tests (S1-S6)
 # Phase 2: Navigation (N1-N5), Semantic locators (L1-L8), Snapshot + @ref (R1-R3)
 # Phase 3: CSS selector (C1-C4), Page info (P1-P7), Keyboard (K1-K5), Tab (T1-T5), Cookie (CK1-CK3)
+# Phase 4: Wait (W1-W4), Get/Is (G1-G4), Evaluate (E1-E3), Batch (B1), Close (X1-X2),
+#           P1 ops (P1a-P1g), JSON (J1-J7), Exit codes (EC1-EC4)
 # No assertions — human reviews log output.
 
 MOAT="${MOAT:-./cli/target/release/moat}"
@@ -228,6 +230,185 @@ run_test "CK2" 0 cookies --json
 # TEST: CK3 — cookies clear
 run_test "CK3" 0 cookies clear
 
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# ─── Phase 4: Wait (W1-W4) ───
+"$MOAT" connect >/dev/null 2>&1
+"$MOAT" open "https://the-internet.herokuapp.com/dynamic_loading/1" >/dev/null 2>&1
+
+# TEST: W1 — wait fixed time
+run_test "W1" 0 wait 2000
+
+# TEST: W2 — click Start then wait for text
+"$MOAT" find role button --name "Start" click >/dev/null 2>&1
+run_test "W2" 0 wait text "Hello World!"
+
+# TEST: W3 — wait for URL pattern (already matching)
+run_test "W3" 0 wait url "*/dynamic_loading*"
+
+# TEST: W4 — wait for load state
+run_test "W4" 0 wait load
+
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# ─── Phase 4: Get/Is (G1-G4) ───
+"$MOAT" connect >/dev/null 2>&1
+"$MOAT" open "https://the-internet.herokuapp.com/login" >/dev/null 2>&1
+
+# TEST: G1 — get text
+run_test "G1" 0 get "#username" text
+
+# TEST: G2 — get value
+run_test "G2" 0 get "#username" value
+
+# TEST: G3 — is visible
+run_test "G3" 0 is "#username" visible
+
+# TEST: G4 — is enabled
+run_test "G4" 0 is "#username" enabled
+
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# ─── Phase 4: Evaluate (E1-E3) ───
+"$MOAT" connect >/dev/null 2>&1
+"$MOAT" open "https://the-internet.herokuapp.com/login" >/dev/null 2>&1
+
+# TEST: E1 — eval document.title
+run_test "E1" 0 eval "document.title"
+
+# TEST: E2 — eval JSON.stringify
+run_test "E2" 0 eval "JSON.stringify({a:1})"
+
+# TEST: E3 — eval window.location.href
+run_test "E3" 0 eval "window.location.href"
+
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# ─── Phase 4: Batch (B1) ───
+"$MOAT" connect >/dev/null 2>&1
+
+# TEST: B1 — batch via stdin
+b1_name="B1"
+TOTAL=$((TOTAL + 1))
+echo "=== TEST: $b1_name ==="
+set +e
+b1_output=$(echo '[["open","https://example.com"],["eval","document.title"]]' | "$MOAT" batch 2>&1)
+b1_code=$?
+set -e
+echo "$b1_output"
+echo "exit: $b1_code"
+if [ "$b1_code" -eq 0 ]; then
+  echo "PASS"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL (expected exit 0, got $b1_code)"
+  FAIL=$((FAIL + 1))
+fi
+echo ""
+
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# ─── Phase 4: Close (X1-X2) ───
+"$MOAT" connect >/dev/null 2>&1
+
+# TEST: X1 — close session
+run_test "X1" 0 close
+
+# TEST: X2 — status after close → exit 77
+run_test "X2" 77 status
+
+# ─── Phase 4: P1 Element Operations (P1a-P1g) ───
+"$MOAT" connect >/dev/null 2>&1
+"$MOAT" open "https://the-internet.herokuapp.com/checkboxes" >/dev/null 2>&1
+
+# TEST: P1a — check checkbox
+run_test "P1a" 0 check "input[type=checkbox]:first-child"
+
+# TEST: P1b — uncheck checkbox
+run_test "P1b" 0 uncheck "input[type=checkbox]:first-child"
+
+# TEST: P1c — is checked
+run_test "P1c" 0 is "input[type=checkbox]:first-child" checked
+
+"$MOAT" open "https://the-internet.herokuapp.com/dropdown" >/dev/null 2>&1
+
+# TEST: P1d — select dropdown
+run_test "P1d" 0 select "#dropdown" "Option 1"
+
+"$MOAT" open "https://the-internet.herokuapp.com/key_presses" >/dev/null 2>&1
+
+# TEST: P1e — focus element
+run_test "P1e" 0 focus "#target"
+
+# TEST: P1f — keyboard type
+run_test "P1f" 0 keyboard type "hello"
+
+# TEST: P1g — press key then get result
+"$MOAT" press "a" >/dev/null 2>&1
+run_test "P1g" 0 get "#result" text
+
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# ─── Phase 4: JSON Mode Spot-Checks (J1-J7) ───
+"$MOAT" connect >/dev/null 2>&1
+"$MOAT" open "https://example.com" >/dev/null 2>&1
+
+# TEST: J1 — snapshot --json
+run_test "J1" 0 snapshot --json
+
+# TEST: J2 — screenshot --json
+run_test "J2" 0 screenshot --json
+
+# TEST: J3 — eval --json
+run_test "J3" 0 eval --json "document.title"
+
+# TEST: J4 — cookies --json
+run_test "J4" 0 cookies --json
+
+# TEST: J5 — get text --json
+run_test "J5" 0 get --json "h1" text
+
+# TEST: J6 — is visible --json
+run_test "J6" 0 is --json "h1" visible
+
+# TEST: J7 — tab list --json
+run_test "J7" 0 tab list --json
+
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# ─── Phase 4: Exit Code Verification (EC1-EC4) ───
+
+# TEST: EC1 — successful command → exit 0
+"$MOAT" connect >/dev/null 2>&1
+run_test "EC1" 0 open "https://example.com"
+"$MOAT" disconnect >/dev/null 2>&1 || true
+
+# TEST: EC2 — no session → exit 77
+rm -f ~/.moat/session 2>/dev/null || true
+run_test "EC2" 77 status
+
+# TEST: EC3 — no MOAT_CONTROLLER → exit 78
+ec3_name="EC3"
+TOTAL=$((TOTAL + 1))
+echo "=== TEST: $ec3_name ==="
+set +e
+ec3_output=$(MOAT_CONTROLLER="" "$MOAT" connect 2>&1)
+ec3_code=$?
+set -e
+echo "$ec3_output"
+echo "exit: $ec3_code"
+if [ "$ec3_code" -eq 78 ]; then
+  echo "PASS"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL (expected exit 78, got $ec3_code)"
+  FAIL=$((FAIL + 1))
+fi
+echo ""
+
+# TEST: EC4 — unknown command → exit 1
+"$MOAT" connect >/dev/null 2>&1
+run_test "EC4" 1 nonexistent-command
 "$MOAT" disconnect >/dev/null 2>&1 || true
 
 # ─── RESULTS ───
