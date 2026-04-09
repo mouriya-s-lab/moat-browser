@@ -89,55 +89,65 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     const conn: ConnectionState = { sessionId: undefined, cdp: undefined };
 
     ws.on("message", async (raw) => {
-      let data: unknown;
       try {
-        data = JSON.parse(String(raw));
-      } catch {
-        ws.send(JSON.stringify({ type: "error", error: "Invalid request", code: 2 }));
-        return;
-      }
+        let data: unknown;
+        try {
+          data = JSON.parse(String(raw));
+        } catch {
+          ws.send(JSON.stringify({ type: "error", error: "Invalid request", code: 2 }));
+          return;
+        }
 
-      const validated = wireRequestSchema(data);
-      if (validated instanceof type.errors) {
-        ws.send(JSON.stringify({ type: "error", error: "Invalid request", code: 2 }));
-        return;
-      }
-      // Third-party library interaction — arktype infer union needs explicit cast
-      const parsed = validated as WireRequest;
+        const validated = wireRequestSchema(data);
+        if (validated instanceof type.errors) {
+          ws.send(JSON.stringify({ type: "error", error: "Invalid request", code: 2 }));
+          return;
+        }
+        // Third-party library interaction — arktype infer union needs explicit cast
+        const parsed = validated as WireRequest;
 
-      switch (parsed.type) {
-        case "register": {
-          const response = await handleRegister(conn, parsed.profile);
-          ws.send(JSON.stringify(response));
-          if (response.type === "register_result" && response.success) {
-            sessionConnections.set(conn.sessionId!, { ws, cdp: conn.cdp });
+        switch (parsed.type) {
+          case "register": {
+            const response = await handleRegister(conn, parsed.profile);
+            ws.send(JSON.stringify(response));
+            if (response.type === "register_result" && response.success) {
+              sessionConnections.set(conn.sessionId!, { ws, cdp: conn.cdp });
+            }
+            break;
           }
-          break;
-        }
 
-        case "resume": {
-          const response = await handleResume(conn, parsed.sessionId);
-          ws.send(JSON.stringify(response));
-          if (response.type === "register_result" && response.success) {
-            sessionConnections.set(conn.sessionId!, { ws, cdp: conn.cdp });
+          case "resume": {
+            const response = await handleResume(conn, parsed.sessionId);
+            ws.send(JSON.stringify(response));
+            if (response.type === "register_result" && response.success) {
+              sessionConnections.set(conn.sessionId!, { ws, cdp: conn.cdp });
+            }
+            break;
           }
-          break;
-        }
 
-        case "command": {
-          const response = await handleCommand(conn, parsed.sessionId, parsed.command);
-          ws.send(JSON.stringify(response));
-          break;
-        }
+          case "command": {
+            const response = await handleCommand(conn, parsed.sessionId, parsed.command);
+            ws.send(JSON.stringify(response));
+            break;
+          }
 
-        case "deregister": {
-          const response = await handleDeregister(conn, parsed.sessionId);
-          ws.send(JSON.stringify(response));
-          break;
-        }
+          case "deregister": {
+            const response = await handleDeregister(conn, parsed.sessionId);
+            ws.send(JSON.stringify(response));
+            break;
+          }
 
-        default:
-          exhaustive(parsed);
+          default:
+            exhaustive(parsed);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("Unhandled message error:", msg);
+        try {
+          ws.send(JSON.stringify({ type: "error", error: `Internal error: ${msg}`, code: 1 }));
+        } catch {
+          // ws already closed
+        }
       }
     });
 
