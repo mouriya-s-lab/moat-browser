@@ -165,7 +165,7 @@ export type SessionState =
       readonly createdAt: number;
       readonly lastActivity: number;
     }
-  | { readonly _tag: "Reconnecting"; readonly since: number; readonly containerId: string }
+  | { readonly _tag: "Reconnecting"; readonly since: number; readonly containerId: string; readonly containerIp: string; readonly cdpUrl: string }
   | { readonly _tag: "Expired"; readonly reason: string };
 
 // ─── ErrorCode ───

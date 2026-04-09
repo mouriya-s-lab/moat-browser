@@ -125,13 +125,13 @@ export function createSessionRegistry(
       clearTimeout(entry.reconnectTimer);
       entry.reconnectTimer = undefined;
     }
-    // Restore Active state — containerId preserved from Reconnecting
+    // Restore Active state — containerId, containerIp, cdpUrl preserved from Reconnecting
     const now = Date.now();
     entry.state = {
       _tag: "Active",
       containerId: entry.state.containerId,
-      containerIp: "",  // ws-server will re-fill via transition if needed
-      cdpUrl: "",
+      containerIp: entry.state.containerIp,
+      cdpUrl: entry.state.cdpUrl,
       createdAt: now,
       lastActivity: now,
     };
@@ -179,8 +179,8 @@ export function createSessionRegistry(
     if (entry.state._tag !== "Active") {
       return Err({ _tag: "SessionNotReady", sessionId, state: entry.state._tag });
     }
-    const containerId = entry.state.containerId;
-    entry.state = { _tag: "Reconnecting", since: Date.now(), containerId };
+    const { containerId, containerIp, cdpUrl } = entry.state;
+    entry.state = { _tag: "Reconnecting", since: Date.now(), containerId, containerIp, cdpUrl };
 
     // Start reconnect timeout
     entry.reconnectTimer = setTimeout(() => {

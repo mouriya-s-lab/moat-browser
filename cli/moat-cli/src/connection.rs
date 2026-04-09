@@ -29,13 +29,10 @@ impl Connection {
     }
 }
 
-/// Synchronous wrapper for sending a command (for compatibility with upstream main.rs flow).
-pub fn send_command(cmd: Value, controller_url: &str) -> Result<Response, String> {
-    let rt = tokio::runtime::Handle::current();
-    rt.block_on(async {
-        let mut conn = Connection::connect(controller_url)
-            .await
-            .map_err(|e| e.to_string())?;
-        conn.send(cmd).await.map_err(|e| e.to_string())
-    })
+/// Send a command through a fresh connection to the Controller.
+pub async fn send_command(cmd: Value, controller_url: &str) -> Result<Response, String> {
+    let mut conn = Connection::connect(controller_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    conn.send(cmd).await.map_err(|e| e.to_string())
 }
