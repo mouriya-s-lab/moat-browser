@@ -109,6 +109,15 @@ impl MoatClient {
                     obj.insert("code".into(), script);
                 }
             }
+
+            // @eN in selector → move to ref field (CLI puts @refs in selector,
+            // but Controller expects them in ref for refStore lookup)
+            if let Some(sel) = obj.get("selector").and_then(|v| v.as_str()).map(String::from) {
+                if sel.starts_with("@e") || sel.starts_with("@") {
+                    obj.remove("selector");
+                    obj.insert("ref".into(), Value::String(sel));
+                }
+            }
         }
 
         // close → deregister
