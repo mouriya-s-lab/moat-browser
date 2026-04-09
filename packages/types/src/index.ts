@@ -55,7 +55,7 @@ export type LocatorResult = {
 
 export type SnapshotResult = {
   readonly _tag: "SnapshotResult";
-  readonly aria: string;
+  readonly snapshot: string;
 };
 
 export type ScreenshotResult = {
@@ -66,7 +66,7 @@ export type ScreenshotResult = {
 
 export type EvalResult = {
   readonly _tag: "EvalResult";
-  readonly json: string;
+  readonly result: string;
 };
 
 export type TabResult = {
