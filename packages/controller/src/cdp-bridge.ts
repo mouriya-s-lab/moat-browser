@@ -254,13 +254,27 @@ export async function executeCommand(
       }
 
       case "back": {
-        await page.goBack({ waitUntil: "domcontentloaded" });
+        const urlBefore = page.url();
+        try {
+          await page.goBack({ waitUntil: "domcontentloaded", timeout: 3000 });
+        } catch {
+          if (page.url() === urlBefore) {
+            return err({ _tag: "CommandFailed", message: "No back history" } as const);
+          }
+        }
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
 
       case "forward": {
-        await page.goForward({ waitUntil: "domcontentloaded" });
+        const urlBefore = page.url();
+        try {
+          await page.goForward({ waitUntil: "domcontentloaded", timeout: 3000 });
+        } catch {
+          if (page.url() === urlBefore) {
+            return err({ _tag: "CommandFailed", message: "No forward history" } as const);
+          }
+        }
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
