@@ -19,6 +19,8 @@ import type {
   GetValueResult,
   GetHtmlResult,
   BooleanResult,
+  BatchResult,
+  BatchResultEntry,
 } from "@moat-browser/types";
 import { exhaustive } from "@moat-browser/types";
 import type { RefStore } from "./ref-store.js";
@@ -505,6 +507,36 @@ export async function executeCommand(
         const r: BooleanResult = { _tag: "BooleanResult", checked };
         return ok(r);
       }
+
+      // ─── evaluate alias ───
+
+      case "evaluate": {
+        const raw = await page.evaluate(command.script);
+        const r: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
+        return ok(r);
+      }
+
+      // ─── batch ───
+
+      case "batch": {
+        const entries: BatchResultEntry[] = [];
+        for (const sub of command.commands) {
+          const subResult = await executeCommand(context, sub, refStore, sessionId);
+          if (subResult._tag === "Ok") {
+            entries.push({ success: true, data: subResult.value });
+          } else {
+            entries.push({ success: false, error: subResult.error._tag });
+            if (command.bail) break;
+          }
+        }
+        const r: BatchResult = { _tag: "BatchResult", results: entries };
+        return ok(r);
+      }
+
+      // ─── close (handled by ws-server as deregister) ───
+
+      case "close":
+        return ok({ _tag: "VoidResult" } as const);
 
       default:
         return exhaustive(command);
