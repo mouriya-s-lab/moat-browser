@@ -286,7 +286,7 @@ async fn main() {
 
     let output_opts = OutputOptions::from_flags(&flags);
 
-    match send_command(cmd.clone(), &url) {
+    match send_command(cmd.clone(), &url).await {
         Ok(resp) => {
             let success = resp.success;
             let action = cmd.get("action").and_then(|v| v.as_str());
@@ -370,7 +370,7 @@ async fn run_batch(flags: &flags::Flags) {
             }
         };
 
-        match send_command(cmd.clone(), &url) {
+        match send_command(cmd.clone(), &url).await {
             Ok(resp) => {
                 let action = cmd.get("action").and_then(|v| v.as_str());
                 print_response_with_opts(&resp, action, &output_opts);
