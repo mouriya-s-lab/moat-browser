@@ -4,9 +4,11 @@
 //! Moat:     WebSocket via moat-sdk to remote Controller.
 
 use moat_sdk::error::SdkError;
-use moat_sdk::wire::Response;
 use moat_sdk::MoatClient;
 use serde_json::Value;
+
+// Re-export Response so output.rs can use `crate::connection::Response`
+pub use moat_sdk::wire::Response;
 
 pub struct Connection {
     client: MoatClient,
@@ -25,4 +27,15 @@ impl Connection {
     pub async fn send(&mut self, request: Value) -> Result<Response, SdkError> {
         self.client.command(request).await
     }
+}
+
+/// Synchronous wrapper for sending a command (for compatibility with upstream main.rs flow).
+pub fn send_command(cmd: Value, controller_url: &str) -> Result<Response, String> {
+    let rt = tokio::runtime::Handle::current();
+    rt.block_on(async {
+        let mut conn = Connection::connect(controller_url)
+            .await
+            .map_err(|e| e.to_string())?;
+        conn.send(cmd).await.map_err(|e| e.to_string())
+    })
 }
