@@ -109,6 +109,17 @@ export type BooleanResult = {
   readonly checked?: boolean;
 };
 
+export type BatchResultEntry = {
+  readonly success: boolean;
+  readonly data?: CommandResultData;
+  readonly error?: string;
+};
+
+export type BatchResult = {
+  readonly _tag: "BatchResult";
+  readonly results: ReadonlyArray<BatchResultEntry>;
+};
+
 export type CommandResultData =
   | NavigateResult
   | VoidResult
@@ -122,7 +133,8 @@ export type CommandResultData =
   | GetTextResult
   | GetValueResult
   | GetHtmlResult
-  | BooleanResult;
+  | BooleanResult
+  | BatchResult;
 
 // ─── ControllerError ───
 
@@ -271,7 +283,12 @@ export type BrowserCommand =
   // 元素状态查询 (is)
   | { readonly action: "isvisible"; readonly selector: string }
   | { readonly action: "isenabled"; readonly selector: string }
-  | { readonly action: "ischecked"; readonly selector: string };
+  | { readonly action: "ischecked"; readonly selector: string }
+
+  // evaluate alias + batch + close
+  | { readonly action: "evaluate"; readonly script: string }
+  | { readonly action: "batch"; readonly commands: ReadonlyArray<BrowserCommand>; readonly bail?: boolean }
+  | { readonly action: "close" };
 
 // ─── WireRequest ───
 
@@ -405,7 +422,10 @@ const browserCommandSchema = type({
   .or({ action: "'getattribute'", selector: "string", attribute: "string" })
   .or({ action: "'isvisible'", selector: "string" })
   .or({ action: "'isenabled'", selector: "string" })
-  .or({ action: "'ischecked'", selector: "string" });
+  .or({ action: "'ischecked'", selector: "string" })
+  .or({ action: "'evaluate'", script: "string" })
+  .or({ action: "'batch'", commands: type("object").array(), "bail?": "boolean" })
+  .or({ action: "'close'" });
 
 export const wireRequestSchema = type({
   type: "'register'",
