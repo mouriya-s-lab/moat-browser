@@ -25,7 +25,7 @@ run_test() {
   set +e
   output=$("$MOAT" "$@" 2>&1)
   code=$?
-  set -e
+  set +e
   echo "$output"
   echo "exit: $code"
   if [ "$code" -eq "$expect_exit" ]; then
@@ -294,7 +294,7 @@ echo "=== TEST: $b1_name ==="
 set +e
 b1_output=$(echo '[["open","https://example.com"],["eval","document.title"]]' | "$MOAT" batch 2>&1)
 b1_code=$?
-set -e
+set +e
 echo "$b1_output"
 echo "exit: $b1_code"
 if [ "$b1_code" -eq 0 ]; then
@@ -394,7 +394,7 @@ echo "=== TEST: $ec3_name ==="
 set +e
 ec3_output=$(MOAT_CONTROLLER="" "$MOAT" connect 2>&1)
 ec3_code=$?
-set -e
+set +e
 echo "$ec3_output"
 echo "exit: $ec3_code"
 if [ "$ec3_code" -eq 78 ]; then
