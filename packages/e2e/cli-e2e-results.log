@@ -1,0 +1,409 @@
+=== TEST: S1 ===
+[31m✗[0m No active session.
+exit: 77
+PASS
+
+=== TEST: S2 ===
+[32m✓[0m Connected. Session: ddcbcae6-6039-458d-bc51-910d389e0c84
+exit: 0
+PASS
+
+=== TEST: S3 ===
+Session:    ddcbcae6-6039-458d-bc51-910d389e0c84
+Controller: ws://192.168.1.211:3000
+exit: 0
+PASS
+
+=== TEST: S4 ===
+[32m✓[0m Disconnected.
+exit: 0
+PASS
+
+=== TEST: S5 ===
+[31m✗[0m No active session.
+exit: 77
+PASS
+
+=== TEST: S6 ===
+[31m✗[0m Register failed (code 82): Profile copy failed: cp -a failed: Command failed: cp -a default /data/profiles/agent-dbc4fd4b-7559-46fa-aadf-92dc0be7862a
+cp: cannot stat 'default': No such file or directory
+exit: 69
+FAIL (expected exit 0, got 69)
+
+=== TEST: N1 ===
+[32m✓[0m [1mExample Domain[0m
+  [2mhttps://example.com/[0m
+exit: 0
+PASS
+
+=== TEST: N2 ===
+[32m✓[0m [1mExample Domain[0m
+  [2mhttps://example.com/[0m
+exit: 0
+PASS
+
+=== TEST: N3 ===
+[32m✓[0m [1mNew Tab[0m
+  [2mchrome://new-tab-page/[0m
+exit: 0
+PASS
+
+=== TEST: N4 ===
+[31m✗[0m Timeout: page.goForward: Timeout 30000ms exceeded.
+Call log:
+  - waiting for navigation until "domcontentloaded"
+    - navigated to "https://example.com/"
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: N5 ===
+[32m✓[0m [1mExample Domain[0m
+  [2mhttps://example.com/[0m
+exit: 0
+PASS
+
+=== TEST: L1 ===
+[31m✗[0m WebSocket error: WebSocket protocol error: Connection reset without closing handshake
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: L2 ===
+[31m✗[0m Connection failed: IO error: Connection refused (os error 111)
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: L3 ===
+[31m✗[0m Connection failed: IO error: Connection refused (os error 111)
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: L4 ===
+[31m✗[0m Connection failed: IO error: Connection refused (os error 111)
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: L5 ===
+[31m✗[0m Connection failed: IO error: Connection refused (os error 111)
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: L6 ===
+[31m✗[0m Connection failed: IO error: Connection refused (os error 111)
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: L7 ===
+[31m✗[0m Connection failed: IO error: Connection refused (os error 111)
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: L8 ===
+[31m✗[0m Connection failed: IO error: Connection refused (os error 111)
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: R1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: R2 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: R3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: C1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: C2 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: C3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: C4 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P2 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P4 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P5 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P6 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P7 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: K1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: K2 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: K3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: K4 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: K5 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: T1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: T2 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: T3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: T4 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: T5 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: CK1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: CK2 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: CK3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: W1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: W2 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: W3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: W4 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: G1 ===
+[31mUnknown subcommand: #username
+Valid options: text, html, value, attr, url, title, count, box, styles, cdp-url[0m
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: G2 ===
+[31mUnknown subcommand: #username
+Valid options: text, html, value, attr, url, title, count, box, styles, cdp-url[0m
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: G3 ===
+[31mUnknown subcommand: #username
+Valid options: visible, enabled, checked[0m
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: G4 ===
+[31mUnknown subcommand: #username
+Valid options: visible, enabled, checked[0m
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: E1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: E2 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: E3 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: B1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: X1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: X2 ===
+[31m✗[0m No active session.
+exit: 77
+PASS
+
+=== TEST: P1a ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P1b ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P1c ===
+[31mUnknown subcommand: input[type=checkbox]:first-child
+Valid options: visible, enabled, checked[0m
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: P1d ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P1e ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P1f ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: P1g ===
+[31mUnknown subcommand: #result
+Valid options: text, html, value, attr, url, title, count, box, styles, cdp-url[0m
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: J1 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: J2 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: J3 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: J4 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: J5 ===
+{"error":"Unknown subcommand: h1\nValid options: text, html, value, attr, url, title, count, box, styles, cdp-url","success":false,"type":"unknown_subcommand"}
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: J6 ===
+{"error":"Unknown subcommand: h1\nValid options: visible, enabled, checked","success":false,"type":"unknown_subcommand"}
+exit: 1
+FAIL (expected exit 0, got 1)
+
+=== TEST: J7 ===
+{"error":"No active session. Run `moat connect` first.","success":false}
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: EC1 ===
+[31m✗[0m No active session. Run `moat connect` first.
+exit: 77
+FAIL (expected exit 0, got 77)
+
+=== TEST: EC2 ===
+[31m✗[0m No active session.
+exit: 77
+PASS
+
+=== TEST: EC3 ===
+[31m✗[0m Connection failed: HTTP format error: empty string
+exit: 69
+FAIL (expected exit 78, got 69)
+
+=== TEST: EC4 ===
+[31mUnknown command: nonexistent-command[0m
+exit: 1
+PASS
+
+=== RESULTS ===
+Total: 78
+Pass:  12
+Fail:  66
