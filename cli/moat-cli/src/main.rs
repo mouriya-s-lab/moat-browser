@@ -1,61 +1,104 @@
 //! moat CLI — agent-browser fork with remote Controller transport.
 //!
-//! This binary will contain the full agent-browser CLI codebase
-//! (commands.rs, output.rs, flags.rs, etc.) once the fork is populated.
-//! For now, it implements the moat-specific subcommands (connect/disconnect/status)
-//! and a command passthrough to demonstrate the SDK integration.
+//! Retains upstream's command parsing (commands.rs), output formatting (output.rs),
+//! flags (flags.rs), and color handling (color.rs). Replaces connection.rs with
+//! moat-sdk WebSocket transport.
 
+mod color;
+mod commands;
 mod connection;
+mod flags;
+mod output;
+mod validation;
 
-use moat_sdk::error::SdkError;
-use moat_sdk::MoatClient;
+use serde_json::json;
 use std::env;
-use std::process::ExitCode;
+use std::process::exit;
 
-fn controller_url() -> Result<String, SdkError> {
-    env::var("MOAT_CONTROLLER")
-        .or_else(|_| {
-            // Try config file
-            let home = dirs::home_dir().ok_or(SdkError::ConfigError("no home dir".into()))?;
-            let config_path = home.join(".moat").join("config.json");
-            if config_path.exists() {
-                let content = std::fs::read_to_string(&config_path)
-                    .map_err(|e| SdkError::ConfigError(e.to_string()))?;
-                let config: serde_json::Value = serde_json::from_str(&content)
-                    .map_err(|e| SdkError::ConfigError(e.to_string()))?;
-                config
-                    .get("controller")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                    .ok_or(SdkError::ConfigError("no controller in config".into()))
-            } else {
-                Err(SdkError::ConfigError(
-                    "MOAT_CONTROLLER not set and no config file found".into(),
-                ))
-            }
-        })
+use commands::{parse_command, ParseError};
+use connection::send_command;
+use flags::{clean_args, parse_flags};
+use output::{print_command_help, print_help, print_response_with_opts, OutputOptions};
+
+use moat_sdk::MoatClient;
+
+fn controller_url() -> Result<String, String> {
+    env::var("MOAT_CONTROLLER").or_else(|_| {
+        let home = dirs::home_dir().ok_or("no home dir")?;
+        let config_path = home.join(".moat").join("config.json");
+        if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+            let config: serde_json::Value =
+                serde_json::from_str(&content).map_err(|e| e.to_string())?;
+            config
+                .get("controller")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .ok_or_else(|| "no 'controller' field in config".into())
+        } else {
+            Err("MOAT_CONTROLLER not set and ~/.moat/config.json not found".into())
+        }
+    })
+}
+
+fn print_json_error(message: impl AsRef<str>) {
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "success": false,
+            "error": message.as_ref(),
+        }))
+        .unwrap_or_default()
+    );
+}
+
+fn print_version() {
+    println!("moat {}", env!("CARGO_PKG_VERSION"));
 }
 
 #[tokio::main]
-async fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
-
-    if args.is_empty() {
-        eprintln!("Usage: moat <command> [args...]");
-        eprintln!("  moat connect [--profile <name>]  — start a session");
-        eprintln!("  moat disconnect                  — end the session");
-        eprintln!("  moat status                      — show session info");
-        eprintln!("  moat <agent-browser command>     — execute via Controller");
-        return ExitCode::from(2);
+async fn main() {
+    // Reset SIGPIPE to default on Unix
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    match args[0].as_str() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let flags = parse_flags(&args);
+    let clean = clean_args(&args);
+
+    // --help
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        if let Some(cmd) = clean.first() {
+            if print_command_help(cmd) {
+                return;
+            }
+        }
+        print_help();
+        return;
+    }
+
+    // --version
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        print_version();
+        return;
+    }
+
+    if clean.is_empty() {
+        print_help();
+        return;
+    }
+
+    // ─── moat-specific subcommands ───
+
+    match clean[0].as_str() {
         "connect" => {
             let url = match controller_url() {
                 Ok(u) => u,
                 Err(e) => {
-                    eprintln!("Error: {}", e);
-                    return ExitCode::from(78);
+                    eprintln!("{} {}", color::error_indicator(), e);
+                    exit(78);
                 }
             };
             let profile = args
@@ -66,115 +109,282 @@ async fn main() -> ExitCode {
 
             match MoatClient::connect(&url, profile).await {
                 Ok(client) => {
-                    println!("Connected. Session: {}", client.session_id());
-                    ExitCode::SUCCESS
+                    if flags.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "success": true,
+                                "data": { "sessionId": client.session_id() }
+                            }))
+                            .unwrap()
+                        );
+                    } else {
+                        println!(
+                            "{} Connected. Session: {}",
+                            color::success_indicator(),
+                            client.session_id()
+                        );
+                    }
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
-                    ExitCode::from(69)
+                    if flags.json {
+                        print_json_error(e.to_string());
+                    } else {
+                        eprintln!("{} {}", color::error_indicator(), e);
+                    }
+                    exit(69);
                 }
             }
+            return;
         }
 
         "disconnect" => {
             let url = match controller_url() {
                 Ok(u) => u,
                 Err(e) => {
-                    eprintln!("Error: {}", e);
-                    return ExitCode::from(78);
+                    eprintln!("{} {}", color::error_indicator(), e);
+                    exit(78);
                 }
             };
             let session_id = match moat_sdk::session::read_session_id() {
                 Ok(Some(id)) => id,
                 _ => {
-                    eprintln!("No active session.");
-                    return ExitCode::from(77);
+                    if flags.json {
+                        print_json_error("No active session");
+                    } else {
+                        eprintln!("{} No active session.", color::error_indicator());
+                    }
+                    exit(77);
                 }
             };
             match MoatClient::resume(&url, &session_id).await {
                 Ok(mut client) => match client.disconnect().await {
                     Ok(()) => {
-                        println!("Disconnected.");
-                        ExitCode::SUCCESS
+                        if flags.json {
+                            println!(r#"{{"success":true}}"#);
+                        } else {
+                            println!("{} Disconnected.", color::success_indicator());
+                        }
                     }
                     Err(e) => {
-                        eprintln!("Error: {}", e);
-                        ExitCode::FAILURE
+                        if flags.json {
+                            print_json_error(e.to_string());
+                        } else {
+                            eprintln!("{} {}", color::error_indicator(), e);
+                        }
+                        exit(1);
                     }
                 },
-                Err(e) => {
-                    // Session might already be gone, just clean up locally
+                Err(_) => {
                     let _ = moat_sdk::session::clear_session_id();
-                    eprintln!("Cleaned up. ({})", e);
-                    ExitCode::SUCCESS
-                }
-            }
-        }
-
-        "status" => match moat_sdk::session::read_session_id() {
-            Ok(Some(id)) => {
-                println!("Session: {}", id);
-                let url = controller_url().unwrap_or_else(|_| "(not set)".into());
-                println!("Controller: {}", url);
-                ExitCode::SUCCESS
-            }
-            _ => {
-                eprintln!("No active session.");
-                ExitCode::from(77)
-            }
-        },
-
-        // All other commands: passthrough to Controller via SDK
-        _ => {
-            let url = match controller_url() {
-                Ok(u) => u,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    return ExitCode::from(78);
-                }
-            };
-
-            let mut conn = match connection::Connection::connect(&url).await {
-                Ok(c) => c,
-                Err(SdkError::NoSession) => {
-                    eprintln!("No active session. Run `moat connect` first.");
-                    return ExitCode::from(77);
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    return ExitCode::from(69);
-                }
-            };
-
-            // Build a minimal request from CLI args.
-            // NOTE: In the full fork, this will be replaced by agent-browser's
-            // parse_command() which handles all the CLI argument parsing.
-            let request = serde_json::json!({
-                "id": format!("r{}", std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap().as_micros() % 1000000),
-                "action": args[0],
-                // Pass remaining args as-is (simplified; full fork uses parse_command)
-            });
-
-            match conn.send(request).await {
-                Ok(resp) => {
-                    // In the full fork, output.rs handles formatting.
-                    // For now, just print JSON.
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&resp).unwrap_or_default()
-                    );
-                    if resp.success {
-                        ExitCode::SUCCESS
+                    if flags.json {
+                        println!(r#"{{"success":true}}"#);
                     } else {
-                        ExitCode::FAILURE
+                        println!("{} Cleaned up (session already gone).", color::success_indicator());
                     }
                 }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    ExitCode::FAILURE
+            }
+            return;
+        }
+
+        "status" => {
+            match moat_sdk::session::read_session_id() {
+                Ok(Some(id)) => {
+                    let url = controller_url().unwrap_or_else(|_| "(not set)".into());
+                    if flags.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "success": true,
+                                "data": { "sessionId": id, "controller": url }
+                            }))
+                            .unwrap()
+                        );
+                    } else {
+                        println!("Session:    {}", id);
+                        println!("Controller: {}", url);
+                    }
                 }
+                _ => {
+                    if flags.json {
+                        print_json_error("No active session");
+                    } else {
+                        eprintln!("{} No active session.", color::error_indicator());
+                    }
+                    exit(77);
+                }
+            }
+            return;
+        }
+
+        // Skip upstream-only commands that don't apply to moat
+        "install" | "upgrade" | "dashboard" | "profiles" | "session" => {
+            if flags.json {
+                print_json_error(format!("'{}' is not available in moat CLI", clean[0]));
+            } else {
+                eprintln!(
+                    "{} '{}' is not available in moat CLI. Use `moat connect` to manage sessions.",
+                    color::error_indicator(),
+                    clean[0]
+                );
+            }
+            exit(1);
+        }
+
+        _ => {} // Fall through to command execution
+    }
+
+    // ─── Parse command using upstream's parse_command ───
+
+    let cmd = match parse_command(&clean, &flags) {
+        Ok(c) => c,
+        Err(e) => {
+            if flags.json {
+                let error_type = match &e {
+                    ParseError::UnknownCommand { .. } => "unknown_command",
+                    ParseError::UnknownSubcommand { .. } => "unknown_subcommand",
+                    ParseError::MissingArguments { .. } => "missing_arguments",
+                    ParseError::InvalidValue { .. } => "invalid_value",
+                    ParseError::InvalidSessionName { .. } => "invalid_session_name",
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string(&json!({
+                        "success": false,
+                        "error": e.format(),
+                        "type": error_type,
+                    }))
+                    .unwrap_or_default()
+                );
+            } else {
+                eprintln!("{}", color::red(&e.format()));
+            }
+            exit(1);
+        }
+    };
+
+    // ─── Batch mode ───
+
+    if cmd.get("action").and_then(|v| v.as_str()) == Some("batch") {
+        run_batch(&flags).await;
+        return;
+    }
+
+    // ─── Send command to Controller via SDK ───
+
+    let url = match controller_url() {
+        Ok(u) => u,
+        Err(e) => {
+            if flags.json {
+                print_json_error(e);
+            } else {
+                eprintln!("{} {}", color::error_indicator(), e);
+            }
+            exit(78);
+        }
+    };
+
+    let output_opts = OutputOptions::from_flags(&flags);
+
+    match send_command(cmd.clone(), &url) {
+        Ok(resp) => {
+            let success = resp.success;
+            let action = cmd.get("action").and_then(|v| v.as_str());
+            print_response_with_opts(&resp, action, &output_opts);
+            if !success {
+                exit(1);
+            }
+        }
+        Err(e) => {
+            if e.contains("No active session") || e.contains("NoSession") {
+                if flags.json {
+                    print_json_error("No active session. Run `moat connect` first.");
+                } else {
+                    eprintln!(
+                        "{} No active session. Run `moat connect` first.",
+                        color::error_indicator()
+                    );
+                }
+                exit(77);
+            }
+            if flags.json {
+                print_json_error(&e);
+            } else {
+                eprintln!("{} {}", color::error_indicator(), e);
+            }
+            exit(1);
+        }
+    }
+}
+
+/// Batch mode: read commands from stdin, execute sequentially.
+async fn run_batch(flags: &flags::Flags) {
+    use std::io::Read as _;
+
+    let mut input = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+        if flags.json {
+            print_json_error(format!("Failed to read stdin: {}", e));
+        } else {
+            eprintln!("{} Failed to read stdin: {}", color::error_indicator(), e);
+        }
+        exit(1);
+    }
+
+    let commands: Vec<Vec<String>> = match serde_json::from_str(&input) {
+        Ok(c) => c,
+        Err(e) => {
+            if flags.json {
+                print_json_error(format!("Invalid JSON: {}", e));
+            } else {
+                eprintln!("{} Invalid JSON: {}", color::error_indicator(), e);
+            }
+            exit(1);
+        }
+    };
+
+    let url = match controller_url() {
+        Ok(u) => u,
+        Err(e) => {
+            if flags.json {
+                print_json_error(e);
+            } else {
+                eprintln!("{} {}", color::error_indicator(), e);
+            }
+            exit(78);
+        }
+    };
+
+    let output_opts = OutputOptions::from_flags(&flags);
+
+    for args in &commands {
+        let cmd = match parse_command(args, flags) {
+            Ok(c) => c,
+            Err(e) => {
+                if flags.json {
+                    print_json_error(e.format());
+                } else {
+                    eprintln!("{}", color::red(&e.format()));
+                }
+                exit(1);
+            }
+        };
+
+        match send_command(cmd.clone(), &url) {
+            Ok(resp) => {
+                let action = cmd.get("action").and_then(|v| v.as_str());
+                print_response_with_opts(&resp, action, &output_opts);
+                if !resp.success && flags.json {
+                    exit(1);
+                }
+            }
+            Err(e) => {
+                if flags.json {
+                    print_json_error(&e);
+                } else {
+                    eprintln!("{} {}", color::error_indicator(), e);
+                }
+                exit(1);
             }
         }
     }
