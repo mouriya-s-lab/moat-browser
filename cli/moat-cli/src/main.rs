@@ -23,7 +23,11 @@ use output::{print_command_help, print_help, print_response_with_opts, OutputOpt
 use moat_sdk::MoatClient;
 
 fn controller_url() -> Result<String, String> {
-    env::var("MOAT_CONTROLLER").or_else(|_| {
+    match env::var("MOAT_CONTROLLER") {
+        Ok(val) if !val.is_empty() => return Ok(val),
+        _ => {}
+    }
+    {
         let home = dirs::home_dir().ok_or("no home dir")?;
         let config_path = home.join(".moat").join("config.json");
         if config_path.exists() {
@@ -38,7 +42,7 @@ fn controller_url() -> Result<String, String> {
         } else {
             Err("MOAT_CONTROLLER not set and ~/.moat/config.json not found".into())
         }
-    })
+    }
 }
 
 fn print_json_error(message: impl AsRef<str>) {
