@@ -1820,13 +1820,13 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                     _ => "find <locator> <value> [action] [text]",
                 },
             })?;
-            let subaction = rest.get(2).unwrap_or(&"click");
+            let mut subaction: Option<&str> = None;
             let mut name: Option<&str> = None;
             let mut exact = false;
             let mut fill_parts: Vec<&str> = Vec::new();
 
-            if rest.len() > 3 {
-                let mut i = 3;
+            {
+                let mut i = 2;
                 while i < rest.len() {
                     match rest[i] {
                         "--exact" => {
@@ -1844,8 +1844,16 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                             name = Some(*n);
                             i += 2;
                         }
+                        token if token.starts_with("--") => {
+                            // Skip unknown flags
+                            i += 1;
+                        }
                         token => {
-                            fill_parts.push(token);
+                            if subaction.is_none() && matches!(token, "click" | "fill" | "type" | "check" | "uncheck" | "hover") {
+                                subaction = Some(token);
+                            } else {
+                                fill_parts.push(token);
+                            }
                             i += 1;
                         }
                     }
@@ -1860,54 +1868,55 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
 
             match *locator {
                 "role" => {
-                    let mut cmd = json!({ "id": id, "action": "getbyrole", "role": value, "subaction": subaction, "name": name, "exact": exact });
-                    if let Some(v) = fill_value {
-                        cmd["value"] = json!(v);
-                    }
+                    let mut cmd = json!({ "id": id, "action": "getbyrole", "role": value, "exact": exact });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    if let Some(n) = name { cmd["name"] = json!(n); }
+                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
                     Ok(cmd)
                 }
-                "text" => Ok(
-                    json!({ "id": id, "action": "getbytext", "text": value, "subaction": subaction, "exact": exact }),
-                ),
+                "text" => {
+                    let mut cmd = json!({ "id": id, "action": "getbytext", "text": value, "exact": exact });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    Ok(cmd)
+                }
                 "label" => {
-                    let mut cmd = json!({ "id": id, "action": "getbylabel", "label": value, "subaction": subaction, "exact": exact });
-                    if let Some(v) = fill_value {
-                        cmd["value"] = json!(v);
-                    }
+                    let mut cmd = json!({ "id": id, "action": "getbylabel", "label": value, "exact": exact });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
                     Ok(cmd)
                 }
                 "placeholder" => {
-                    let mut cmd = json!({ "id": id, "action": "getbyplaceholder", "placeholder": value, "subaction": subaction, "exact": exact });
-                    if let Some(v) = fill_value {
-                        cmd["value"] = json!(v);
-                    }
+                    let mut cmd = json!({ "id": id, "action": "getbyplaceholder", "placeholder": value, "exact": exact });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
                     Ok(cmd)
                 }
-                "alt" => Ok(
-                    json!({ "id": id, "action": "getbyalttext", "text": value, "subaction": subaction, "exact": exact }),
-                ),
-                "title" => Ok(
-                    json!({ "id": id, "action": "getbytitle", "text": value, "subaction": subaction, "exact": exact }),
-                ),
+                "alt" => {
+                    let mut cmd = json!({ "id": id, "action": "getbyalttext", "text": value, "exact": exact });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    Ok(cmd)
+                }
+                "title" => {
+                    let mut cmd = json!({ "id": id, "action": "getbytitle", "text": value, "exact": exact });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    Ok(cmd)
+                }
                 "testid" => {
-                    let mut cmd = json!({ "id": id, "action": "getbytestid", "testId": value, "subaction": subaction });
-                    if let Some(v) = fill_value {
-                        cmd["value"] = json!(v);
-                    }
+                    let mut cmd = json!({ "id": id, "action": "getbytestid", "testId": value });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
                     Ok(cmd)
                 }
                 "first" => {
-                    let mut cmd = json!({ "id": id, "action": "nth", "selector": value, "index": 0, "subaction": subaction });
-                    if let Some(v) = fill_value {
-                        cmd["value"] = json!(v);
-                    }
+                    let mut cmd = json!({ "id": id, "action": "nth", "selector": value, "index": 0 });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
                     Ok(cmd)
                 }
                 "last" => {
-                    let mut cmd = json!({ "id": id, "action": "nth", "selector": value, "index": -1, "subaction": subaction });
-                    if let Some(v) = fill_value {
-                        cmd["value"] = json!(v);
-                    }
+                    let mut cmd = json!({ "id": id, "action": "nth", "selector": value, "index": -1 });
+                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
                     Ok(cmd)
                 }
                 _ => unreachable!(),
@@ -1928,16 +1937,15 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                 context: "find nth".to_string(),
                 usage: "find nth <index> <selector> [action] [text]",
             })?;
-            let sub = rest.get(3).unwrap_or(&"click");
+            let sub = rest.get(3).copied();
             let fv = if rest.len() > 4 {
                 Some(rest[4..].join(" "))
             } else {
                 None
             };
-            let mut cmd = json!({ "id": id, "action": "nth", "selector": sel, "index": idx, "subaction": sub });
-            if let Some(v) = fv {
-                cmd["value"] = json!(v);
-            }
+            let mut cmd = json!({ "id": id, "action": "nth", "selector": sel, "index": idx });
+            if let Some(s) = sub { cmd["subaction"] = json!(s); }
+            if let Some(v) = fv { cmd["value"] = json!(v); }
             Ok(cmd)
         }
         _ => Err(ParseError::UnknownSubcommand {
@@ -3495,6 +3503,40 @@ mod tests {
         assert_eq!(cmd["name"], "username");
         assert_eq!(cmd["exact"], true);
         assert_eq!(cmd["value"], "hello");
+    }
+
+    #[test]
+    fn test_find_role_with_name_flag_no_subaction() {
+        let cmd = parse_command(
+            &args("find role link --name Submit"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "getbyrole");
+        assert_eq!(cmd["role"], "link");
+        assert_eq!(cmd["name"], "Submit");
+        assert!(cmd.get("subaction").is_none());
+    }
+
+    #[test]
+    fn test_find_role_with_name_flag_and_subaction() {
+        let cmd = parse_command(
+            &args("find role link click --name Submit"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "getbyrole");
+        assert_eq!(cmd["role"], "link");
+        assert_eq!(cmd["subaction"], "click");
+        assert_eq!(cmd["name"], "Submit");
+    }
+
+    #[test]
+    fn test_find_text_no_subaction() {
+        let cmd = parse_command(&args("find text Example"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "getbytext");
+        assert_eq!(cmd["text"], "Example");
+        assert!(cmd.get("subaction").is_none());
     }
 
     // === Download Tests ===
