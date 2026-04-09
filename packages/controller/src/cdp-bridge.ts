@@ -14,6 +14,7 @@ import type {
   TabResult,
   CookiesResult,
   VoidResult,
+  WaitResult,
 } from "@moat-browser/types";
 import { exhaustive } from "@moat-browser/types";
 import type { RefStore } from "./ref-store.js";
@@ -412,9 +413,42 @@ export async function executeCommand(
         await context.clearCookies();
         return ok({ _tag: "VoidResult" } as const);
 
-      case "wait":
+      case "wait": {
+        if (command.selector) {
+          const state = (command.state ?? "visible") as "visible" | "hidden" | "attached" | "detached";
+          await page.locator(command.selector).waitFor({ state, timeout: command.timeout });
+          const wr: WaitResult = { _tag: "WaitResult", waited: "selector" };
+          return ok(wr);
+        }
+        if (command.text) {
+          await page.getByText(command.text).waitFor({ timeout: command.timeout });
+          const wr: WaitResult = { _tag: "WaitResult", waited: "text" };
+          return ok(wr);
+        }
         await new Promise<void>((r) => setTimeout(r, command.time ?? 1000));
-        return ok({ _tag: "VoidResult" } as const);
+        const wr: WaitResult = { _tag: "WaitResult", waited: "timeout" };
+        return ok(wr);
+      }
+
+      case "waitforurl": {
+        await page.waitForURL(command.url, { timeout: command.timeout });
+        const wr: WaitResult = { _tag: "WaitResult", waited: "url", url: page.url() };
+        return ok(wr);
+      }
+
+      case "waitforloadstate": {
+        const state = command.state as "load" | "domcontentloaded" | "networkidle";
+        await page.waitForLoadState(state, { timeout: command.timeout });
+        const wr: WaitResult = { _tag: "WaitResult", waited: "loadstate", state: command.state };
+        return ok(wr);
+      }
+
+      case "waitforfunction": {
+        const handle = await page.waitForFunction(command.expression, undefined, { timeout: command.timeout });
+        const val = await handle.jsonValue();
+        const wr: WaitResult = { _tag: "WaitResult", waited: "function", result: JSON.stringify(val) };
+        return ok(wr);
+      }
 
       default:
         return exhaustive(command);
