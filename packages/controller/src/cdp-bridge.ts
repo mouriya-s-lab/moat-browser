@@ -15,6 +15,10 @@ import type {
   CookiesResult,
   VoidResult,
   WaitResult,
+  GetTextResult,
+  GetValueResult,
+  GetHtmlResult,
+  BooleanResult,
 } from "@moat-browser/types";
 import { exhaustive } from "@moat-browser/types";
 import type { RefStore } from "./ref-store.js";
@@ -448,6 +452,58 @@ export async function executeCommand(
         const val = await handle.jsonValue();
         const wr: WaitResult = { _tag: "WaitResult", waited: "function", result: JSON.stringify(val) };
         return ok(wr);
+      }
+
+      // ─── Get (element property queries) ───
+
+      case "gettext": {
+        const text = await page.locator(command.selector).textContent() ?? "";
+        const r: GetTextResult = { _tag: "GetTextResult", text };
+        return ok(r);
+      }
+
+      case "innertext": {
+        const text = await page.locator(command.selector).innerText();
+        const r: GetTextResult = { _tag: "GetTextResult", text };
+        return ok(r);
+      }
+
+      case "innerhtml": {
+        const html = await page.locator(command.selector).innerHTML();
+        const r: GetHtmlResult = { _tag: "GetHtmlResult", html };
+        return ok(r);
+      }
+
+      case "inputvalue": {
+        const value = await page.locator(command.selector).inputValue();
+        const r: GetValueResult = { _tag: "GetValueResult", value };
+        return ok(r);
+      }
+
+      case "getattribute": {
+        const value = await page.locator(command.selector).getAttribute(command.attribute) ?? "";
+        const r: GetValueResult = { _tag: "GetValueResult", value };
+        return ok(r);
+      }
+
+      // ─── Is (element state queries) ───
+
+      case "isvisible": {
+        const visible = await page.locator(command.selector).isVisible();
+        const r: BooleanResult = { _tag: "BooleanResult", visible };
+        return ok(r);
+      }
+
+      case "isenabled": {
+        const enabled = await page.locator(command.selector).isEnabled();
+        const r: BooleanResult = { _tag: "BooleanResult", enabled };
+        return ok(r);
+      }
+
+      case "ischecked": {
+        const checked = await page.locator(command.selector).isChecked();
+        const r: BooleanResult = { _tag: "BooleanResult", checked };
+        return ok(r);
       }
 
       default:
