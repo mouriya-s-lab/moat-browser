@@ -14,6 +14,7 @@ import type { ContainerManager } from "./container-manager.js";
 import type { RefStore } from "./ref-store.js";
 import { connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js";
 import type { ControllerConfig } from "./index.js";
+import path from "node:path";
 
 // ─── Per-connection state ───
 
@@ -21,6 +22,17 @@ type ConnectionState = {
   sessionId: string | undefined;
   cdp: CdpConnection | undefined;
 };
+
+// ─── Profile path resolution ───
+
+function resolveProfilePath(
+  profile: string | undefined,
+  defaultSource: string,
+): string {
+  if (!profile || profile === "default") return defaultSource;
+  if (path.isAbsolute(profile)) return profile;
+  return path.join(path.dirname(defaultSource), profile);
+}
 
 // ─── errorToWireResponse (§11.2) ───
 
@@ -178,7 +190,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     const sessionId = regResult.value;
 
     // Step 2: ContainerManager.create() — transition through states
-    const profilePath = profile ?? config.profileSource;
+    const profilePath = resolveProfilePath(profile, config.profileSource);
+
     registry.transition(sessionId, { _tag: "CreatingContainer", profilePath });
 
     const containerResult = await containerManager.create(sessionId, profilePath);
