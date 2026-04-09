@@ -308,8 +308,8 @@ export async function executeCommand(
         return executeRefAction(refStore, sessionId, command.ref, "hover");
 
       case "snapshot": {
-        const aria = await buildAriaSnapshot(page, refStore, sessionId);
-        const result: SnapshotResult = { _tag: "SnapshotResult", aria };
+        const snapshot = await buildAriaSnapshot(page, refStore, sessionId);
+        const result: SnapshotResult = { _tag: "SnapshotResult", snapshot };
         return ok(result);
       }
 
@@ -329,7 +329,7 @@ export async function executeCommand(
 
       case "eval": {
         const raw = await page.evaluate(command.code);
-        const result: EvalResult = { _tag: "EvalResult", json: JSON.stringify(raw) };
+        const result: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
         return ok(result);
       }
 
