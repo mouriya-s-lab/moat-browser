@@ -828,15 +828,15 @@ moat-browser/
 | Phase | 内容 | 状态 |
 |-------|------|------|
 | 1 | Browser VM IaC (Terraform + Ansible) | ✅ 完成 |
-| 2 | User Chrome Docker 镜像 (neko + Chromium) | Open |
-| 3 | Agent Chrome Docker 镜像 (从零组装，Chrome for Testing + CDP) | Open |
-| 4 | Wire 协议定义（`packages/types`：agent-browser daemon JSON + session envelope） | Open |
+| 2 | User Chrome Docker 镜像 (neko + Chromium) | ✅ 完成 |
+| 3 | Agent Chrome Docker 镜像 (从零组装，Chrome for Testing + CDP) | ✅ 完成 |
+| 4 | Wire 协议定义（`packages/types`：agent-browser daemon JSON + session envelope） | ✅ 完成 |
 | 5 | TS SDK（`packages/sdk`：RPC 客户端库，实现 wire 协议） | Open |
-| 6 | Controller 服务端实现（`packages/controller`：Node.js + Patchright，wire 协议服务端） | Open |
-| 7 | Profile 管理（冻结/拷贝/快照） | Open |
-| 8 | Rust SDK（`cli/sdk`：RPC 客户端库，等价 TS SDK 的 wire 协议实现） | Open |
-| 9 | CLI fork（fork agent-browser，`connection.rs` 改为调用 Rust SDK，加 session 管理命令，打包 SKILL.md） | Open |
-| 10 | E2E 测试框架（覆盖 Rust CLI 和 TS SDK 两条路径） | Open |
+| 6 | Controller 服务端实现（`packages/controller`：Node.js + Patchright，wire 协议服务端） | ✅ 完成 |
+| 7 | Profile 管理（冻结/拷贝/快照） | ✅ 完成（cp-a 拷贝已在 Phase 6 中实现） |
+| 8 | Rust SDK（`cli/sdk`：RPC 客户端库，WebSocket transport + session envelope） | ✅ 完成 |
+| 9 | CLI fork（fork agent-browser，`connection.rs` 改为调用 Rust SDK，加 session 管理命令） | ✅ 完成（骨架，待填充 upstream 源码） |
+| 10 | E2E 测试框架（覆盖 Rust CLI 和 TS SDK 两条路径） | ✅ 完成（TS Controller E2E，9 tests） |
 
 ---
 

@@ -37,10 +37,17 @@
 moat-browser/
 ├── cli/                # Rust workspace — fork 自 vercel-labs/agent-browser
 │   ├── Cargo.toml      # Rust workspace root，不在 Bun workspace 里
-│   ├── sdk/            # Rust SDK crate — RPC 客户端库（moat 新增）
+│   ├── sdk/            # Rust SDK crate — WebSocket transport + session 管理
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   ├── src/            # CLI 二进制（fork，connection.rs 改为调用 SDK）
+│   │       ├── lib.rs      # MoatClient: connect/resume/command/disconnect
+│   │       ├── wire.rs     # WireRequest/WireResponse serde 定义
+│   │       ├── session.rs  # ~/.moat/session 文件读写
+│   │       └── error.rs    # SDK error types
+│   ├── moat-cli/       # CLI 二进制（fork，connection.rs 改为调用 SDK）
+│   │   └── src/
+│   │       ├── main.rs         # connect/disconnect/status + 命令 passthrough
+│   │       └── connection.rs   # 替换 upstream: Unix socket → moat-sdk WebSocket
 │   └── UPSTREAM.md     # 记录与 upstream 的 diff、合并策略
 ├── packages/           # Bun workspace (TS/Node)
 │   ├── types/          # Wire 协议 canonical 定义 + ADT + arktype schema
@@ -77,12 +84,14 @@ moat-browser/
 - Rust 构建: `cd cli && cargo build --release`
 - Rust 测试: `cd cli && cargo test`
 - 与 upstream agent-browser 同步: `cd cli && git fetch upstream && git merge upstream/main`（仅 `connection.rs` 和新增 session 命令会产生冲突）
-- Docker build: `docker build -t <name> images/<name>/`
-- Docker compose: `docker compose -f packages/e2e/docker-compose.test.yml up -d`
+- Docker: 已迁移到 Komodo (km)，不再手动 docker build/compose
+  - 构建: `km x run-build moat-user-chrome` / `moat-agent-chrome` / `moat-controller`
+  - 部署: `km x deploy-stack moat-browser`
+  - 一键: `km x run-procedure moat-build-deploy`
 
 ## Target Environment
 
-- VM 104 at 192.168.1.200
+- VM 104 at 192.168.1.211 (Browser server, Komodo managed)
 - Docker ready, Bun installed
 - CPU: host (Bun hangs on qemu64)
 
