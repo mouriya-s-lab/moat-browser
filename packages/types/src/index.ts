@@ -79,6 +79,14 @@ export type CookiesResult = {
   readonly cookies: ReadonlyArray<CookieEntry>;
 };
 
+export type WaitResult = {
+  readonly _tag: "WaitResult";
+  readonly waited: string;
+  readonly url?: string;
+  readonly state?: string;
+  readonly result?: string;
+};
+
 export type CommandResultData =
   | NavigateResult
   | VoidResult
@@ -87,7 +95,8 @@ export type CommandResultData =
   | ScreenshotResult
   | EvalResult
   | TabResult
-  | CookiesResult;
+  | CookiesResult
+  | WaitResult;
 
 // ─── ControllerError ───
 
@@ -145,7 +154,10 @@ export type BrowserCommand =
   | { readonly action: "back" }
   | { readonly action: "forward" }
   | { readonly action: "reload" }
-  | { readonly action: "wait"; readonly time?: number }
+  | { readonly action: "wait"; readonly time?: number; readonly selector?: string; readonly text?: string; readonly state?: string; readonly timeout?: number }
+  | { readonly action: "waitforurl"; readonly url: string; readonly timeout?: number }
+  | { readonly action: "waitforloadstate"; readonly state: string; readonly timeout?: number }
+  | { readonly action: "waitforfunction"; readonly expression: string; readonly timeout?: number }
 
   // 语义定位器
   | {
@@ -274,7 +286,10 @@ const browserCommandSchema = type({
   .or({ action: "'back'" })
   .or({ action: "'forward'" })
   .or({ action: "'reload'" })
-  .or({ action: "'wait'", "time?": "number" })
+  .or({ action: "'wait'", "time?": "number", "selector?": "string", "text?": "string", "state?": "string", "timeout?": "number" })
+  .or({ action: "'waitforurl'", url: "string", "timeout?": "number" })
+  .or({ action: "'waitforloadstate'", state: "string", "timeout?": "number" })
+  .or({ action: "'waitforfunction'", expression: "string", "timeout?": "number" })
   .or({
     action: "'getbyrole'",
     role: "string",
