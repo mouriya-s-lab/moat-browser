@@ -125,7 +125,9 @@ run_test "R1" 0 snapshot
 # TEST: R2 — click @e1 (ref-based click)
 run_test "R2" 0 click "@e1"
 
-# TEST: R3 — hover @e1 (ref-based hover)
+# TEST: R3 — hover @e1 (ref-based hover, re-navigate after R2 click)
+"$MOAT" open "https://example.com" >/dev/null 2>&1
+"$MOAT" snapshot >/dev/null 2>&1
 run_test "R3" 0 hover "@e1"
 
 "$MOAT" disconnect >/dev/null 2>&1 || true
@@ -244,7 +246,7 @@ run_test "W1" 0 wait 2000
 run_test "W2" 0 wait --text "Hello World!"
 
 # TEST: W3 — wait for URL pattern (already matching)
-run_test "W3" 0 wait --url "*/dynamic_loading*"
+run_test "W3" 0 wait --url "*dynamic_loading*"
 
 # TEST: W4 — wait for load state
 run_test "W4" 0 wait --load load
