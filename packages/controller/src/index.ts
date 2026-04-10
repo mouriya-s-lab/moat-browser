@@ -28,7 +28,7 @@ function loadConfig(): ControllerConfig {
     dockerNetwork: process.env.DOCKER_NETWORK ?? "moat",
     agentChromeImage: process.env.AGENT_CHROME_IMAGE ?? "agent-chrome:latest",
     sessionIdleTimeout: parseInt(process.env.SESSION_IDLE_TIMEOUT ?? "600000", 10),
-    reconnectWindow: parseInt(process.env.RECONNECT_WINDOW ?? "120000", 10),
+    reconnectWindow: parseInt(process.env.RECONNECT_WINDOW ?? "600000", 10),
     cdpReadyTimeout: parseInt(process.env.CDP_READY_TIMEOUT ?? "30000", 10),
     commandTimeout: parseInt(process.env.COMMAND_TIMEOUT ?? "25000", 10),
   };
