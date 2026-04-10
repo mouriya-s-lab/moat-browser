@@ -29,7 +29,7 @@ export type SessionRegistryConfig = {
 
 const defaultConfig: SessionRegistryConfig = {
   sessionIdleTimeout: 600_000,
-  reconnectTimeout: 5_000,
+  reconnectTimeout: 120_000,
   scanInterval: 30_000,
 };
 
