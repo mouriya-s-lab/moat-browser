@@ -16,13 +16,6 @@ import { connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js"
 import type { ControllerConfig } from "./index.js";
 import path from "node:path";
 
-// ─── Per-connection state ───
-
-type ConnectionState = {
-  sessionId: string | undefined;
-  cdp: CdpConnection | undefined;
-};
-
 // ─── Profile path resolution ───
 
 function resolveProfilePath(
@@ -92,14 +85,12 @@ export type WsHandler = {
 export function createWsHandler(deps: WsHandlerDeps): WsHandler {
   const { registry, containerManager, refStore, config } = deps;
 
-  // Track ws ↔ session binding for disconnect cleanup and CDP disconnect
-  const sessionConnections = new Map<string, { ws: WebSocket; cdp: CdpConnection | undefined }>();
+  // Persistent CDP connection cache — survives ws close, keyed by sessionId
+  const cdpCache = new Map<string, CdpConnection>();
 
   return { handleConnection, onSessionExpired };
 
   function handleConnection(ws: WebSocket): void {
-    const conn: ConnectionState = { sessionId: undefined, cdp: undefined };
-
     ws.on("message", async (raw) => {
       try {
         let data: unknown;
@@ -120,40 +111,19 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
         switch (parsed.type) {
           case "register": {
-            const response = await handleRegister(conn, parsed.profile);
+            const response = await handleRegister(parsed.profile);
             ws.send(JSON.stringify(response));
-            if (response.type === "register_result" && response.success) {
-              sessionConnections.set(conn.sessionId!, { ws, cdp: conn.cdp });
-            }
-            break;
-          }
-
-          case "resume": {
-            // Takeover: if session is still Active (old ws close event hasn't
-            // arrived yet), kick the stale connection first.
-            const stale = sessionConnections.get(parsed.sessionId);
-            if (stale?.ws && stale.ws !== ws) {
-              stale.ws.close();
-              registry.markDisconnected(parsed.sessionId);
-              sessionConnections.delete(parsed.sessionId);
-            }
-
-            const response = await handleResume(conn, parsed.sessionId);
-            ws.send(JSON.stringify(response));
-            if (response.type === "register_result" && response.success) {
-              sessionConnections.set(conn.sessionId!, { ws, cdp: conn.cdp });
-            }
             break;
           }
 
           case "command": {
-            const response = await handleCommand(conn, parsed.sessionId, parsed.command);
+            const response = await handleCommand(parsed.sessionId, parsed.command);
             ws.send(JSON.stringify(response));
             break;
           }
 
           case "deregister": {
-            const response = await handleDeregister(conn, parsed.sessionId);
+            const response = await handleDeregister(parsed.sessionId);
             ws.send(JSON.stringify(response));
             break;
           }
@@ -172,22 +142,12 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       }
     });
 
-    ws.on("close", () => {
-      if (conn.sessionId) {
-        // Only disconnect if this ws still owns the session (not taken over by a newer connection)
-        const current = sessionConnections.get(conn.sessionId);
-        if (current?.ws === ws) {
-          registry.markDisconnected(conn.sessionId);
-          sessionConnections.delete(conn.sessionId);
-        }
-      }
-    });
+    // ws close is a no-op for session state — sessions live until idle timeout or explicit deregister
   }
 
   // ─── register 全链路 (§10) ───
 
   async function handleRegister(
-    conn: ConnectionState,
     profile?: string,
   ): Promise<WireResponse> {
     // Step 1: SessionRegistry.register()
@@ -249,76 +209,22 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       lastActivity: now,
     });
 
-    // Step 5: Listen for browser disconnect (§11.3)
+    // Step 5: Cache CDP connection + listen for browser disconnect
+    cdpCache.set(sessionId, cdp);
     setupBrowserDisconnectHandler(cdp.browser, sessionId);
 
-    // Bind connection
-    conn.sessionId = sessionId;
-    conn.cdp = cdp;
-
     return { type: "register_result", success: true, sessionId };
   }
 
-  // ─── resume ───
-
-  async function handleResume(
-    conn: ConnectionState,
-    sessionId: string,
-  ): Promise<WireResponse> {
-    const resumeResult = registry.resume(sessionId);
-    if (resumeResult._tag === "Err") {
-      return {
-        type: "register_result",
-        success: false,
-        error: formatError(resumeResult.error),
-        code: ErrorCode[resumeResult.error._tag],
-      };
-    }
-
-    // Get the active session to retrieve CDP connection info
-    const activeResult = registry.getActive(sessionId);
-    if (activeResult._tag === "Err") {
-      return {
-        type: "register_result",
-        success: false,
-        error: formatError(activeResult.error),
-        code: ErrorCode[activeResult.error._tag],
-      };
-    }
-
-    // Re-connect CDP if needed
-    const prev = sessionConnections.get(sessionId);
-    let cdp = prev?.cdp;
-    if (!cdp) {
-      try {
-        cdp = await connectCDP(activeResult.value.cdpUrl);
-        setupBrowserDisconnectHandler(cdp.browser, sessionId);
-      } catch (e) {
-        return {
-          type: "register_result",
-          success: false,
-          error: `CDP reconnect failed: ${e instanceof Error ? e.message : String(e)}`,
-          code: ErrorCode.CdpUnreachable,
-        };
-      }
-    }
-
-    conn.sessionId = sessionId;
-    conn.cdp = cdp;
-
-    return { type: "register_result", success: true, sessionId };
-  }
-
-  // ─── command ───
+  // ─── command (stateless — looks up CDP from cache) ───
 
   async function handleCommand(
-    conn: ConnectionState,
     sessionId: string,
     command: Parameters<typeof executeCommand>[1],
   ): Promise<WireResponse> {
     // close → deregister
     if (command.action === "close") {
-      return handleDeregister(conn, sessionId);
+      return handleDeregister(sessionId);
     }
 
     // Verify session is active
@@ -327,8 +233,9 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       return errorToWireResponse(sessionId, activeResult.error);
     }
 
-    // Ensure we have a CDP connection
-    if (!conn.cdp) {
+    // Look up CDP from persistent cache
+    const cdp = cdpCache.get(sessionId);
+    if (!cdp) {
       return errorToWireResponse(sessionId, {
         _tag: "CdpDisconnected",
         containerId: activeResult.value.containerId,
@@ -337,7 +244,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     registry.touchActivity(sessionId);
 
-    const result = await executeCommand(conn.cdp.context, command, refStore, sessionId);
+    const result = await executeCommand(cdp.context, command, refStore, sessionId);
     if (result._tag === "Err") {
       return errorToWireResponse(sessionId, result.error);
     }
@@ -353,7 +260,6 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
   // ─── deregister ───
 
   async function handleDeregister(
-    conn: ConnectionState,
     sessionId: string,
   ): Promise<WireResponse> {
     // Step 1: Deregister from registry
@@ -367,10 +273,10 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
 
     // Step 2: Disconnect CDP (close Patchright Browser)
-    const entry = sessionConnections.get(sessionId);
-    if (entry?.cdp) {
+    const cdp = cdpCache.get(sessionId);
+    if (cdp) {
       try {
-        await entry.cdp.browser.close();
+        await cdp.browser.close();
       } catch {
         // best-effort
       }
@@ -380,9 +286,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     await containerManager.destroy(sessionId);
 
     // Cleanup
-    sessionConnections.delete(sessionId);
-    conn.sessionId = undefined;
-    conn.cdp = undefined;
+    cdpCache.delete(sessionId);
 
     return { type: "deregister_result", sessionId, success: true };
   }
@@ -400,35 +304,19 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       // Trigger container cleanup
       await containerManager.destroy(sessionId);
 
-      // Notify connected client if still active
-      const entry = sessionConnections.get(sessionId);
-      if (entry) {
-        const response = errorToWireResponse(sessionId, {
-          _tag: "CdpDisconnected",
-          containerId: "",
-        });
-        try {
-          entry.ws.send(JSON.stringify(response));
-        } catch {
-          // ws already closed
-        }
-        sessionConnections.delete(sessionId);
-      }
+      // Cleanup CDP cache
+      cdpCache.delete(sessionId);
     });
   }
 
   // ─── onSessionExpired (called by idle scanner) ───
 
-  function onSessionExpired(sessionId: string, reason: string): void {
-    const entry = sessionConnections.get(sessionId);
-    if (entry) {
-      // Cleanup CDP
-      if (entry.cdp) {
-        entry.cdp.browser.close().catch(() => {});
-      }
-      // Cleanup container
-      containerManager.destroy(sessionId).catch(() => {});
-      sessionConnections.delete(sessionId);
+  function onSessionExpired(sessionId: string, _reason: string): void {
+    const cdp = cdpCache.get(sessionId);
+    if (cdp) {
+      cdp.browser.close().catch(() => {});
     }
+    containerManager.destroy(sessionId).catch(() => {});
+    cdpCache.delete(sessionId);
   }
 }
