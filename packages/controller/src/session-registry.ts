@@ -23,13 +23,13 @@ export type ActiveSession = Extract<SessionState, { readonly _tag: "Active" }>;
 
 export type SessionRegistryConfig = {
   readonly sessionIdleTimeout: number; // ms, default 600_000 (10 min)
-  readonly reconnectTimeout: number;   // ms, default 5_000 (5s)
+  readonly reconnectTimeout: number;   // ms, default 600_000 (10 min) — auto-disconnect window, resets on each SDK command
   readonly scanInterval: number;       // ms, default 30_000 (30s)
 };
 
 const defaultConfig: SessionRegistryConfig = {
   sessionIdleTimeout: 600_000,
-  reconnectTimeout: 120_000,
+  reconnectTimeout: 600_000,
   scanInterval: 30_000,
 };
 
