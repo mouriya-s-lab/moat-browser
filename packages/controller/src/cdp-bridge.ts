@@ -172,6 +172,7 @@ async function buildAriaSnapshot(
   const snapshot = await page.ariaSnapshot();
   const refs = new Map<string, Locator>();
   let counter = 1;
+  const nthByRole = new Map<string, number>();
 
   const annotated = snapshot.split("\n").map((line) => {
     const m = ARIA_LINE_RE.exec(line);
@@ -183,7 +184,11 @@ async function buildAriaSnapshot(
     const key = `@e${counter}`;
     const locator = name
       ? page.getByRole(role as Parameters<Page["getByRole"]>[0], { name, exact: true })
-      : page.getByRole(role as Parameters<Page["getByRole"]>[0]);
+      : (() => {
+          const n = nthByRole.get(role) ?? 0;
+          nthByRole.set(role, n + 1);
+          return page.getByRole(role as Parameters<Page["getByRole"]>[0]).nth(n);
+        })();
     refs.set(key, locator);
     counter++;
 
