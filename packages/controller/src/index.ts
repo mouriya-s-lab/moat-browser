@@ -14,7 +14,6 @@ export type ControllerConfig = {
   readonly dockerNetwork: string;
   readonly agentChromeImage: string;
   readonly sessionIdleTimeout: number;
-  readonly reconnectWindow: number;
   readonly cdpReadyTimeout: number;
   readonly commandTimeout: number;
 };
@@ -28,7 +27,6 @@ function loadConfig(): ControllerConfig {
     dockerNetwork: process.env.DOCKER_NETWORK ?? "moat",
     agentChromeImage: process.env.AGENT_CHROME_IMAGE ?? "agent-chrome:latest",
     sessionIdleTimeout: parseInt(process.env.SESSION_IDLE_TIMEOUT ?? "600000", 10),
-    reconnectWindow: parseInt(process.env.RECONNECT_WINDOW ?? "600000", 10),
     cdpReadyTimeout: parseInt(process.env.CDP_READY_TIMEOUT ?? "30000", 10),
     commandTimeout: parseInt(process.env.COMMAND_TIMEOUT ?? "25000", 10),
   };
@@ -52,7 +50,6 @@ const refStore = createRefStore();
 const registry = createSessionRegistry(
   {
     sessionIdleTimeout: config.sessionIdleTimeout,
-    reconnectTimeout: config.reconnectWindow,
   },
   (sessionId, reason) => {
     handler.onSessionExpired(sessionId, reason);
