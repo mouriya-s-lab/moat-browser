@@ -129,6 +129,15 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
           }
 
           case "resume": {
+            // Takeover: if session is still Active (old ws close event hasn't
+            // arrived yet), kick the stale connection first.
+            const stale = sessionConnections.get(parsed.sessionId);
+            if (stale?.ws && stale.ws !== ws) {
+              stale.ws.close();
+              registry.markDisconnected(parsed.sessionId);
+              sessionConnections.delete(parsed.sessionId);
+            }
+
             const response = await handleResume(conn, parsed.sessionId);
             ws.send(JSON.stringify(response));
             if (response.type === "register_result" && response.success) {
@@ -165,8 +174,12 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     ws.on("close", () => {
       if (conn.sessionId) {
-        registry.markDisconnected(conn.sessionId);
-        sessionConnections.delete(conn.sessionId);
+        // Only disconnect if this ws still owns the session (not taken over by a newer connection)
+        const current = sessionConnections.get(conn.sessionId);
+        if (current?.ws === ws) {
+          registry.markDisconnected(conn.sessionId);
+          sessionConnections.delete(conn.sessionId);
+        }
       }
     });
   }
