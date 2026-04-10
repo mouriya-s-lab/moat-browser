@@ -52,9 +52,9 @@ export async function connectCDP(cdpUrl: string): Promise<CdpConnection> {
   return { browser, context };
 }
 
-// ─── Tab tracking ───
+// ─── Tab tracking (per-session) ───
 
-let activeTabIndex = 0;
+const sessionTabIndex = new Map<string, number>();
 
 // ─── Locator subaction type ───
 
@@ -243,6 +243,7 @@ export async function executeCommand(
   refStore: RefStore,
   sessionId: string,
 ): Promise<Result<CommandResultData, ControllerError>> {
+  let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
 
   try {
@@ -393,12 +394,14 @@ export async function executeCommand(
         const newPage = await context.newPage();
         if (command.url) await newPage.goto(command.url);
         activeTabIndex = context.pages().length - 1;
+        sessionTabIndex.set(sessionId, activeTabIndex);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
 
       case "tab_switch": {
         activeTabIndex = command.index;
+        sessionTabIndex.set(sessionId, activeTabIndex);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -409,6 +412,7 @@ export async function executeCommand(
         if (activeTabIndex >= context.pages().length) {
           activeTabIndex = Math.max(0, context.pages().length - 1);
         }
+        sessionTabIndex.set(sessionId, activeTabIndex);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
