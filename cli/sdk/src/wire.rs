@@ -11,11 +11,6 @@ pub enum WireRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         profile: Option<String>,
     },
-    #[serde(rename = "resume")]
-    Resume {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-    },
     #[serde(rename = "deregister")]
     Deregister {
         #[serde(rename = "sessionId")]
