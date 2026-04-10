@@ -40,14 +40,14 @@ moat-browser/
 │   ├── sdk/            # Rust SDK crate — WebSocket transport + session 管理
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       ├── lib.rs      # MoatClient: connect/resume/command/disconnect
+│   │       ├── lib.rs      # MoatClient: init/command/destroy（无状态，每命令短连）
 │   │       ├── wire.rs     # WireRequest/WireResponse serde 定义
-│   │       ├── session.rs  # ~/.moat/session 文件读写
+│   │       ├── session.rs  # 从 MOAT_SESSION env var 读取 session ID
 │   │       └── error.rs    # SDK error types
 │   ├── moat-cli/       # CLI 二进制（fork，connection.rs 改为调用 SDK）
 │   │   └── src/
-│   │       ├── main.rs         # connect/disconnect/status + 命令 passthrough
-│   │       └── connection.rs   # 替换 upstream: Unix socket → moat-sdk WebSocket
+│   │       ├── main.rs         # init/destroy/status + 命令 passthrough
+│   │       └── connection.rs   # 无状态命令发送：读 env → 开 ws → 发命令 → 关 ws
 │   └── UPSTREAM.md     # 记录与 upstream 的 diff、合并策略
 ├── packages/           # Bun workspace (TS/Node)
 │   ├── types/          # Wire 协议 canonical 定义 + ADT + arktype schema
@@ -58,8 +58,10 @@ moat-browser/
 │   ├── user-chrome/    # User Chrome 镜像 (neko + Chromium)
 │   └── agent-chrome/   # Agent Chrome 镜像 (Chrome for Testing + CDP)
 ├── skills/
+│   ├── agent-browser/
+│   │   └── SKILL.md    # 路由 skill（用户级）：问本地/远程，拷贝对应 skill 到项目
 │   └── moat/
-│       └── SKILL.md    # Agent 可发现性文档，随包分发
+│       └── SKILL.md    # 远程 skill 模板（项目级）：完整命令参考
 ├── README.md           # 设计文档
 ├── CLAUDE.md
 ├── package.json

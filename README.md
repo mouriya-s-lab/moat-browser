@@ -270,26 +270,23 @@ Controller 是系统中唯一的服务端进程，不拆分 Gateway、daemon、�
 ```
 Registering → CreatingContainer → ConnectingCDP → Active
                                                     │
-                                    ┌───────────────┼───────────────┐
-                                    │               │               │
-                                 idle 超时      CDP 断连     Socket.IO 断连
-                                    │               │               │
-                                    ▼               ▼               ▼
-                                 Expired         Expired      Reconnecting
-                                                                    │
-                                                              5s 超时 │
-                                                                    ▼
-                                                                 Expired
+                                    ┌───────────────┤
+                                    │               │
+                                 idle 超时      CDP 断连
+                                 (10min)            │
+                                    │               │
+                                    ▼               ▼
+                                 Expired         Expired
 ```
 
-**Socket.IO Server** — 对外事件：
+WebSocket 断连不影响 session 状态。每条 CLI 命令开短连发一条命令即关闭，session 和 CDP 连接在 Controller 侧持久缓存，直到 idle 超时或显式 destroy。
 
-| 事件 | 方向 | 说明 |
+**WebSocket Server** — 消息类型：
+
+| 消息 | 方向 | 说明 |
 |------|------|------|
 | `register` | client → server | Agent 注册，创建 agent-chrome 容器 |
-| `resume` | client → server | 恢复断连的 session |
-| `command` | client → server | 发送浏览器命令 |
-| `result` | server → client | 返回命令执行结果 |
+| `command` | client → server | 发送浏览器命令（带 sessionId） |
 | `deregister` | client → server | 注销，销毁容器 |
 
 ### 7.3 核心模型
@@ -480,15 +477,17 @@ CLI 命令词汇完整继承自 agent-browser fork，详见上游文档：`githu
 
 | 命令 | 说明 |
 |------|------|
-| `moat connect [--profile <name>]` | 建立 session：Controller 拷贝 profile、创建 agent-chrome 容器、等待 CDP 就绪。session ID 写入 `~/.moat/session` |
-| `moat disconnect` | 销毁 session：Controller 停止并删除容器、清理 profile 拷贝。清除 `~/.moat/session` |
-| `moat status` | 查询当前 session：容器 IP、CDP 端口、profile 名称、存活时长 |
+| `moat init [--profile <name>]` | 建立 session：Controller 拷贝 profile、创建 agent-chrome 容器、等待 CDP 就绪。返回 session ID（stdout） |
+| `moat destroy` | 销毁 session：Controller 停止并删除容器、清理 profile 拷贝 |
+| `moat status` | 查询当前 session（从 `MOAT_SESSION` env 读取） |
+
+CLI 完全无状态，不写本地文件。`MOAT_SESSION` 和 `MOAT_CONTROLLER` 通过环境变量传递（项目 skill 的 `.env`）。
 
 **与 agent-browser 的行为差异**：
 
 | 命令 | agent-browser 行为 | moat 行为 |
 |------|---------|----------|
-| （所有命令） | 隐式自动启动本地 daemon + 本地 Chrome | 需要先 `moat connect`，返回 exit 77 如未连接 |
+| （所有命令） | 隐式自动启动本地 daemon + 本地 Chrome | 需要先 `moat init`，返回 exit 77 如 `MOAT_SESSION` 未设置 |
 
 ### 9.4 Wire 协议
 
@@ -529,59 +528,49 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 agent-browser 的 daemon 是本地进程，启动即绑定到本地 Chrome，不需要显式 session 管理。moat 因为容器在远程，必须显式管理 session 生命周期。Session 管理由 SDK 层实现，CLI 只是调用 SDK 的 session API：
 
 ```
-moat connect  (CLI 命令)
+moat init  (CLI 命令)
     │
-    └─ Rust SDK.connect()
+    └─ 开 WebSocket → 发 register → Controller:
          │
-         └─ WebSocket → Controller
+         ├─ cp -a /data/profile → /data/profiles/<session-id>/
+         ├─ docker create agent-chrome（挂载 profile 拷贝）
+         ├─ 等待 CDP :9222 就绪
+         └─ Patchright connectOverCDP → CDP 连接缓存到内存
               │
-              ├─ cp -a /data/profile → /data/profiles/<session-id>/
-              ├─ docker create agent-chrome（挂载 profile 拷贝）
-              ├─ 等待 CDP :9222 就绪
-              └─ Patchright connectOverCDP
+              └─ 返回 session-id → CLI 打印到 stdout
+                 → 关闭 WebSocket（session 不受影响）
+```
+
+后续命令（每条命令独立短连）：
+
+```
+MOAT_SESSION=<id> moat find role button --name "Submit"
+    │
+    └─ 从 env 读 MOAT_SESSION
+         │
+         └─ 开 WebSocket → 发 command（带 sessionId）→ Controller:
+              │
+              └─ 查 Session Registry → 从 CDP 缓存取连接 → Patchright 执行
                    │
-                   └─ 返回 session-id
-                      │
-                      └─ SDK 持有 session-id，CLI 写入 ~/.moat/session
+                   └─ 返回结果 → 关闭 WebSocket
 ```
 
-后续命令：
+销毁：
 
 ```
-moat find role button --name "Submit"
+MOAT_SESSION=<id> moat destroy
     │
-    └─ CLI 读 ~/.moat/session → Rust SDK.command(sessionId, ...)
+    └─ 开 WebSocket → 发 deregister → Controller:
          │
-         └─ WebSocket → Controller（带 sessionId）
-              │
-              └─ 查 Session Registry → 对应 agent-chrome → Patchright 执行
+         ├─ 停止并删除容器
+         └─ rm -rf /data/profiles/<session-id>/
 ```
 
-收尾：
-
-```
-moat disconnect
-    │
-    └─ Rust SDK.disconnect()
-         │
-         └─ WebSocket → Controller
-              │
-              ├─ 停止并删除容器
-              └─ rm -rf /data/profiles/<session-id>/
-                 │
-                 └─ CLI 清除 ~/.moat/session
-```
-
-**配置**：
+**配置**（纯环境变量，由项目 skill 的 `.env` 提供）：
 
 ```bash
-export MOAT_CONTROLLER="ws://192.168.1.200:3000"
-export MOAT_PROFILE="default"
-
-# 或 ~/.moat/config.json
-{ "controller": "ws://192.168.1.200:3000", "profile": "default" }
-
-# 优先级：CLI flag > 环境变量 > 配置文件
+MOAT_CONTROLLER="ws://192.168.1.211:3000"
+MOAT_SESSION="<session-id>"
 ```
 
 ### 9.6 增强（来自 opencli / CLI-Anything）
@@ -595,63 +584,12 @@ opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借�
 
 ### 9.7 SKILL.md
 
-`skills/moat/SKILL.md`，随包分发，Claude Code / Cursor 自动加载：
+两个 SKILL.md 文件：
 
-```markdown
----
-name: moat
-description: Control a remote Chromium browser via agent-browser CLI. Execute web automation using semantic locators (Playwright-style) first, snapshot as exploration fallback.
-allowed-tools: Bash(moat:*)
----
+- `skills/agent-browser/SKILL.md` — **用户级路由 skill**。安装到 `~/.agents/skills/agent-browser/`，替换 Vercel 原版。首次触发时问用户选择本地（下载 Vercel 原版到项目）或远程（拷贝 moat 模板到项目），并写项目 skill 的 `.env`。
+- `skills/moat/SKILL.md` — **项目级远程 skill 模板**。被路由 skill 拷贝到 `<project>/skills/agent-browser/`。包含完整命令参考、工作流、session 隔离说明。CLI 从 `.env` 读取 `MOAT_CONTROLLER` + `MOAT_SESSION`。
 
-# Interaction Model
-
-moat inherits agent-browser's interaction model. The primary path is semantic
-locators that map directly to Playwright's getByRole/getByLabel/getByText/etc.
-
-## Rules
-
-1. **Start any session with `moat connect`**. Without it, all commands fail with exit 77.
-2. **Prefer semantic locators over snapshot**. Use `find role button --name "Submit"`,
-   `find label "Email" fill "..."`, `find text "Login"` for 90% of interactions.
-   These are cheap (~40 tokens) and map to Playwright's semantic API.
-3. **Use `moat snapshot` only when**: the page is completely unfamiliar, or a
-   semantic locator returned "element not found". Snapshot dumps the full ARIA
-   tree (1000+ tokens), so it's an exploration tool, not a per-step observation.
-4. **After snapshot, use `@eN` refs** to act on specific elements, then return to
-   semantic locators for subsequent steps.
-5. **Always `moat disconnect` when done** to free the container and profile copy.
-
-## Primary commands (semantic locators)
-
-moat find role <role> [--name <name>] [action]
-moat find label <label> [action] [text]
-moat find placeholder <text> [action] [text]
-moat find text <text> [action]
-moat find testid <id> [action] [text]
-
-Actions: click (default), fill <text>, type <text>, check, uncheck, hover
-
-## Fallback commands (exploration)
-
-moat snapshot                    — ARIA tree with @eN refs
-moat click @eN                   — click by ref
-moat fill @eN "text"             — fill by ref
-
-## Other
-
-moat connect / disconnect / status
-moat open <url> / back / forward / reload
-moat press <key>
-moat screenshot [--output file]
-moat eval "<js>"
-moat batch                       — stdin: [[cmd, args...], ...]
-
-## Exit codes
-
-0=ok, 2=usage, 66=element not found, 69=controller down, 75=timeout,
-77=no session, 78=config error
-```
+详见 `skills/` 目录下的实际文件。
 
 ---
 
@@ -666,16 +604,13 @@ Wire 协议是整个系统的中心契约 —— 两个 SDK（TS + Rust）编码
 Session envelope：
 
 ```typescript
-type WireRequest = {
-  readonly sessionId: string;
-  readonly command: BrowserCommand;  // 对齐 agent-browser daemon JSON
-};
-
-type WireResponse = {
-  readonly sessionId: string;
-  readonly response: BrowserResponse;  // 对齐 agent-browser 响应 JSON
-};
+type WireRequest =
+  | { readonly type: "register"; readonly profile?: string }
+  | { readonly type: "deregister"; readonly sessionId: string }
+  | { readonly type: "command"; readonly sessionId: string; readonly command: BrowserCommand };
 ```
+
+每条命令开短连 WebSocket，发一条 WireRequest，收一条 WireResponse，关连接。session 不绑定 WebSocket 生命周期。
 
 `BrowserCommand` / `BrowserResponse` 的字段结构对齐 agent-browser，通过 arktype schema 做运行时验证。TS SDK 和 Controller 直接使用这些类型，Rust SDK 维护等价的 Rust struct + serde 定义。
 
@@ -689,7 +624,6 @@ type SessionState =
   | { readonly _tag: "CreatingContainer"; readonly profileId: string }
   | { readonly _tag: "ConnectingCDP"; readonly containerId: string }
   | { readonly _tag: "Active"; readonly containerId: string; readonly cdpUrl: string }
-  | { readonly _tag: "Reconnecting"; readonly since: number }
   | { readonly _tag: "Expired"; readonly reason: string };
 
 type ControllerError =
@@ -798,7 +732,7 @@ moat-browser/
 │   ├── src/            # CLI 二进制（fork 自 agent-browser）
 │   │   ├── commands.rs    # 来自 upstream，保持同步
 │   │   ├── connection.rs  # 唯一实质修改：transport 层改为调用 Rust SDK
-│   │   ├── main.rs        # 加 connect/disconnect/status 命令
+│   │   ├── main.rs        # 加 init/destroy/status 命令
 │   │   └── ...            # 其余文件保持 upstream 同步
 │   └── UPSTREAM.md     # 记录与 upstream 的 diff、合并策略
 ├── packages/           # Bun workspace（TS/Node）
@@ -810,8 +744,10 @@ moat-browser/
 │   ├── user-chrome/    # User Chrome 镜像 (neko + Chromium)
 │   └── agent-chrome/   # Agent Chrome 镜像 (Chrome for Testing + CDP)
 ├── skills/
+│   ├── agent-browser/
+│   │   └── SKILL.md    # 路由 skill（用户级）：问本地/远程，拷贝对应 skill 到项目
 │   └── moat/
-│       └── SKILL.md    # Agent 可发现性文档，随包分发
+│       └── SKILL.md    # 远程 skill 模板（项目级）：被路由 skill 拷贝到项目
 ├── README.md           # 设计文档
 ├── CLAUDE.md           # 无人值守开发指南
 ├── package.json

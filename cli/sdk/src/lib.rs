@@ -40,7 +40,6 @@ impl MoatClient {
                 session_id: Some(sid),
                 ..
             } => {
-                session::write_session_id(&sid)?;
                 Ok(Self {
                     url: url.to_string(),
                     session_id: sid,
@@ -175,8 +174,6 @@ impl MoatClient {
         let resp = recv_json(&mut ws).await?;
 
         let _ = ws.close(None).await;
-
-        session::clear_session_id()?;
 
         match resp {
             WireResponse::DeregisterResult { success: true, .. } => Ok(()),

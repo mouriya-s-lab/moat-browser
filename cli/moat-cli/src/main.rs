@@ -24,24 +24,8 @@ use moat_sdk::MoatClient;
 
 fn controller_url() -> Result<String, String> {
     match env::var("MOAT_CONTROLLER") {
-        Ok(val) if !val.is_empty() => return Ok(val),
-        _ => {}
-    }
-    {
-        let home = dirs::home_dir().ok_or("no home dir")?;
-        let config_path = home.join(".moat").join("config.json");
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-            let config: serde_json::Value =
-                serde_json::from_str(&content).map_err(|e| e.to_string())?;
-            config
-                .get("controller")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .ok_or_else(|| "no 'controller' field in config".into())
-        } else {
-            Err("MOAT_CONTROLLER not set and ~/.moat/config.json not found".into())
-        }
+        Ok(val) if !val.is_empty() => Ok(val),
+        _ => Err("MOAT_CONTROLLER not set".into()),
     }
 }
 
@@ -143,46 +127,6 @@ async fn main() {
             return;
         }
 
-        // use: select an existing session
-        "use" => {
-            let session_id = match clean.get(1) {
-                Some(id) => id.clone(),
-                None => {
-                    if flags.json {
-                        print_json_error("Usage: moat use <session-id>");
-                    } else {
-                        eprintln!("{} Usage: moat use <session-id>", color::error_indicator());
-                    }
-                    exit(1);
-                }
-            };
-            match moat_sdk::session::write_session_id(&session_id) {
-                Ok(()) => {
-                    if flags.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string(&json!({
-                                "success": true,
-                                "data": { "sessionId": session_id }
-                            }))
-                            .unwrap()
-                        );
-                    } else {
-                        println!("Now using session: {}", session_id);
-                    }
-                }
-                Err(e) => {
-                    if flags.json {
-                        print_json_error(e.to_string());
-                    } else {
-                        eprintln!("{} {}", color::error_indicator(), e);
-                    }
-                    exit(1);
-                }
-            }
-            return;
-        }
-
         // destroy: deregister session, destroy container
         "disconnect" | "destroy" => {
             let url = match controller_url() {
@@ -212,9 +156,7 @@ async fn main() {
                         println!("{} Disconnected.", color::success_indicator());
                     }
                 }
-                Err(e) => {
-                    // Session may already be gone — clean up local state
-                    let _ = moat_sdk::session::clear_session_id();
+                Err(_) => {
                     if flags.json {
                         println!(r#"{{"success":true}}"#);
                     } else {
