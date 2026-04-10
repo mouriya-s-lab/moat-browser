@@ -11,14 +11,16 @@ use wire::{Response, WireRequest, WireResponse};
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Stateless client — each operation opens a fresh WebSocket connection.
 pub struct MoatClient {
-    ws: WsStream,
+    url: String,
     session_id: String,
 }
 
 impl MoatClient {
-    /// Connect to Controller and register a new session.
-    pub async fn connect(url: &str, profile: Option<&str>) -> Result<Self, SdkError> {
+    /// Init: register a new session (creates container + CDP).
+    /// Opens ws, sends Register, receives session ID, closes ws.
+    pub async fn init(url: &str, profile: Option<&str>) -> Result<Self, SdkError> {
         let (mut ws, _) = connect_async(url)
             .await
             .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
@@ -29,6 +31,9 @@ impl MoatClient {
         send_json(&mut ws, &req).await?;
         let resp = recv_json(&mut ws).await?;
 
+        // Close ws — session lives server-side, not tied to this connection
+        let _ = ws.close(None).await;
+
         match resp {
             WireResponse::RegisterResult {
                 success: true,
@@ -37,7 +42,7 @@ impl MoatClient {
             } => {
                 session::write_session_id(&sid)?;
                 Ok(Self {
-                    ws,
+                    url: url.to_string(),
                     session_id: sid,
                 })
             }
@@ -57,46 +62,13 @@ impl MoatClient {
         }
     }
 
-    /// Resume an existing session.
-    pub async fn resume(url: &str, session_id: &str) -> Result<Self, SdkError> {
-        let (mut ws, _) = connect_async(url)
-            .await
-            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
-
-        let req = WireRequest::Resume {
-            session_id: session_id.to_string(),
-        };
-        send_json(&mut ws, &req).await?;
-        let resp = recv_json(&mut ws).await?;
-
-        match resp {
-            WireResponse::RegisterResult {
-                success: true,
-                session_id: Some(sid),
-                ..
-            } => Ok(Self {
-                ws,
-                session_id: sid,
-            }),
-            WireResponse::RegisterResult {
-                success: false,
-                error,
-                code,
-                ..
-            } => Err(SdkError::RegisterFailed {
-                error: error.unwrap_or_default(),
-                code: code.unwrap_or(1),
-            }),
-            _ => Err(SdkError::RegisterFailed {
-                error: "unexpected response".into(),
-                code: 1,
-            }),
-        }
+    /// Create client from an existing session ID (for subsequent commands).
+    pub fn from_session(url: String, session_id: String) -> Self {
+        Self { url, session_id }
     }
 
-    /// Send a command (agent-browser Request format) and return an
-    /// agent-browser-compatible Response.
-    pub async fn command(&mut self, mut request: Value) -> Result<Response, SdkError> {
+    /// Send a command — opens a fresh ws, sends Command, receives response, closes ws.
+    pub async fn command(&self, mut request: Value) -> Result<Response, SdkError> {
         // Strip "id" field (CLI artifact, not needed for WebSocket)
         if let Some(obj) = request.as_object_mut() {
             obj.remove("id");
@@ -126,7 +98,7 @@ impl MoatClient {
             .and_then(|v| v.as_str())
             == Some("close")
         {
-            self.disconnect().await?;
+            self.destroy().await?;
             return Ok(Response {
                 success: true,
                 data: None,
@@ -135,12 +107,18 @@ impl MoatClient {
             });
         }
 
+        let (mut ws, _) = connect_async(&self.url)
+            .await
+            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+
         let wire_req = WireRequest::Command {
             session_id: self.session_id.clone(),
             command: request,
         };
-        send_json(&mut self.ws, &wire_req).await?;
-        let resp = recv_json(&mut self.ws).await?;
+        send_json(&mut ws, &wire_req).await?;
+        let resp = recv_json(&mut ws).await?;
+
+        let _ = ws.close(None).await;
 
         match resp {
             WireResponse::CommandResult {
@@ -184,13 +162,19 @@ impl MoatClient {
         }
     }
 
-    /// Disconnect — deregister session and clean up.
-    pub async fn disconnect(&mut self) -> Result<(), SdkError> {
+    /// Destroy session — opens ws, sends Deregister, closes ws.
+    pub async fn destroy(&self) -> Result<(), SdkError> {
+        let (mut ws, _) = connect_async(&self.url)
+            .await
+            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+
         let req = WireRequest::Deregister {
             session_id: self.session_id.clone(),
         };
-        send_json(&mut self.ws, &req).await?;
-        let resp = recv_json(&mut self.ws).await?;
+        send_json(&mut ws, &req).await?;
+        let resp = recv_json(&mut ws).await?;
+
+        let _ = ws.close(None).await;
 
         session::clear_session_id()?;
 

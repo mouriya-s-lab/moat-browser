@@ -15,7 +15,7 @@ pub enum SdkError {
 impl fmt::Display for SdkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoSession => write!(f, "No active session. Run `moat connect` first."),
+            Self::NoSession => write!(f, "No active session. Run `moat init` first."),
             Self::ConnectionFailed(msg) => write!(f, "Connection failed: {}", msg),
             Self::WebSocket(msg) => write!(f, "WebSocket error: {}", msg),
             Self::RegisterFailed { error, code } => {

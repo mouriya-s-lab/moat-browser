@@ -97,7 +97,8 @@ async fn main() {
     // ─── moat-specific subcommands ───
 
     match clean[0].as_str() {
-        "connect" => {
+        // init: register session, create container + CDP
+        "connect" | "init" => {
             let url = match controller_url() {
                 Ok(u) => u,
                 Err(e) => {
@@ -111,7 +112,7 @@ async fn main() {
                 .and_then(|i| args.get(i + 1))
                 .map(String::as_str);
 
-            match MoatClient::connect(&url, profile).await {
+            match MoatClient::init(&url, profile).await {
                 Ok(client) => {
                     if flags.json {
                         println!(
@@ -142,7 +143,48 @@ async fn main() {
             return;
         }
 
-        "disconnect" => {
+        // use: select an existing session
+        "use" => {
+            let session_id = match clean.get(1) {
+                Some(id) => id.clone(),
+                None => {
+                    if flags.json {
+                        print_json_error("Usage: moat use <session-id>");
+                    } else {
+                        eprintln!("{} Usage: moat use <session-id>", color::error_indicator());
+                    }
+                    exit(1);
+                }
+            };
+            match moat_sdk::session::write_session_id(&session_id) {
+                Ok(()) => {
+                    if flags.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "success": true,
+                                "data": { "sessionId": session_id }
+                            }))
+                            .unwrap()
+                        );
+                    } else {
+                        println!("Now using session: {}", session_id);
+                    }
+                }
+                Err(e) => {
+                    if flags.json {
+                        print_json_error(e.to_string());
+                    } else {
+                        eprintln!("{} {}", color::error_indicator(), e);
+                    }
+                    exit(1);
+                }
+            }
+            return;
+        }
+
+        // destroy: deregister session, destroy container
+        "disconnect" | "destroy" => {
             let url = match controller_url() {
                 Ok(u) => u,
                 Err(e) => {
@@ -161,25 +203,17 @@ async fn main() {
                     exit(77);
                 }
             };
-            match MoatClient::resume(&url, &session_id).await {
-                Ok(mut client) => match client.disconnect().await {
-                    Ok(()) => {
-                        if flags.json {
-                            println!(r#"{{"success":true}}"#);
-                        } else {
-                            println!("{} Disconnected.", color::success_indicator());
-                        }
+            let client = MoatClient::from_session(url, session_id);
+            match client.destroy().await {
+                Ok(()) => {
+                    if flags.json {
+                        println!(r#"{{"success":true}}"#);
+                    } else {
+                        println!("{} Disconnected.", color::success_indicator());
                     }
-                    Err(e) => {
-                        if flags.json {
-                            print_json_error(e.to_string());
-                        } else {
-                            eprintln!("{} {}", color::error_indicator(), e);
-                        }
-                        exit(1);
-                    }
-                },
-                Err(_) => {
+                }
+                Err(e) => {
+                    // Session may already be gone — clean up local state
                     let _ = moat_sdk::session::clear_session_id();
                     if flags.json {
                         println!(r#"{{"success":true}}"#);
@@ -227,7 +261,7 @@ async fn main() {
                 print_json_error(format!("'{}' is not available in moat CLI", clean[0]));
             } else {
                 eprintln!(
-                    "{} '{}' is not available in moat CLI. Use `moat connect` to manage sessions.",
+                    "{} '{}' is not available in moat CLI. Use `moat init` to create sessions.",
                     color::error_indicator(),
                     clean[0]
                 );
@@ -302,10 +336,10 @@ async fn main() {
         Err(e) => {
             if e.contains("No active session") || e.contains("NoSession") {
                 if flags.json {
-                    print_json_error("No active session. Run `moat connect` first.");
+                    print_json_error("No active session. Run `moat init` first.");
                 } else {
                     eprintln!(
-                        "{} No active session. Run `moat connect` first.",
+                        "{} No active session. Run `moat init` first.",
                         color::error_indicator()
                     );
                 }

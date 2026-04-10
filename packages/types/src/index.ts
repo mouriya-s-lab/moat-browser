@@ -165,7 +165,6 @@ export type SessionState =
       readonly createdAt: number;
       readonly lastActivity: number;
     }
-  | { readonly _tag: "Reconnecting"; readonly since: number; readonly containerId: string; readonly containerIp: string; readonly cdpUrl: string }
   | { readonly _tag: "Expired"; readonly reason: string };
 
 // ─── ErrorCode ───
@@ -313,7 +312,6 @@ export type BrowserCommand =
 
 export type WireRequest =
   | { readonly type: "register"; readonly profile?: string }
-  | { readonly type: "resume"; readonly sessionId: string }
   | { readonly type: "deregister"; readonly sessionId: string }
   | { readonly type: "command"; readonly sessionId: string; readonly command: BrowserCommand };
 
@@ -467,10 +465,6 @@ export const wireRequestSchema = type({
   type: "'register'",
   "profile?": "string",
 })
-  .or({
-    type: "'resume'",
-    sessionId: "string",
-  })
   .or({
     type: "'deregister'",
     sessionId: "string",
