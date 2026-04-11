@@ -98,20 +98,12 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       });
     }
 
-    // Step 2: Clean copied profile for agent-chrome compatibility
-    // Source profile is from Debian Chromium (user-chrome), destination is Chrome for Testing.
-    // Remove lock files and incompatible per-profile data; keep top-level config.
+    // Step 2: Clean lock files from copied profile
     try {
       await execFile("find", [profileDest, "-maxdepth", "1", "-name", "Singleton*", "-delete"]);
     } catch {
       // best-effort
     }
-    try {
-      await execFile("rm", ["-rf", `${profileDest}/Default`]);
-    } catch {
-      // best-effort — Default may not exist
-    }
-
     // Step 3: chown -R 1000:1000
     try {
       await execFile("chown", ["-R", "1000:1000", profileDest]);
