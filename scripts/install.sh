@@ -5,10 +5,16 @@ REPO="Mouriya-Emma/moat-browser"
 BIN="moat-x86_64-linux"
 INSTALL_DIR="${MOAT_INSTALL_DIR:-$HOME/.local/bin}"
 
+if ! command -v gh &>/dev/null; then
+  echo "Error: gh CLI required (private repo). Install from https://cli.github.com"
+  exit 1
+fi
+
 mkdir -p "$INSTALL_DIR"
 
 echo "Downloading moat CLI..."
-curl -fsSL "https://github.com/${REPO}/releases/latest/download/${BIN}" -o "${INSTALL_DIR}/moat"
+gh release download --repo "$REPO" --pattern "$BIN" --dir "$INSTALL_DIR" --clobber
+mv "${INSTALL_DIR}/${BIN}" "${INSTALL_DIR}/moat"
 chmod +x "${INSTALL_DIR}/moat"
 
 echo "Installed to ${INSTALL_DIR}/moat"

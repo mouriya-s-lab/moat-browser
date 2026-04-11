@@ -16,7 +16,15 @@ Set environment variables (typically in the project's `.env`):
 MOAT_CONTROLLER="ws://<controller-host>:3000"
 ```
 
-Install the CLI: `curl -fsSL https://raw.githubusercontent.com/Mouriya-Emma/moat-browser/main/scripts/install.sh | bash`
+Install the CLI:
+
+```bash
+# via install script (requires gh CLI authenticated to the repo)
+gh repo clone Mouriya-Emma/moat-browser /tmp/moat-install && bash /tmp/moat-install/scripts/install.sh && rm -rf /tmp/moat-install
+
+# or directly
+gh release download --repo Mouriya-Emma/moat-browser --pattern moat-x86_64-linux --dir ~/.local/bin && mv ~/.local/bin/moat-x86_64-linux ~/.local/bin/moat && chmod +x ~/.local/bin/moat
+```
 
 Or build from source: `cd cli && cargo build --release` (binary at `cli/target/release/moat`).
 
