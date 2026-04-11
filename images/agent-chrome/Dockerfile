@@ -1,27 +1,20 @@
 FROM debian:bookworm-slim
 
-ARG CHROME_VERSION=143.0.7499.0
-
 # 系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates unzip \
+    wget ca-certificates \
     xserver-xorg-video-dummy xserver-xorg-core xinit \
     openbox \
-    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
-    libxss1 libxtst6 libnss3 libnspr4 libatk1.0-0 \
-    libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 \
-    libpango-1.0-0 libcairo2 libasound2 libdbus-1-3 libxkbcommon0 \
     fonts-liberation fonts-noto-cjk \
     supervisor socat \
     && rm -rf /var/lib/apt/lists/*
 
-# Chrome for Testing
-RUN curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" \
-    -o /tmp/chrome.zip \
-    && unzip /tmp/chrome.zip -d /opt/ \
-    && mv /opt/chrome-linux64 /opt/chrome \
-    && rm /tmp/chrome.zip \
-    && ln -s /opt/chrome/chrome /usr/local/bin/chrome
+# Google Chrome stable — 与 user-chrome 同一个 deb，profile 零清理
+RUN wget -O /tmp/google-chrome.deb "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
+    && apt-get update \
+    && apt-get install -y /tmp/google-chrome.deb \
+    && rm -f /tmp/google-chrome.deb \
+    && rm -rf /var/lib/apt/lists/*
 
 # 非 root 用户 (UID 1000，与 neko 一致)
 RUN groupadd -g 1000 chrome \

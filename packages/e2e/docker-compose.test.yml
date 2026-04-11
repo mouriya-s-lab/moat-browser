@@ -8,7 +8,7 @@ services:
       - "8080:8080"
       - "52000-52100:52000-52100/udp"
     volumes:
-      - profile-data:/home/neko/.config/chromium
+      - profile-data:/home/neko/.config/google-chrome
     environment:
       NEKO_DESKTOP_SCREEN: "1920x1080@30"
       NEKO_MEMBER_MULTIUSER_USER_PASSWORD: neko

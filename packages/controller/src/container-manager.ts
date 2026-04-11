@@ -98,26 +98,7 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       });
     }
 
-    // Step 2: Strip Default/ down to auth-relevant files only.
-    // Debian Chromium (user-chrome) profile is incompatible with Chrome for Testing —
-    // keeping Preferences, GPUCache, Code Cache, etc. causes SIGTRAP crash.
-    // Whitelist: Cookies, Local Storage, Session Storage, IndexedDB (auth state).
-    const defaultDir = `${profileDest}/Default`;
-    try {
-      const { stdout } = await execFile("ls", [defaultDir]);
-      const keep = new Set([
-        "Cookies", "Cookies-journal",
-        "Local Storage", "Session Storage", "IndexedDB",
-      ]);
-      const entries = stdout.split("\n").filter(Boolean);
-      for (const entry of entries) {
-        if (!keep.has(entry)) {
-          await execFile("rm", ["-rf", `${defaultDir}/${entry}`]);
-        }
-      }
-    } catch {
-      // best-effort — Default may not exist
-    }
+    // Step 2: Remove Singleton lock files (best-effort)
     try {
       await execFile("find", [profileDest, "-maxdepth", "1", "-name", "Singleton*", "-delete"]);
     } catch {
