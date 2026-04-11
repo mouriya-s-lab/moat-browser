@@ -78,7 +78,7 @@ Read `~/.agents/skills/agent-browser/.env`. If it contains `MOAT_CONTROLLER=<url
    ```
 3. Verify `moat` CLI is available:
    ```bash
-   which moat || echo "moat CLI not found — build with: cd <moat-browser-repo>/cli && cargo build --release"
+   which moat || echo "moat CLI not found — install with: curl -fsSL https://raw.githubusercontent.com/Mouriya-Emma/moat-browser/main/scripts/install.sh | bash"
    ```
 4. Copy the moat skill into the project. If the moat-browser repo is local:
    ```bash

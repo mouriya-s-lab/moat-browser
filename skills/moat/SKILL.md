@@ -16,7 +16,9 @@ Set environment variables (typically in the project's `.env`):
 MOAT_CONTROLLER="ws://<controller-host>:3000"
 ```
 
-The CLI binary is at `cli/target/release/moat` (or `moat` if installed to PATH).
+Install the CLI: `curl -fsSL https://raw.githubusercontent.com/Mouriya-Emma/moat-browser/main/scripts/install.sh | bash`
+
+Or build from source: `cd cli && cargo build --release` (binary at `cli/target/release/moat`).
 
 After `moat init`, capture the session ID and set `MOAT_SESSION` for subsequent commands:
 
