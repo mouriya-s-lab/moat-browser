@@ -16,6 +16,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Test
+        working-directory: cli
+        run: cargo test
+
       - name: Build
         working-directory: cli
         run: cargo build --release
