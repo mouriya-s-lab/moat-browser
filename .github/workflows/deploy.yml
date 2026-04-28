@@ -1,0 +1,146 @@
+# Tag-triggered build + deploy for moat-browser. Pairs with
+# Mouriya-Emma/homelab-tf#133 (RFC #123 phase 3 — moat-browser stack
+# via Komodo).
+#
+# Two jobs:
+#   1. build (ubuntu-latest)  — fetch a 5-min Keycloak token, docker
+#      login to registry.237575.xyz, build + push three immutable image
+#      tags (controller, user-chrome, agent-chrome) at ${VERSION}.
+#   2. deploy (vctcn netbird runner) — fetch a fresh Keycloak token,
+#      call Komodo Core's HTTP API at http://moat-app1.mouriya.lan:9120
+#      (mesh-only) to (a) UpdateStack with environment =
+#      MOAT_BROWSER_VERSION + a one-shot pre_deploy that does
+#      `docker login` and pre-pulls the agent-chrome image on the
+#      browser VM, then (b) DeployStack — Komodo Periphery runs
+#      pre_deploy then `docker compose up -d`. The whole flow
+#      completes inside the 5-min token TTL; the embedded token
+#      becomes invalid after deploy and is overwritten by the next
+#      run.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   KEYCLOAK_REGISTRY_CLIENT_SECRET — `registry` realm `registry`
+#       client's client_secret. Same value used by other repos that
+#       push to registry.237575.xyz (pve-vctcn/apps/registry).
+#   KOMODO_API_KEY / KOMODO_API_SECRET — Komodo Core API credentials.
+#       Same key/secret pair the homelab Ansible run uses (see
+#       _shared/ansible/secrets.yml in homelab-tf).
+#
+# Triggered automatically by tag push (`git tag v0.1.5 && git push
+# origin v0.1.5`); manual runs use workflow_dispatch and accept an
+# optional `version` input — when empty, falls back to UTC timestamp
+# `YYYYMMDD-HHMMSS`.
+
+name: Build and deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image tag (default: timestamp YYYYMMDD-HHMMSS UTC)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build + push images
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            v="${{ inputs.version }}"
+          elif [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            v="${GITHUB_REF#refs/tags/}"
+          else
+            v="$(date -u +%Y%m%d-%H%M%S)"
+          fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "Using version: $v"
+
+      - name: Get Keycloak access token
+        id: kc
+        uses: Mouriya-Emma/keycloak-token-action@v1
+        with:
+          keycloak-url: https://keycloak.237575.xyz
+          realm: registry
+          client-id: registry
+          client-secret: ${{ secrets.KEYCLOAK_REGISTRY_CLIENT_SECRET }}
+
+      - name: Login to registry.237575.xyz
+        run: |
+          echo "${{ steps.kc.outputs.access-token }}" | \
+            docker login registry.237575.xyz -u sa-registry --password-stdin
+
+      - name: Build + push controller
+        run: |
+          IMG="registry.237575.xyz/moat-browser/controller:${{ steps.version.outputs.value }}"
+          docker build -t "$IMG" -f packages/controller/Dockerfile .
+          docker push "$IMG"
+
+      - name: Build + push user-chrome
+        run: |
+          IMG="registry.237575.xyz/moat-browser/user-chrome:${{ steps.version.outputs.value }}"
+          docker build -t "$IMG" images/user-chrome
+          docker push "$IMG"
+
+      - name: Build + push agent-chrome
+        run: |
+          IMG="registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}"
+          docker build -t "$IMG" images/agent-chrome
+          docker push "$IMG"
+
+  deploy:
+    name: Deploy to browser VM via Komodo
+    needs: build
+    runs-on: [self-hosted, linux, vctcn, netbird]
+    env:
+      KOMODO_API_URL: http://moat-app1.mouriya.lan:9120
+      KOMODO_API_KEY: ${{ secrets.KOMODO_API_KEY }}
+      KOMODO_API_SECRET: ${{ secrets.KOMODO_API_SECRET }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Get fresh Keycloak access token
+        id: kc
+        uses: Mouriya-Emma/keycloak-token-action@v1
+        with:
+          keycloak-url: https://keycloak.237575.xyz
+          realm: registry
+          client-id: registry
+          client-secret: ${{ secrets.KEYCLOAK_REGISTRY_CLIENT_SECRET }}
+
+      - name: Update Komodo stack environment + pre_deploy
+        env:
+          TOKEN: ${{ steps.kc.outputs.access-token }}
+        run: |
+          set -euo pipefail
+          PRE_DEPLOY_CMD="docker login -u sa-registry -p '$TOKEN' registry.237575.xyz && docker pull registry.237575.xyz/moat-browser/agent-chrome:$VERSION"
+          BODY=$(jq -nc \
+            --arg env "MOAT_BROWSER_VERSION=$VERSION" \
+            --arg cmd "$PRE_DEPLOY_CMD" \
+            '{type:"UpdateStack",params:{id:"moat-browser",config:{environment:$env,pre_deploy:{path:"",command:$cmd}}}}')
+          curl -fsS -X POST "$KOMODO_API_URL/write" \
+            -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" >/dev/null
+          echo "Stack updated: environment.MOAT_BROWSER_VERSION=$VERSION; pre_deploy.command set."
+
+      - name: Deploy stack
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "$KOMODO_API_URL/execute" \
+            -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"DeployStack","params":{"stack":"moat-browser"}}' \
+            -o /tmp/deploy_resp.json
+          echo "DeployStack accepted; update id:"
+          jq -r '.id // empty' /tmp/deploy_resp.json
