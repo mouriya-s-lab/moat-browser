@@ -54,6 +54,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # BuildKit's pusher uses OCI chunked uploads (PATCH per chunk,
+      # default chunk ~few MB) instead of docker CLI's monolithic
+      # PUT-per-layer. Cloudflare's free plan caps single request
+      # bodies at 100MB and registry.237575.xyz is CF-orange-cloud, so
+      # the legacy `docker build` + `docker push` path 413s on any
+      # layer larger than 100MB (notably neko/chromium base layers).
+      # buildx + --push keeps every chunk well under that limit.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Determine version
         id: version
         run: |
@@ -82,22 +92,26 @@ jobs:
             docker login registry.237575.xyz -u sa-registry --password-stdin
 
       - name: Build + push controller
-        run: |
-          IMG="registry.237575.xyz/moat-browser/controller:${{ steps.version.outputs.value }}"
-          docker build -t "$IMG" -f packages/controller/Dockerfile .
-          docker push "$IMG"
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: packages/controller/Dockerfile
+          push: true
+          tags: registry.237575.xyz/moat-browser/controller:${{ steps.version.outputs.value }}
 
       - name: Build + push user-chrome
-        run: |
-          IMG="registry.237575.xyz/moat-browser/user-chrome:${{ steps.version.outputs.value }}"
-          docker build -t "$IMG" images/user-chrome
-          docker push "$IMG"
+        uses: docker/build-push-action@v5
+        with:
+          context: images/user-chrome
+          push: true
+          tags: registry.237575.xyz/moat-browser/user-chrome:${{ steps.version.outputs.value }}
 
       - name: Build + push agent-chrome
-        run: |
-          IMG="registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}"
-          docker build -t "$IMG" images/agent-chrome
-          docker push "$IMG"
+        uses: docker/build-push-action@v5
+        with:
+          context: images/agent-chrome
+          push: true
+          tags: registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}
 
   deploy:
     name: Deploy to browser VM via Komodo
