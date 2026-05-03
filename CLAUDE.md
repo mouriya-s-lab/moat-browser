@@ -12,7 +12,7 @@
 
 | Repo | Role | Relationship |
 |---|---|---|
-| arch_lxc (`/root/work/arch_lxc`) | IaC (Terraform + Ansible) | Browser VM 104 (192.168.1.200) 的基础设施，Phase 1 已完成 |
+| homelab-tf (`~/work/homelab-tf`) | IaC (OpenTofu + Ansible + Komodo) | Browser VM 104 (192.168.1.211) 的 Komodo Stack 与 CI/CD 部署入口 |
 
 ## Issues
 

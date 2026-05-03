@@ -177,7 +177,7 @@ user-chrome 容器的 neko HTTP 端口直接暴露。用户浏览器直接访问
 ### 5.2 登录流程
 
 ```
-1. 用户浏览器直接访问 neko HTTP 端口（如 http://192.168.1.200:8080）
+1. 用户浏览器直接访问 neko HTTP 端口（如 http://browser.mouriya.lan:8080）
 2. neko Vue.js 客户端加载，WebRTC 连接建立
 3. 用户看到远程 Chromium 桌面
 4. 用户操作远程 Chromium 登录 SaaS 系统（包括 MFA）
@@ -359,7 +359,7 @@ SDK 的通用性要求：agent-browser CLI、opencli、CLI-Anything 三种风格
 import { createSession } from "@moat-browser/sdk";
 
 const session = await createSession({
-  controller: "ws://192.168.1.200:3000",
+  controller: "ws://browser.mouriya.lan:3000",
   profile: "default",
 });
 
@@ -575,11 +575,11 @@ moat disconnect
 **配置**：
 
 ```bash
-export MOAT_CONTROLLER="ws://192.168.1.200:3000"
+export MOAT_CONTROLLER="ws://browser.mouriya.lan:3000"
 export MOAT_PROFILE="default"
 
 # 或 ~/.moat/config.json
-{ "controller": "ws://192.168.1.200:3000", "profile": "default" }
+{ "controller": "ws://browser.mouriya.lan:3000", "profile": "default" }
 
 # 优先级：CLI flag > 环境变量 > 配置文件
 ```
