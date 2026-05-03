@@ -104,7 +104,7 @@ chown -R 1000:1000 /data/profile
 | `NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD` | `<admin-pw>` | 管理员密码（可控制键鼠） |
 | `NEKO_WEBRTC_EPR` | `52000-52100` | WebRTC 端口范围 |
 | `NEKO_WEBRTC_ICELITE` | `1` | 轻量 ICE agent（同 LAN 无需 STUN/TURN） |
-| `NEKO_WEBRTC_NAT1TO1` | `192.168.1.200` | VM 外部 IP（用于 ICE candidate） |
+| `NEKO_WEBRTC_NAT1TO1` | `192.168.1.211` | VM 外部 IP（用于 ICE candidate） |
 
 ### 1.9 关键约束
 
@@ -491,7 +491,7 @@ services:
       NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: admin
       NEKO_WEBRTC_EPR: "52000-52100"
       NEKO_WEBRTC_ICELITE: "1"
-      NEKO_WEBRTC_NAT1TO1: "192.168.1.200"
+      NEKO_WEBRTC_NAT1TO1: "192.168.1.211"
     networks:
       - moat
 
