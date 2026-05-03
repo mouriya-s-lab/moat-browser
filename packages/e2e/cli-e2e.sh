@@ -9,7 +9,7 @@ set -uo pipefail
 #           P1 ops (P1a-P1g), JSON (J1-J7), Exit codes (EC1-EC4)
 # No assertions — human reviews log output.
 
-MOAT="${MOAT:-./cli/target/release/moat}"
+MOAT="${MOAT:-$(command -v moat 2>/dev/null || echo ./cli/target/release/moat)}"
 export MOAT_CONTROLLER="${MOAT_CONTROLLER:-ws://192.168.1.211:3000}"
 
 TOTAL=0

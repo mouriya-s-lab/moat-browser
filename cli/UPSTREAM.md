@@ -57,9 +57,10 @@ cli/
 
 ## Current State
 
-The CLI binary (`moat-cli/`) currently has a minimal implementation:
-- `connect`/`disconnect`/`status` subcommands — fully functional via moat-sdk
-- Command passthrough — simplified (not yet using upstream's `parse_command`)
+The CLI binary (`moat-cli/`) is feature-complete with upstream parity:
+- `connect`/`disconnect`/`status` subcommands — moat-specific, via moat-sdk
+- All upstream commands — routed through `parse_command` (commands.rs) + `send_command` (connection.rs)
+- Output formatting — upstream's `output.rs` handles JSON/text rendering
+- Validation — upstream's `validation.rs` for input checks
 
-**Next step**: Copy upstream's CLI source files into `moat-cli/src/`, replace
-`connection.rs`, and add the moat-specific subcommands to `main.rs`.
+**Upstream files integrated**: `commands.rs`, `output.rs`, `flags.rs`, `validation.rs`, `color.rs`
