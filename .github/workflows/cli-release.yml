@@ -1,0 +1,32 @@
+name: CLI Release
+
+on:
+  push:
+    tags:
+      - "cli-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        working-directory: cli
+        run: cargo test
+
+      - name: Build
+        working-directory: cli
+        run: cargo build --release
+
+      - name: Rename artifact
+        run: mv cli/target/release/moat moat-x86_64-linux
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: moat-x86_64-linux
