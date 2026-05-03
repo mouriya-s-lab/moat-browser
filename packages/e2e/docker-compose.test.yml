@@ -15,7 +15,7 @@ services:
       NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: admin
       NEKO_WEBRTC_EPR: "52000-52100"
       NEKO_WEBRTC_ICELITE: "1"
-      NEKO_WEBRTC_NAT1TO1: "192.168.1.200"
+      NEKO_WEBRTC_NAT1TO1: "192.168.1.211"
     networks:
       - moat
 
