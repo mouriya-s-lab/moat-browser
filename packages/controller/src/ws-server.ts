@@ -2,6 +2,7 @@ import type { WebSocket } from "ws";
 import type { Browser } from "patchright";
 import { randomBytes } from "node:crypto";
 import {
+  type BrowserCommand,
   type ContentBoundary,
   type ControllerError,
   type WireRequest,
@@ -70,6 +71,39 @@ function errorToWireResponse(sessionId: string, error: ControllerError): WireRes
   };
 }
 
+// ─── activity logging ───
+
+type SessionActivityLog =
+  | { readonly _tag: "Register"; readonly sessionId: string; readonly profile: string }
+  | { readonly _tag: "Command"; readonly sessionId: string; readonly action: BrowserCommand["action"] }
+  | { readonly _tag: "Deregister"; readonly sessionId: string }
+  | { readonly _tag: "Expired"; readonly sessionId: string; readonly reason: string }
+  | { readonly _tag: "CdpDisconnect"; readonly sessionId: string };
+
+function logSessionActivity(event: SessionActivityLog): void {
+  const timestamp = new Date().toISOString();
+
+  switch (event._tag) {
+    case "Register":
+      console.log(`${timestamp} [register] session=${event.sessionId} profile=${event.profile}`);
+      return;
+    case "Command":
+      console.log(`${timestamp} [command] session=${event.sessionId} action=${event.action}`);
+      return;
+    case "Deregister":
+      console.log(`${timestamp} [deregister] session=${event.sessionId}`);
+      return;
+    case "Expired":
+      console.log(`${timestamp} [expired] session=${event.sessionId} reason=${event.reason}`);
+      return;
+    case "CdpDisconnect":
+      console.log(`${timestamp} [cdp-disconnect] session=${event.sessionId}`);
+      return;
+    default:
+      exhaustive(event);
+  }
+}
+
 // ─── WsHandler ───
 
 export type WsHandlerDeps = {
@@ -77,6 +111,8 @@ export type WsHandlerDeps = {
   readonly containerManager: ContainerManager;
   readonly refStore: RefStore;
   readonly config: ControllerConfig;
+  readonly connectCDP?: typeof connectCDP;
+  readonly executeCommand?: typeof executeCommand;
 };
 
 export type WsHandler = {
@@ -85,7 +121,14 @@ export type WsHandler = {
 };
 
 export function createWsHandler(deps: WsHandlerDeps): WsHandler {
-  const { registry, containerManager, refStore, config } = deps;
+  const {
+    registry,
+    containerManager,
+    refStore,
+    config,
+    connectCDP: connectCdp = connectCDP,
+    executeCommand: runCommand = executeCommand,
+  } = deps;
 
   // Persistent CDP connection cache — survives ws close, keyed by sessionId
   const cdpCache = new Map<string, CdpConnection>();
@@ -187,7 +230,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     // Step 3: CdpBridge.connect()
     let cdp: CdpConnection;
     try {
-      cdp = await connectCDP(`http://${ip}:9222`);
+      cdp = await connectCdp(`http://${ip}:9222`);
     } catch (e) {
       // Rollback: destroy container + deregister
       await containerManager.destroy(sessionId);
@@ -214,6 +257,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     // Step 5: Cache CDP connection + listen for browser disconnect
     cdpCache.set(sessionId, cdp);
     setupBrowserDisconnectHandler(cdp.browser, sessionId);
+    logSessionActivity({ _tag: "Register", sessionId, profile: profile ?? "default" });
 
     return { type: "register_result", success: true, sessionId };
   }
@@ -224,6 +268,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     sessionId: string,
     command: Parameters<typeof executeCommand>[1],
   ): Promise<WireResponse> {
+    logSessionActivity({ _tag: "Command", sessionId, action: command.action });
+
     // close → deregister
     if (command.action === "close") {
       return handleDeregister(sessionId);
@@ -246,7 +292,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     registry.touchActivity(sessionId);
 
-    const result = await executeCommand(cdp.context, command, refStore, sessionId);
+    const result = await runCommand(cdp.context, command, refStore, sessionId);
     if (result._tag === "Err") {
       return errorToWireResponse(sessionId, result.error);
     }
@@ -300,6 +346,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     // Cleanup
     cdpCache.delete(sessionId);
+    logSessionActivity({ _tag: "Deregister", sessionId });
 
     return { type: "deregister_result", sessionId, success: true };
   }
@@ -308,6 +355,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
   function setupBrowserDisconnectHandler(browser: Browser, sessionId: string): void {
     browser.on("disconnected", async () => {
+      logSessionActivity({ _tag: "CdpDisconnect", sessionId });
+
       // Session → Expired
       registry.transition(sessionId, {
         _tag: "Expired",
@@ -324,7 +373,9 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
   // ─── onSessionExpired (called by idle scanner) ───
 
-  function onSessionExpired(sessionId: string, _reason: string): void {
+  function onSessionExpired(sessionId: string, reason: string): void {
+    logSessionActivity({ _tag: "Expired", sessionId, reason });
+
     const cdp = cdpCache.get(sessionId);
     if (cdp) {
       cdp.browser.close().catch(() => {});
