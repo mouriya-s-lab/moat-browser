@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 \
     libpango-1.0-0 libcairo2 libasound2 libdbus-1-3 libxkbcommon0 \
     fonts-liberation fonts-noto-cjk \
-    supervisor \
+    supervisor socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Chrome for Testing
