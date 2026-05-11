@@ -106,11 +106,39 @@ jobs:
           push: true
           tags: registry.237575.xyz/moat-browser/user-chrome:${{ steps.version.outputs.value }}
 
-      - name: Build + push agent-chrome
+      # agent-chrome 的 Dockerfile 做完整 Debian apt install + Chrome for Testing
+      # zip 下载，实测 build 阶段 ~8min，超过 Keycloak access token 的 5min TTL，
+      # 导致 push 阶段 401（见 #196）。拆成 build（不 push, GHA cache）+ refresh
+      # token + push（cache hit，秒过）两段，让 push 阶段始终用一个 fresh 5min token。
+      - name: Build agent-chrome (no push, cache to GHA)
+        uses: docker/build-push-action@v5
+        with:
+          context: images/agent-chrome
+          push: false
+          cache-from: type=gha,scope=agent-chrome
+          cache-to: type=gha,mode=max,scope=agent-chrome
+          tags: registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}
+
+      - name: Refresh Keycloak access token for agent-chrome push
+        id: kc2
+        uses: Mouriya-Emma/keycloak-token-action@v1
+        with:
+          keycloak-url: https://keycloak.237575.xyz
+          realm: registry
+          client-id: registry
+          client-secret: ${{ secrets.KEYCLOAK_REGISTRY_CLIENT_SECRET }}
+
+      - name: Re-login to registry.237575.xyz with fresh token
+        run: |
+          echo "${{ steps.kc2.outputs.access-token }}" | \
+            docker login registry.237575.xyz -u sa-registry --password-stdin
+
+      - name: Push agent-chrome (cache hit, fits in fresh-token window)
         uses: docker/build-push-action@v5
         with:
           context: images/agent-chrome
           push: true
+          cache-from: type=gha,scope=agent-chrome
           tags: registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}
 
   deploy:
