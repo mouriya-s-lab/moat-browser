@@ -63,6 +63,13 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # network=host shares the LXD instance's netns + /etc/hosts with
+          # buildkit, so the `registry.237575.xyz → 100.85.231.90` override
+          # injected by pve-vctcn's runner-registry-mesh-hosts.sh applies to
+          # buildkit's push too. Without this, buildkit resolves registry
+          # via public DNS → 192.99.9.212 → NAT loopback refused.
+          driver-opts: network=host
 
       - name: Determine version
         id: version
