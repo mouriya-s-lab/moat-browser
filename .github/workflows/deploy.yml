@@ -48,19 +48,19 @@ permissions:
 jobs:
   build:
     name: Build + push images
-    runs-on: ubuntu-latest
+    # vctcn-runner GARM pool (Mouriya-Emma/moat-browser) spawns a LXD instance
+    # with security.nesting=true + docker.io + netbird mesh enrollment +
+    # /etc/hosts override `registry.237575.xyz → vctcn-registry mesh IP`
+    # (pve-vctcn#82 + #84). Push then lands on vctcn-registry over mesh socat
+    # :443 → NPM CT 171 → registry/docker_auth, end-to-end < 1 min, well under
+    # the 5-min Keycloak token TTL. Previously `ubuntu-latest` + public push
+    # hit token expiry on the 9-min agent-chrome upload (moat-browser#196).
+    runs-on: [self-hosted, linux, vctcn, netbird]
     outputs:
       version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
 
-      # BuildKit's pusher uses OCI chunked uploads (PATCH per chunk,
-      # default chunk ~few MB) instead of docker CLI's monolithic
-      # PUT-per-layer. Cloudflare's free plan caps single request
-      # bodies at 100MB and registry.237575.xyz is CF-orange-cloud, so
-      # the legacy `docker build` + `docker push` path 413s on any
-      # layer larger than 100MB (notably neko/chromium base layers).
-      # buildx + --push keeps every chunk well under that limit.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
