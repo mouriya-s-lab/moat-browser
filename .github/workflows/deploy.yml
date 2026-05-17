@@ -3,19 +3,16 @@
 # via Komodo).
 #
 # Two jobs:
-#   1. build (ubuntu-latest)  — fetch a 5-min Keycloak token, docker
-#      login to registry.237575.xyz, build + push three immutable image
-#      tags (controller, user-chrome, agent-chrome) at ${VERSION}.
-#   2. deploy (vctcn netbird runner) — fetch a fresh Keycloak token,
-#      call Komodo Core's HTTP API at http://moat-app1.mouriya.lan:9120
-#      (mesh-only) to (a) UpdateStack with environment =
-#      MOAT_BROWSER_VERSION + a one-shot pre_deploy that does
-#      `docker login` and pre-pulls the agent-chrome image on the
-#      browser VM, then (b) DeployStack — Komodo Periphery runs
-#      pre_deploy then `docker compose up -d`. The whole flow
-#      completes inside the 5-min token TTL; the embedded token
-#      becomes invalid after deploy and is overwritten by the next
-#      run.
+#   1. build (vctcn netbird runner) — fetch a 5-min Keycloak token,
+#      docker login to registry.237575.xyz, build + push three
+#      immutable image tags (controller, user-chrome, agent-chrome) at
+#      ${VERSION}.
+#   2. deploy (vctcn netbird runner) — call Komodo Core's HTTP API at
+#      http://moat-app1.mouriya.lan:9120 (mesh-only) to (a) UpdateStack
+#      with MOAT_BROWSER_VERSION only, then (b) DeployStack. Runtime
+#      registry login and agent-chrome pulls are owned by the Komodo
+#      DockerRegistryAccount + refresh-registry-237575-token Action from
+#      Mouriya-Emma/homelab-komodo#49 / Mouriya-Emma/homelab-tf#271.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   KEYCLOAK_REGISTRY_CLIENT_SECRET — `registry` realm `registry`
@@ -130,30 +127,17 @@ jobs:
       KOMODO_API_SECRET: ${{ secrets.KOMODO_API_SECRET }}
       VERSION: ${{ needs.build.outputs.version }}
     steps:
-      - name: Get fresh Keycloak access token
-        id: kc
-        uses: Mouriya-Emma/keycloak-token-action@v1
-        with:
-          keycloak-url: https://keycloak.237575.xyz
-          realm: registry
-          client-id: registry
-          client-secret: ${{ secrets.KEYCLOAK_REGISTRY_CLIENT_SECRET }}
-
-      - name: Update Komodo stack environment + pre_deploy
-        env:
-          TOKEN: ${{ steps.kc.outputs.access-token }}
+      - name: Update Komodo stack version
         run: |
           set -euo pipefail
-          PRE_DEPLOY_CMD="docker login -u sa-registry -p '$TOKEN' registry.237575.xyz && docker pull registry.237575.xyz/moat-browser/agent-chrome:$VERSION"
           BODY=$(jq -nc \
             --arg env "MOAT_BROWSER_VERSION=$VERSION" \
-            --arg cmd "$PRE_DEPLOY_CMD" \
-            '{type:"UpdateStack",params:{id:"moat-browser",config:{environment:$env,pre_deploy:{path:"",command:$cmd}}}}')
+            '{type:"UpdateStack",params:{id:"moat-browser",config:{environment:$env}}}')
           curl -fsS -X POST "$KOMODO_API_URL/write" \
             -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
             -H "Content-Type: application/json" \
             -d "$BODY" >/dev/null
-          echo "Stack updated: environment.MOAT_BROWSER_VERSION=$VERSION; pre_deploy.command set."
+          echo "Stack updated: environment.MOAT_BROWSER_VERSION=$VERSION."
 
       - name: Deploy stack
         run: |
