@@ -11,6 +11,8 @@ permissions:
 jobs:
   build:
     runs-on: [self-hosted, linux, vctcn, netbird]
+    container:
+      image: catthehacker/ubuntu:full-24.04
     steps:
       - uses: actions/checkout@v4
 
