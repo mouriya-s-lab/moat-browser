@@ -13,6 +13,10 @@ jobs:
     runs-on: [self-hosted, linux, vctcn, netbird]
     container:
       image: catthehacker/ubuntu:act-24.04
+    env:
+      # GitHub's job container default HOME is /github/home, but the container
+      # runs as root and rustup checks the euid home directory.
+      HOME: /root
     steps:
       - uses: actions/checkout@v4
 
