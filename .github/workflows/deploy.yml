@@ -117,6 +117,15 @@ jobs:
           push: true
           tags: registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}
 
+      - name: Pull verification
+        run: |
+          set -euo pipefail
+          for image in controller user-chrome agent-chrome; do
+            ref="registry.237575.xyz/moat-browser/${image}:${{ steps.version.outputs.value }}"
+            docker pull "$ref"
+            docker image inspect "$ref" >/dev/null
+          done
+
   deploy:
     name: Deploy to browser VM via Komodo
     needs: build
@@ -146,9 +155,9 @@ jobs:
             -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
             -H "Content-Type: application/json" \
             -d '{"type":"DeployStack","params":{"stack":"moat-browser"}}' \
-            -o /tmp/deploy_resp.json
+            -o "$RUNNER_TEMP/deploy_resp.json"
 
-          UPDATE_ID=$(jq -er '._id."$oid" // .id' /tmp/deploy_resp.json)
+          UPDATE_ID=$(jq -er '._id."$oid" // .id' "$RUNNER_TEMP/deploy_resp.json")
           echo "DeployStack accepted; update id: $UPDATE_ID"
 
           for attempt in $(seq 1 60); do
@@ -157,21 +166,21 @@ jobs:
               -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
               -H "Content-Type: application/json" \
               -d "$BODY" \
-              -o /tmp/deploy_update.json
+              -o "$RUNNER_TEMP/deploy_update.json"
 
-            STATUS=$(jq -r '.status // "Unknown"' /tmp/deploy_update.json)
-            SUCCESS=$(jq -r '.success // false' /tmp/deploy_update.json)
+            STATUS=$(jq -r '.status // "Unknown"' "$RUNNER_TEMP/deploy_update.json")
+            SUCCESS=$(jq -r '.success // false' "$RUNNER_TEMP/deploy_update.json")
             echo "DeployStack status: $STATUS (attempt $attempt)"
 
             if [ "$STATUS" = "Complete" ]; then
               if [ "$SUCCESS" = "true" ]; then
                 echo "DeployStack completed successfully."
-                jq -r '.logs[]? | "stage=\(.stage) success=\(.success)"' /tmp/deploy_update.json
+                jq -r '.logs[]? | "stage=\(.stage) success=\(.success)"' "$RUNNER_TEMP/deploy_update.json"
                 exit 0
               fi
 
               echo "::error::DeployStack completed unsuccessfully."
-              jq -r '.logs[]? | "--- stage=\(.stage) success=\(.success) ---\nstdout:\n\(.stdout // "")\nstderr:\n\(.stderr // "")"' /tmp/deploy_update.json
+              jq -r '.logs[]? | "--- stage=\(.stage) success=\(.success) ---\nstdout:\n\(.stdout // "")\nstderr:\n\(.stderr // "")"' "$RUNNER_TEMP/deploy_update.json"
               exit 1
             fi
 
