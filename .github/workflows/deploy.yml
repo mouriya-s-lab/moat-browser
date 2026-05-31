@@ -117,6 +117,15 @@ jobs:
           push: true
           tags: registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}
 
+      - name: Pull verification
+        run: |
+          set -euo pipefail
+          for image in controller user-chrome agent-chrome; do
+            ref="registry.237575.xyz/moat-browser/${image}:${{ steps.version.outputs.value }}"
+            docker pull "$ref"
+            docker image inspect "$ref" >/dev/null
+          done
+
   deploy:
     name: Deploy to browser VM via Komodo
     needs: build
