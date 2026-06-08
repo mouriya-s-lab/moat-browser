@@ -264,7 +264,7 @@ describe("cdp-bridge", () => {
       const data = assertOk(r);
       expect(data._tag).toBe("SnapshotResult");
       if (data._tag === "SnapshotResult") {
-        expect(typeof data.aria).toBe("string");
+        expect(typeof data.snapshot).toBe("string");
       }
     });
 
@@ -292,7 +292,7 @@ describe("cdp-bridge", () => {
       const data = assertOk(r);
       expect(data._tag).toBe("EvalResult");
       if (data._tag === "EvalResult") {
-        expect(data.json).toBe('{"answer":42}');
+        expect(data.result).toBe('{"answer":42}');
       }
     });
   });
@@ -312,7 +312,7 @@ describe("cdp-bridge", () => {
 
     it("wait returns VoidResult", async () => {
       const r = await executeCommand(ctx, { action: "wait", time: 1 }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
+      expect(assertOk(r)._tag).toBe("WaitResult");
     });
   });
 

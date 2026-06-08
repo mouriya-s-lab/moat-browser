@@ -1497,6 +1497,8 @@ Options:
                        (or AGENT_BROWSER_SCREENSHOT_QUALITY env)
   --screenshot-format <fmt>  Image format: png (default) or jpeg
                        (or AGENT_BROWSER_SCREENSHOT_FORMAT env)
+  --inline-base64      Include image bytes in JSON output. By default screenshots
+                       are decoded to a local file and JSON returns metadata.
 
 Global Options:
   --json               Output as JSON
