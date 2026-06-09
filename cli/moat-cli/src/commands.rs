@@ -455,11 +455,16 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
             // selector: @ref or CSS selector
             // path: file path (contains / or . or ends with known extension)
             let mut full_page = false;
+            let mut inline_base64 = false;
             let positional: Vec<&str> = rest
                 .iter()
                 .filter(|arg| match **arg {
                     "--full" | "-f" => {
                         full_page = true;
+                        false
+                    }
+                    "--inline-base64" => {
+                        inline_base64 = true;
                         false
                     }
                     _ => true,
@@ -496,6 +501,9 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 "path": path, "selector": selector,
                 "fullPage": full_page, "annotate": flags.annotate
             });
+            if inline_base64 {
+                cmd["inlineBase64"] = json!(true);
+            }
             if let Some(ref fmt) = flags.screenshot_format {
                 cmd["format"] = json!(fmt);
             }
@@ -2949,6 +2957,26 @@ mod tests {
         assert_eq!(cmd["action"], "screenshot");
         assert_eq!(cmd["selector"], ".btn");
         assert_eq!(cmd["path"], "./button.png");
+    }
+
+    #[test]
+    fn test_screenshot_inline_base64() {
+        let cmd = parse_command(&args("screenshot --inline-base64"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "screenshot");
+        assert_eq!(cmd["inlineBase64"], true);
+        assert_eq!(cmd["path"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_screenshot_format_and_quality_flags() {
+        let mut flags = default_flags();
+        flags.screenshot_format = Some("jpeg".to_string());
+        flags.screenshot_quality = Some(80);
+        let cmd = parse_command(&args("screenshot ./output.jpg"), &flags).unwrap();
+        assert_eq!(cmd["action"], "screenshot");
+        assert_eq!(cmd["path"], "./output.jpg");
+        assert_eq!(cmd["format"], "jpeg");
+        assert_eq!(cmd["quality"], 80);
     }
 
     // === Snapshot ===

@@ -60,7 +60,9 @@ export type SnapshotResult = {
 
 export type ScreenshotResult = {
   readonly _tag: "ScreenshotResult";
-  readonly base64: string;
+  readonly base64?: string;
+  readonly path?: string;
+  readonly size?: number;
   readonly format: "png" | "jpeg";
 };
 
