@@ -210,6 +210,7 @@ EndSection
 Section "Screen"
     Identifier  "screen"
     Device      "dummy"
+    Monitor     "monitor"
     DefaultDepth 24
     SubSection "Display"
         Depth   24
