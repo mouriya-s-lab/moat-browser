@@ -1,0 +1,193 @@
+# Push this repo's SOPS-encrypted runtime secrets to the homelab
+# Komodo Core, then trigger a ResourceSync run.
+#
+# Truth source: ./secrets.yml (SOPS+age, same recipient as homelab-tf).
+# Each top-level key flows to Komodo as:
+#   - KOMODO_HOMELAB_SYNC_WEBHOOK_SECRET -> UpdateResourceSync (partial
+#       config; sets the `homelab-apps` ResourceSync's `webhook_secret`
+#       field. Other config fields owned by the homelab-tf role
+#       komodo-stacks-gitsource are preserved across role re-runs because
+#       Komodo's PartialResourceSyncConfig treats omitted fields as
+#       "keep current value").
+#   - everything else -> Variable (is_secret=true) via CreateVariable
+#       on first push, UpdateVariableValue thereafter. Stack environment
+#       in komodo/syncs/stacks.toml references each as `[[KEY]]`.
+#
+# Runs on the self-hosted vctcn-runner (VM 181 in pve-vctcn) because
+# only the netbird mesh reaches moat-app1.mouriya.lan:9120 — the
+# homelab Komodo Core does not have a public ingress.
+#
+# Required repo secrets:
+#   SOPS_AGE_KEY                   age private key (full block)
+#   KOMODO_API_KEY                 Komodo Core API key
+#   KOMODO_API_SECRET              Komodo Core API secret
+
+name: sync-to-komodo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'secrets.yml'
+      - 'komodo/syncs/**'
+      - 'stacks/**'
+      - '.github/workflows/sync-to-komodo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-to-komodo
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: [self-hosted, linux, vctcn, netbird]
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sync toolchain
+        run: .github/scripts/install-sync-tools.sh "$RUNNER_TEMP/sync-toolchain/bin"
+
+      - name: Verify required tooling in job container
+        run: |
+          set -e
+          for bin in sops age yq jq curl; do
+            command -v "$bin" >/dev/null \
+              || { echo "::error::missing $bin in job container"; exit 1; }
+          done
+          echo "yq: $(yq --version)"
+          echo "sops: $(sops --version | head -1)"
+          echo "age: $(age --version)"
+          echo "jq: $(jq --version)"
+
+      - name: Stage age private key
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -e
+          age_key_file="${SOPS_AGE_KEY_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt}"
+          install -d -m 700 "$(dirname "$age_key_file")"
+          umask 077
+          printf '%s\n' "$SOPS_AGE_KEY" > "$age_key_file"
+          chmod 600 "$age_key_file"
+          printf 'SOPS_AGE_KEY_FILE=%s\n' "$age_key_file" >> "$GITHUB_ENV"
+
+      - name: Decrypt secrets.yml
+        run: |
+          set -e
+          umask 077
+          sops -d secrets.yml > "$RUNNER_TEMP/secrets-plain.yml"
+
+      - name: Push Variables + webhook_secret, then RunSync
+        env:
+          KM_URL: http://moat-app1.mouriya.lan:9120
+          KM_KEY: ${{ secrets.KOMODO_API_KEY }}
+          KM_SECRET: ${{ secrets.KOMODO_API_SECRET }}
+          SYNC_NAME: moat-browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          secrets_plain="$RUNNER_TEMP/secrets-plain.yml"
+          getvar_response="$RUNNER_TEMP/getvar.json"
+
+          km_post() {
+            local path="$1" body="$2"
+            curl -fsSL -X POST "${KM_URL}${path}" \
+              -H "x-api-key: ${KM_KEY}" \
+              -H "x-api-secret: ${KM_SECRET}" \
+              -H "Content-Type: application/json" \
+              -d "$body"
+          }
+
+          upsert_variable() {
+            local name="$1" value="$2"
+
+            echo "[sync] upserting Variable '$name'"
+            get_body=$(jq -nc --arg name "$name" \
+              '{type:"GetVariable", params:{name:$name}}')
+            status=$(curl -sS -o "$getvar_response" -w '%{http_code}' \
+              -X POST "${KM_URL}/read" \
+              -H "x-api-key: ${KM_KEY}" \
+              -H "x-api-secret: ${KM_SECRET}" \
+              -H "Content-Type: application/json" \
+              -d "$get_body")
+
+            case "$status" in
+              200)
+                body=$(jq -nc --arg name "$name" --arg value "$value" \
+                  '{type:"UpdateVariableValue",
+                    params:{name:$name, value:$value}}')
+                km_post /write "$body" >/dev/null
+                ;;
+              404|500)
+                body=$(jq -nc --arg name "$name" --arg value "$value" \
+                  '{type:"CreateVariable",
+                    params:{name:$name, value:$value, is_secret:true}}')
+                km_post /write "$body" >/dev/null
+                ;;
+              *)
+                echo "::error::GetVariable $name returned HTTP $status"
+                cat "$getvar_response" || true
+                exit 1
+                ;;
+            esac
+          }
+
+          mapfile -t KEYS < <(yq eval 'keys | .[]' "$secrets_plain")
+          if [ "${#KEYS[@]}" -eq 0 ]; then
+            echo "::error::secrets.yml decrypted to zero top-level keys"
+            exit 1
+          fi
+
+          for key in "${KEYS[@]}"; do
+            value=$(yq eval ".\"$key\"" "$secrets_plain")
+
+            if [ "$key" = "KOMODO_HOMELAB_SYNC_WEBHOOK_SECRET" ]; then
+              echo "[sync] writing ResourceSync.webhook_secret on '$SYNC_NAME'"
+              body=$(jq -nc \
+                --arg id "$SYNC_NAME" \
+                --arg ws "$value" \
+                '{type:"UpdateResourceSync",
+                  params:{id:$id, config:{webhook_secret:$ws}}}')
+              km_post /write "$body" >/dev/null
+              continue
+            fi
+
+            upsert_variable "$key" "$value"
+          done
+
+          # Refresh the git cache of every Stack sourced from this repo
+          # BEFORE RunSync. Komodo's sync deploy-cache diffs the DB-cached
+          # remote_contents against deployed_contents (komodo v2.2.0
+          # bin/core/src/sync/deploy.rs build_cache_for_stack); that cache
+          # only refreshes after an UpdateStack write or the daily
+          # GlobalAutoUpdate procedure. Without this step a compose-only
+          # push RunSyncs against a stale cache and silently skips the
+          # deploy (homelab-tf#416 spike b).
+          echo "[sync] refreshing stack cache for stacks sourced from ${GITHUB_REPOSITORY}"
+          list_body=$(jq -nc '{type:"ListStacks", params:{query:{}}}')
+          km_post /read "$list_body" \
+            | jq -r --arg repo "$GITHUB_REPOSITORY" \
+                '.[] | select(.info.repo == $repo) | .name' \
+            | while IFS= read -r stack_name; do
+                echo "[sync] RefreshStackCache '$stack_name'"
+                body=$(jq -nc --arg stack "$stack_name" \
+                  '{type:"RefreshStackCache", params:{stack:$stack}}')
+                km_post /write "$body" >/dev/null
+              done
+
+          echo "[sync] triggering RunSync '$SYNC_NAME'"
+          body=$(jq -nc --arg sync "$SYNC_NAME" \
+            '{type:"RunSync", params:{sync:$sync}}')
+          km_post /execute "$body"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -n "${RUNNER_TEMP:-}" ]; then
+            rm -f "$RUNNER_TEMP/secrets-plain.yml" \
+                  "$RUNNER_TEMP/getvar.json" || true
+          fi
+          age_key_file="${SOPS_AGE_KEY_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt}"
+          rm -f "$age_key_file" || true

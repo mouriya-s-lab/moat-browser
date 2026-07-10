@@ -9,7 +9,7 @@
 #      ${VERSION}.
 #   2. deploy (vctcn netbird runner) — call Komodo Core's HTTP API at
 #      http://moat-app1.mouriya.lan:9120 (mesh-only) to (a) UpdateStack
-#      with MOAT_BROWSER_VERSION only, then (b) DeployStack. Runtime
+#      with the published MOAT_BROWSER_VERSION, then (b) DeployStack. Runtime
 #      registry login and agent-chrome pulls are owned by the Komodo
 #      DockerRegistryAccount + refresh-registry-237575-token Action from
 #      Mouriya-Emma/homelab-komodo#49 / Mouriya-Emma/homelab-tf#271.
@@ -139,14 +139,50 @@ jobs:
       - name: Update Komodo stack version
         run: |
           set -euo pipefail
-          BODY=$(jq -nc \
-            --arg env "MOAT_BROWSER_VERSION=$VERSION" \
+
+          variable_response="$RUNNER_TEMP/moat-browser-version-variable.json"
+          get_variable=$(jq -nc '{type:"GetVariable",params:{name:"MOAT_BROWSER_VERSION"}}')
+          status=$(curl -sS -o "$variable_response" -w '%{http_code}' \
+            -X POST "$KOMODO_API_URL/read" \
+            -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
+            -H "Content-Type: application/json" -d "$get_variable")
+
+          case "$status" in
+            200)
+              variable_write=$(jq -nc --arg value "$VERSION" \
+                '{type:"UpdateVariableValue",params:{name:"MOAT_BROWSER_VERSION",value:$value}}')
+              ;;
+            404|500)
+              variable_write=$(jq -nc --arg value "$VERSION" \
+                '{type:"CreateVariable",params:{name:"MOAT_BROWSER_VERSION",value:$value,is_secret:false}}')
+              ;;
+            *)
+              cat "$variable_response" >&2
+              echo "::error::GetVariable MOAT_BROWSER_VERSION returned HTTP $status" >&2
+              exit 1
+              ;;
+          esac
+
+          curl -fsS -X POST "$KOMODO_API_URL/write" \
+            -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
+            -H "Content-Type: application/json" -d "$variable_write" >/dev/null
+
+          stack=$(curl -fsS -X POST "$KOMODO_API_URL/read" \
+            -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"GetStack","params":{"stack":"moat-browser"}}')
+          current_environment=$(jq -r '.config.environment // ""' <<<"$stack")
+          environment=$(
+            sed '/^MOAT_BROWSER_VERSION=/d' <<<"$current_environment"
+            printf 'MOAT_BROWSER_VERSION=%s\n' "$VERSION"
+          )
+          BODY=$(jq -nc --arg env "$environment" \
             '{type:"UpdateStack",params:{id:"moat-browser",config:{environment:$env}}}')
           curl -fsS -X POST "$KOMODO_API_URL/write" \
             -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
             -H "Content-Type: application/json" \
             -d "$BODY" >/dev/null
-          echo "Stack updated: environment.MOAT_BROWSER_VERSION=$VERSION."
+          echo "Variable and Stack updated: MOAT_BROWSER_VERSION=$VERSION."
 
       - name: Deploy stack
         run: |
@@ -160,7 +196,7 @@ jobs:
           UPDATE_ID=$(jq -er '._id."$oid" // .id' "$RUNNER_TEMP/deploy_resp.json")
           echo "DeployStack accepted; update id: $UPDATE_ID"
 
-          for attempt in $(seq 1 60); do
+          while true; do
             BODY=$(jq -nc --arg id "$UPDATE_ID" '{type:"GetUpdate",params:{id:$id}}')
             curl -fsS -X POST "$KOMODO_API_URL/read" \
               -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
@@ -170,13 +206,13 @@ jobs:
 
             STATUS=$(jq -r '.status // "Unknown"' "$RUNNER_TEMP/deploy_update.json")
             SUCCESS=$(jq -r '.success // false' "$RUNNER_TEMP/deploy_update.json")
-            echo "DeployStack status: $STATUS (attempt $attempt)"
+            echo "DeployStack status: $STATUS success=$SUCCESS"
 
             if [ "$STATUS" = "Complete" ]; then
               if [ "$SUCCESS" = "true" ]; then
                 echo "DeployStack completed successfully."
                 jq -r '.logs[]? | "stage=\(.stage) success=\(.success)"' "$RUNNER_TEMP/deploy_update.json"
-                exit 0
+                break
               fi
 
               echo "::error::DeployStack completed unsuccessfully."
@@ -184,8 +220,24 @@ jobs:
               exit 1
             fi
 
-            sleep 5
+            case "$STATUS" in
+              InProgress|Queued) sleep 5 ;;
+              *)
+                jq . "$RUNNER_TEMP/deploy_update.json" >&2
+                echo "::error::DeployStack reached unexpected state: $STATUS" >&2
+                exit 1
+                ;;
+            esac
           done
 
-          echo "::error::Timed out waiting for DeployStack update $UPDATE_ID to complete."
-          exit 1
+          stack=$(curl -fsS -X POST "$KOMODO_API_URL/read" \
+            -H "x-api-key: $KOMODO_API_KEY" -H "x-api-secret: $KOMODO_API_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"GetStack","params":{"stack":"moat-browser"}}')
+          for service in controller user-chrome agent-chrome-image; do
+            deployed_image=$(jq -er --arg service "$service" \
+              '.info.deployed_services[] | select(.service_name == $service) | .image' <<<"$stack")
+            expected="registry.237575.xyz/moat-browser/${service%-image}:$VERSION"
+            test "$deployed_image" = "$expected"
+            echo "Verified $service image: $deployed_image"
+          done
