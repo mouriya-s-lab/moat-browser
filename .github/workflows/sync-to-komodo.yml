@@ -32,6 +32,7 @@ on:
       - 'komodo/syncs/**'
       - 'stacks/**'
       - '.github/workflows/sync-to-komodo.yml'
+      - '.github/scripts/install-sync-tools.sh'
   workflow_dispatch:
 
 concurrency:
