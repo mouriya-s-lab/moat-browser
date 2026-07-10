@@ -1,0 +1,24 @@
+# Komodo ResourceSync source for moat-browser on the homelab Core.
+# The release workflow owns MOAT_BROWSER_VERSION; this declaration only
+# consumes that Variable and never selects or falls back to an image tag.
+
+[[stack]]
+name = "moat-browser"
+deploy = true
+
+[stack.config]
+server = "browser"
+git_provider = "github.com"
+git_account = "Mouriya-Emma"
+repo = "moat-lab/moat-browser"
+branch = "main"
+file_paths = ["stacks/moat-browser/compose.yaml"]
+project_name = "moat-browser"
+poll_for_updates = true
+auto_pull = true
+registry_provider = "registry.237575.xyz"
+registry_account = "sa-registry"
+environment = """
+MOAT_BROWSER_VERSION=[[MOAT_BROWSER_VERSION]]
+MOAT_BROWSER_ADMIN_PASSWORD=[[MOAT_BROWSER_ADMIN_PASSWORD]]
+"""

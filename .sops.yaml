@@ -1,0 +1,7 @@
+# SOPS+age: encrypt secrets.yml at repo root with the homelab-tf age key.
+# Recipient matches homelab-tf/.sops.yaml so the same Bitwarden-restored
+# private key (~/.config/sops/age/keys.txt or
+# ~/Library/Application Support/sops/age/keys.txt) decrypts both repos.
+creation_rules:
+  - path_regex: secrets\.yml$
+    age: age1r8z7kdmduws7kgc8erwkmh42xcsszf9mnnera6dqmgzc3d5txggqdj2ytt
