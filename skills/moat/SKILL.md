@@ -13,13 +13,8 @@ moat is a remote-browser CLI. The Controller starts one agent Chrome container p
 Install the CLI from a checkout of this repository:
 
 ```bash
-bash scripts/install.sh
-```
-
-Or download the installer through the authenticated GitHub CLI:
-
-```bash
-gh api repos/Mouriya-Emma/moat-browser/contents/scripts/install.sh --jq .content | base64 -d | bash
+git clone --depth 1 https://github.com/moat-lab/moat-browser.git
+cd moat-browser && bash scripts/install.sh
 ```
 
 Configure the Controller URL:
@@ -84,9 +79,21 @@ moat eval "document.title"
 moat batch
 ```
 
+`moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector.
+
+## Neko login URL
+
+The neko WebRTC UI (for humans to log in interactively) is served by the `user-chrome` container on the Controller host's HTTP port `8080`. Given `MOAT_CONTROLLER=ws://<host>:3000`, the neko URL is:
+
+```
+http://<host>:8080
+```
+
+Open it in a normal browser, log in to the target SaaS. Cookies land in the shared profile at `/data/profile`. Close the neko session before starting an agent session that reads that profile.
+
 ## Logged-in SaaS flows
 
-Humans log in through the neko WebRTC user browser. Agent sessions then load that profile by name:
+Humans log in through the neko WebRTC user browser (see above). Agent sessions then load that profile by name:
 
 ```bash
 moat connect --profile default
