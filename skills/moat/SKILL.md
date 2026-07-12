@@ -13,8 +13,13 @@ moat is a remote-browser CLI. The Controller starts one agent Chrome container p
 Install the CLI from a checkout of this repository:
 
 ```bash
-git clone --depth 1 https://github.com/moat-lab/moat-browser.git
-cd moat-browser && bash scripts/install.sh
+bash scripts/install.sh
+```
+
+Or, without a local checkout, run the installer through authenticated `gh`:
+
+```bash
+gh api repos/moat-lab/moat-browser/contents/scripts/install.sh --jq .content | base64 -d | bash
 ```
 
 Configure the Controller URL:
