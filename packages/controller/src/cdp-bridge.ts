@@ -307,13 +307,32 @@ async function buildAriaSnapshot(
   scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
+  options: {
+    readonly selector?: string;
+    readonly ref?: string;
+    readonly interactive?: boolean;
+    readonly compact?: boolean;
+    readonly maxDepth?: number;
+  } = {},
 ): Promise<string> {
-  const snapshot = await scope.locator("body").ariaSnapshot();
+  const root = options.ref
+    ? refStore.resolve(sessionId, options.ref)
+    : scope.locator(options.selector ?? "body");
+  if (!root) throw new Error(`Unknown element ref: ${options.ref}`);
+  const snapshot = await root.ariaSnapshot();
   const refs = new Map<string, Locator>();
   let counter = 1;
   const nthByRole = new Map<string, number>();
 
-  const annotated = snapshot.split("\n").map((line) => {
+  const annotated = snapshot.split("\n").filter((line) => {
+    if (options.maxDepth !== undefined) {
+      const indentation = line.length - line.trimStart().length;
+      if (Math.floor(indentation / 2) > options.maxDepth) return false;
+    }
+    if (!options.interactive) return true;
+    const match = ARIA_LINE_RE.exec(line);
+    return match !== null && INTERACTIVE_ROLES.has(match[2]);
+  }).map((line) => {
     const m = ARIA_LINE_RE.exec(line);
     if (!m) return line;
 
@@ -322,11 +341,11 @@ async function buildAriaSnapshot(
 
     const key = `@e${counter}`;
     const locator = name
-      ? scope.getByRole(role as Parameters<Page["getByRole"]>[0], { name, exact: true })
+      ? root.getByRole(role as Parameters<Page["getByRole"]>[0], { name, exact: true })
       : (() => {
           const n = nthByRole.get(role) ?? 0;
           nthByRole.set(role, n + 1);
-          return scope.getByRole(role as Parameters<Page["getByRole"]>[0]).nth(n);
+          return root.getByRole(role as Parameters<Page["getByRole"]>[0]).nth(n);
         })();
     refs.set(key, locator);
     counter++;
@@ -334,10 +353,79 @@ async function buildAriaSnapshot(
     return name
       ? `${indent}${key} ${role} "${name}"${rest}`
       : `${indent}${key} ${role}${rest}`;
-  }).join("\n");
+  }).filter((line) => !options.compact || line.trim().length > 0).join("\n");
 
   refStore.update(sessionId, refs);
   return annotated;
+}
+
+type ScreenshotAnnotation = {
+  readonly number: number;
+  readonly ref: string;
+  readonly role: string;
+  readonly name: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+};
+
+async function installScreenshotAnnotations(
+  page: Page,
+  scope: Page | Frame,
+  refStore: RefStore,
+  sessionId: string,
+): Promise<ReadonlyArray<ScreenshotAnnotation>> {
+  await buildAriaSnapshot(scope, refStore, sessionId, { interactive: true });
+  const annotations: Array<ScreenshotAnnotation> = [];
+  for (const [ref, locator] of refStore.entries(sessionId)) {
+    const box = await locator.boundingBox();
+    if (!box) continue;
+    annotations.push({
+      number: Number.parseInt(ref.replace(/^@e/, ""), 10),
+      ref,
+      role: "",
+      name: "",
+      ...box,
+    });
+  }
+  await page.evaluate((items) => {
+    for (const item of items) {
+      const outline = document.createElement("div");
+      outline.dataset.moatScreenshotAnnotation = "true";
+      Object.assign(outline.style, {
+        position: "absolute",
+        left: `${item.x + window.scrollX}px`,
+        top: `${item.y + window.scrollY}px`,
+        width: `${item.width}px`,
+        height: `${item.height}px`,
+        border: "2px solid #ff1744",
+        boxSizing: "border-box",
+        zIndex: "2147483646",
+        pointerEvents: "none",
+      });
+      const label = document.createElement("span");
+      label.textContent = String(item.number);
+      Object.assign(label.style, {
+        position: "absolute",
+        left: "-2px",
+        top: "-20px",
+        color: "white",
+        background: "#ff1744",
+        padding: "1px 5px",
+        font: "bold 12px sans-serif",
+      });
+      outline.append(label);
+      document.body.append(outline);
+    }
+  }, annotations);
+  return annotations;
+}
+
+async function removeScreenshotAnnotations(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    document.querySelectorAll('[data-moat-screenshot-annotation="true"]').forEach((element) => element.remove());
+  });
 }
 
 // ─── buildTabList ───
@@ -396,7 +484,10 @@ export async function executeCommand(
     switch (command.action) {
       case "navigate": {
         runtimeState.activeFrame = undefined;
-        await page.goto(command.url, { waitUntil: "domcontentloaded" });
+        if (command.headers) await page.setExtraHTTPHeaders(command.headers);
+        await page.goto(command.url, {
+          waitUntil: command.waitUntil === "none" ? "commit" : (command.waitUntil ?? "domcontentloaded"),
+        });
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
@@ -496,21 +587,39 @@ export async function executeCommand(
         return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "hover");
 
       case "snapshot": {
-        const snapshot = await buildAriaSnapshot(scope, refStore, sessionId);
+        const snapshot = await buildAriaSnapshot(scope, refStore, sessionId, command);
         const result: SnapshotResult = { _tag: "SnapshotResult", snapshot };
         return ok(result);
       }
 
       case "screenshot": {
         const format = command.format ?? "png";
-        const buf = await page.screenshot({
+        const screenshotOptions = {
           type: format,
           quality: format === "jpeg" ? (command.quality ?? 80) : undefined,
-        });
+        } as const;
+        const target = command.ref
+          ? refStore.resolve(sessionId, command.ref)
+          : command.selector
+            ? scope.locator(command.selector)
+            : undefined;
+        if (command.ref && !target) return err({ _tag: "ElementNotFound", selector: command.ref });
+        const annotations = command.annotate
+          ? await installScreenshotAnnotations(page, scope, refStore, sessionId)
+          : [];
+        let buf: Buffer;
+        try {
+          buf = target
+            ? await target.screenshot(screenshotOptions)
+            : await page.screenshot({ ...screenshotOptions, fullPage: command.fullPage ?? false });
+        } finally {
+          if (command.annotate) await removeScreenshotAnnotations(page);
+        }
         const result: ScreenshotResult = {
           _tag: "ScreenshotResult",
           base64: buf.toString("base64"),
           format,
+          annotations: annotations.map(({ number, ref, role, name }) => ({ number, ref, role, name })),
         };
         return ok(result);
       }

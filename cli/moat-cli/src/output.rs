@@ -2860,8 +2860,7 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
     let is_match = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
     let dim_mismatch = data
         .get("dimensionMismatch")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false));
     if dim_mismatch {
         println!(
             "{} Images have different dimensions",

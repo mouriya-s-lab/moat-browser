@@ -64,6 +64,12 @@ export type ScreenshotResult = {
   readonly path?: string;
   readonly size?: number;
   readonly format: "png" | "jpeg";
+  readonly annotations?: ReadonlyArray<{
+    readonly number: number;
+    readonly ref: string;
+    readonly role: string;
+    readonly name: string;
+  }>;
 };
 
 export type EvalResult = {
@@ -374,7 +380,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
 
 export type BrowserCommand =
   // 导航
-  | { readonly action: "navigate"; readonly url: string }
+  | { readonly action: "navigate"; readonly url: string; readonly waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" | "none"; readonly headers?: Readonly<Record<string, string>> }
   | { readonly action: "back" }
   | { readonly action: "forward" }
   | { readonly action: "reload" }
@@ -439,8 +445,8 @@ export type BrowserCommand =
   | { readonly action: "hover"; readonly ref?: string; readonly selector?: string }
 
   // 页面信息
-  | { readonly action: "snapshot" }
-  | { readonly action: "screenshot"; readonly format?: "png" | "jpeg"; readonly quality?: number }
+  | { readonly action: "snapshot"; readonly selector?: string; readonly ref?: string; readonly interactive?: boolean; readonly compact?: boolean; readonly maxDepth?: number }
+  | { readonly action: "screenshot"; readonly format?: "png" | "jpeg"; readonly quality?: number; readonly selector?: string; readonly ref?: string; readonly fullPage?: boolean; readonly annotate?: boolean }
   | { readonly action: "eval"; readonly code: string }
 
   // 键盘
@@ -598,6 +604,8 @@ export type WireResponse =
 const browserCommandSchema = type({
   action: "'navigate'",
   url: "string",
+  "waitUntil?": "'load' | 'domcontentloaded' | 'networkidle' | 'commit' | 'none'",
+  "headers?": type("Record<string, string>"),
 })
   .or({ action: "'back'" })
   .or({ action: "'forward'" })
@@ -663,11 +671,15 @@ const browserCommandSchema = type({
   .or({ action: "'fill'", "ref?": "string", "selector?": "string", value: "string" })
   .or({ action: "'type'", "ref?": "string", "selector?": "string", text: "string" })
   .or({ action: "'hover'", "ref?": "string", "selector?": "string" })
-  .or({ action: "'snapshot'" })
+  .or({ action: "'snapshot'", "selector?": "string", "ref?": "string", "interactive?": "boolean", "compact?": "boolean", "maxDepth?": "number.integer >= 0" })
   .or({
     action: "'screenshot'",
     "format?": "'png' | 'jpeg'",
     "quality?": "number",
+    "selector?": "string",
+    "ref?": "string",
+    "fullPage?": "boolean",
+    "annotate?": "boolean",
   })
   .or({ action: "'eval'", code: "string" })
   .or({ action: "'press'", key: "string" })

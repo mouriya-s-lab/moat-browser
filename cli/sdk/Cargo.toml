@@ -11,3 +11,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 dirs = "5"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+similar = "2"

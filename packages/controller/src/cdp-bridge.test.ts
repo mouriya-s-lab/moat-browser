@@ -9,7 +9,7 @@ import type { ControllerError, CommandResultData } from "@moat-browser/types";
 // ─── Mock helpers ───
 
 function mockLocator(overrides?: Partial<Locator>): Locator {
-  return {
+  const locator = {
     click: mock(() => Promise.resolve()),
     fill: mock((_v: string) => Promise.resolve()),
     pressSequentially: mock((_v: string) => Promise.resolve()),
@@ -35,9 +35,12 @@ function mockLocator(overrides?: Partial<Locator>): Locator {
       },
     }])),
     ariaSnapshot: mock(() => Promise.resolve('- heading "Test"\n- button "Click me"')),
+    screenshot: mock(() => Promise.resolve(Buffer.from("locator-png-data"))),
     nth: mock(function (this: Locator) { return this; }),
     ...overrides,
   } as unknown as Locator;
+  (locator as unknown as { getByRole: (role: string, options?: object) => Locator }).getByRole = mock(() => locator);
+  return locator;
 }
 
 function mockPage(overrides?: Partial<Page>): Page {
@@ -142,6 +145,9 @@ function mockRefStore(): RefStore {
     resolve(sessionId, ref) {
       return store.get(sessionId)?.get(ref);
     },
+    entries(sessionId) {
+      return Array.from(store.get(sessionId)?.entries() ?? []);
+    },
   };
 }
 
@@ -184,6 +190,17 @@ describe("cdp-bridge", () => {
         expect(data.url).toBe("https://example.com");
         expect(data.title).toBe("Example");
       }
+    });
+
+    it("navigate applies request headers and wait strategy", async () => {
+      await executeCommand(ctx, {
+        action: "navigate",
+        url: "https://example.com",
+        waitUntil: "networkidle",
+        headers: { "X-Test": "yes" },
+      }, refStore, SESSION);
+      expect(page.setExtraHTTPHeaders).toHaveBeenCalledWith({ "X-Test": "yes" });
+      expect(page.goto).toHaveBeenCalledWith("https://example.com", { waitUntil: "networkidle" });
     });
 
     it("back returns NavigateResult", async () => {
@@ -330,6 +347,26 @@ describe("cdp-bridge", () => {
       }
     });
 
+    it("snapshot applies selector interactive and depth options", async () => {
+      const locator = mockLocator({
+        ariaSnapshot: mock(() => Promise.resolve('- heading "Title"\n  - button "Deep"\n- link "Top"')),
+      });
+      page = mockPage({ locator: mock(() => locator) });
+      ctx = mockContext([page]);
+      const r = await executeCommand(ctx, {
+        action: "snapshot",
+        selector: "main",
+        interactive: true,
+        compact: true,
+        maxDepth: 0,
+      }, refStore, SESSION);
+      const data = assertOk(r);
+      expect(page.locator).toHaveBeenCalledWith("main");
+      if (data._tag === "SnapshotResult") {
+        expect(data.snapshot).toBe('- @e1 link "Top"');
+      }
+    });
+
     it("screenshot returns ScreenshotResult", async () => {
       const r = await executeCommand(ctx, { action: "screenshot" }, refStore, SESSION);
       const data = assertOk(r);
@@ -346,6 +383,25 @@ describe("cdp-bridge", () => {
       expect(data._tag).toBe("ScreenshotResult");
       if (data._tag === "ScreenshotResult") {
         expect(data.format).toBe("jpeg");
+      }
+    });
+
+    it("screenshot applies selector or full page capture options", async () => {
+      const locator = mockLocator();
+      page = mockPage({ locator: mock(() => locator) });
+      ctx = mockContext([page]);
+      await executeCommand(ctx, { action: "screenshot", selector: "main" }, refStore, SESSION);
+      expect(locator.screenshot).toHaveBeenCalled();
+      await executeCommand(ctx, { action: "screenshot", fullPage: true }, refStore, SESSION);
+      expect(page.screenshot).toHaveBeenLastCalledWith(expect.objectContaining({ fullPage: true }));
+    });
+
+    it("annotated screenshot draws and removes overlays around interactive refs", async () => {
+      const r = await executeCommand(ctx, { action: "screenshot", annotate: true }, refStore, SESSION);
+      const data = assertOk(r);
+      expect(page.evaluate).toHaveBeenCalledTimes(2);
+      if (data._tag === "ScreenshotResult") {
+        expect(data.annotations?.map((annotation) => annotation.ref)).toEqual(["@e1"]);
       }
     });
 

@@ -1,3 +1,4 @@
+mod diff;
 pub mod error;
 pub mod session;
 pub mod wire;
@@ -345,7 +346,17 @@ impl MoatClient {
     }
 
     /// Send a command — opens a fresh ws, sends Command, receives response, closes ws.
-    pub async fn command(&self, mut request: Value) -> Result<Response, SdkError> {
+    pub async fn command(&self, request: Value) -> Result<Response, SdkError> {
+        match request.get("action").and_then(Value::as_str) {
+            Some("diff_snapshot") => return self.diff_snapshot(&request).await,
+            Some("diff_screenshot") => return self.diff_screenshot(&request).await,
+            Some("diff_url") => return self.diff_url(&request).await,
+            _ => {}
+        }
+        self.command_remote(request).await
+    }
+
+    async fn command_remote(&self, mut request: Value) -> Result<Response, SdkError> {
         let (screenshot_output, binary_output) = prepare_command(&mut request)?;
 
         // close → deregister
@@ -445,6 +456,184 @@ impl MoatClient {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+
+    async fn diff_snapshot(&self, request: &Value) -> Result<Response, SdkError> {
+        let snapshot_request = snapshot_request(request);
+        let current = response_string(self.command_remote(snapshot_request).await?, "snapshot")?;
+        let baseline = if let Some(path) = request.get("baseline").and_then(Value::as_str) {
+            std::fs::read_to_string(path)
+                .map_err(|e| command_error(format!("read snapshot baseline {path}: {e}")))?
+        } else {
+            let path = snapshot_baseline_path(&self.session_id)?;
+            let previous = if path.exists() {
+                std::fs::read_to_string(&path).map_err(|e| {
+                    command_error(format!("read previous snapshot {}: {e}", path.display()))
+                })?
+            } else {
+                current.clone()
+            };
+            std::fs::write(&path, &current).map_err(|e| {
+                command_error(format!("write previous snapshot {}: {e}", path.display()))
+            })?;
+            previous
+        };
+        Ok(success(diff::snapshots(&baseline, &current)))
+    }
+
+    async fn diff_screenshot(&self, request: &Value) -> Result<Response, SdkError> {
+        let baseline_path = required_string(request, "baseline")?;
+        let baseline = std::fs::read(&baseline_path)
+            .map_err(|e| command_error(format!("read screenshot baseline {baseline_path}: {e}")))?;
+        let current = self.capture_screenshot(request).await?;
+        let threshold = request
+            .get("threshold")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.1);
+        let result = diff::screenshots(&baseline, &current, threshold).map_err(command_error)?;
+        let diff_path = request.get("output").and_then(Value::as_str);
+        if let (Some(path), Some(bytes)) = (diff_path, result.diff_image.as_ref()) {
+            write_file(path, bytes)?;
+        }
+        Ok(success(serde_json::json!({
+            "match": result.matched,
+            "mismatchPercentage": result.mismatch_percentage,
+            "totalPixels": result.total_pixels,
+            "differentPixels": result.different_pixels,
+            "diffPath": diff_path,
+            "dimensionMismatch": result.dimension_mismatch,
+        })))
+    }
+
+    async fn diff_url(&self, request: &Value) -> Result<Response, SdkError> {
+        let url1 = required_string(request, "url1")?;
+        let url2 = required_string(request, "url2")?;
+        let wait_until = request.get("waitUntil").cloned();
+        let mut navigate1 = serde_json::json!({ "action": "navigate", "url": url1 });
+        let mut navigate2 = serde_json::json!({ "action": "navigate", "url": url2 });
+        if let Some(value) = wait_until {
+            navigate1["waitUntil"] = value.clone();
+            navigate2["waitUntil"] = value;
+        }
+        require_success(self.command_remote(navigate1).await?)?;
+        let first_snapshot = response_string(
+            self.command_remote(snapshot_request(request)).await?,
+            "snapshot",
+        )?;
+        let first_screenshot = if request.get("screenshot").and_then(Value::as_bool) == Some(true) {
+            Some(self.capture_screenshot(request).await?)
+        } else {
+            None
+        };
+        require_success(self.command_remote(navigate2).await?)?;
+        let second_snapshot = response_string(
+            self.command_remote(snapshot_request(request)).await?,
+            "snapshot",
+        )?;
+        let snapshot = diff::snapshots(&first_snapshot, &second_snapshot);
+        let screenshot = if let Some(first) = first_screenshot {
+            let second = self.capture_screenshot(request).await?;
+            let result = diff::screenshots(&first, &second, 0.1).map_err(command_error)?;
+            Some(serde_json::json!({
+                "match": result.matched,
+                "mismatchPercentage": result.mismatch_percentage,
+                "totalPixels": result.total_pixels,
+                "differentPixels": result.different_pixels,
+                "dimensionMismatch": result.dimension_mismatch,
+            }))
+        } else {
+            None
+        };
+        Ok(success(serde_json::json!({
+            "url1": url1,
+            "url2": url2,
+            "snapshot": snapshot,
+            "screenshot": screenshot,
+        })))
+    }
+
+    async fn capture_screenshot(&self, request: &Value) -> Result<Vec<u8>, SdkError> {
+        let mut command = serde_json::json!({
+            "action": "screenshot",
+            "format": "png",
+            "inlineBase64": true,
+        });
+        for key in ["selector", "fullPage"] {
+            if let Some(value) = request.get(key) {
+                command[key] = value.clone();
+            }
+        }
+        let encoded = response_string(self.command_remote(command).await?, "base64")?;
+        STANDARD
+            .decode(encoded)
+            .map_err(|e| command_error(format!("decode current screenshot: {e}")))
+    }
+}
+
+fn command_error(error: String) -> SdkError {
+    SdkError::CommandFailed { error, code: 1 }
+}
+
+fn success(data: Value) -> Response {
+    Response {
+        success: true,
+        data: Some(data),
+        error: None,
+        warning: None,
+    }
+}
+
+fn require_success(response: Response) -> Result<Value, SdkError> {
+    if response.success {
+        Ok(response.data.unwrap_or(Value::Null))
+    } else {
+        Err(command_error(
+            response.error.unwrap_or_else(|| "command failed".into()),
+        ))
+    }
+}
+
+fn response_string(response: Response, field: &str) -> Result<String, SdkError> {
+    let data = require_success(response)?;
+    data.get(field)
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| command_error(format!("response has no {field}")))
+}
+
+fn required_string(request: &Value, field: &str) -> Result<String, SdkError> {
+    request
+        .get(field)
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| command_error(format!("missing {field}")))
+}
+
+fn snapshot_request(request: &Value) -> Value {
+    let mut command = serde_json::json!({ "action": "snapshot" });
+    for key in ["selector", "compact", "maxDepth", "interactive"] {
+        if let Some(value) = request.get(key) {
+            command[key] = value.clone();
+        }
+    }
+    command
+}
+
+fn snapshot_baseline_path(session_id: &str) -> Result<PathBuf, SdkError> {
+    let directory = state_directory()?.parent().unwrap().join("diff-snapshots");
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| command_error(format!("create snapshot baseline directory: {e}")))?;
+    Ok(directory.join(format!("{session_id}.txt")))
+}
+
+fn write_file(path: &str, bytes: &[u8]) -> Result<(), SdkError> {
+    if let Some(parent) = PathBuf::from(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                command_error(format!("create output directory {}: {e}", parent.display()))
+            })?;
+        }
+    }
+    std::fs::write(path, bytes).map_err(|e| command_error(format!("write {path}: {e}")))
 }
 
 fn prepare_command(
@@ -632,6 +821,10 @@ fn prepare_command(
         }
         _ => {}
     }
+
+    // CLI parsers use JSON null for absent optional positional values. The wire
+    // contract represents absence by omitting the property.
+    obj.retain(|_, value| !value.is_null());
 
     Ok((screenshot_output, binary_output))
 }
@@ -862,6 +1055,21 @@ mod tests {
                 default_filename: "download.bin".into(),
             })
         );
+    }
+
+    #[test]
+    fn prepare_omits_null_optional_cli_fields() {
+        let mut request = json!({
+            "action": "screenshot",
+            "path": null,
+            "selector": null,
+            "fullPage": false,
+            "annotate": false
+        });
+        prepare_command(&mut request).unwrap();
+        assert!(request.get("path").is_none());
+        assert!(request.get("selector").is_none());
+        assert_eq!(request["fullPage"], false);
     }
 
     #[test]
