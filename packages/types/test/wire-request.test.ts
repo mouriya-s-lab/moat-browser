@@ -13,11 +13,6 @@ describe("wireRequestSchema — valid requests", () => {
     expect(result).toEqual({ type: "register", profile: "default" });
   });
 
-  test("resume", () => {
-    const result = wireRequestSchema({ type: "resume", sessionId: "abc-123" });
-    expect(result).toEqual({ type: "resume", sessionId: "abc-123" });
-  });
-
   test("deregister", () => {
     const result = wireRequestSchema({ type: "deregister", sessionId: "abc-123" });
     expect(result).toEqual({ type: "deregister", sessionId: "abc-123" });
@@ -139,8 +134,8 @@ describe("wireRequestSchema — invalid requests", () => {
     expect(result).toBeInstanceOf(type.errors);
   });
 
-  test("resume missing sessionId", () => {
-    const result = wireRequestSchema({ type: "resume" });
+  test("legacy resume is rejected because commands resume by sessionId", () => {
+    const result = wireRequestSchema({ type: "resume", sessionId: "abc-123" });
     expect(result).toBeInstanceOf(type.errors);
   });
 
