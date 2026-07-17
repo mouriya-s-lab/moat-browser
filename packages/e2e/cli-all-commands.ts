@@ -87,10 +87,14 @@ async function runRaw(argv: string[], json: boolean): Promise<Run> {
   if (batch) { proc.stdin!.write(JSON.stringify([["get","title"],["get","url"]])); proc.stdin!.end(); }
   const stdoutPromise = new Response(proc.stdout).text();
   const stderrPromise = new Response(proc.stderr).text();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const completed = await Promise.race([
     proc.exited.then(exit => ({ _tag: "Exited" as const, exit })),
-    new Promise<{ _tag: "TimedOut" }>(resolve => setTimeout(() => resolve({ _tag: "TimedOut" }), 60_000)),
+    new Promise<{ _tag: "TimedOut" }>(resolve => {
+      timeoutId = setTimeout(() => resolve({ _tag: "TimedOut" }), 60_000);
+    }),
   ]);
+  if (timeoutId) clearTimeout(timeoutId);
   if (completed._tag === "TimedOut") {
     proc.kill(9);
     return { exit: 124, stdout: "", stderr: "command timed out after 60s", jsonValues: 0 };

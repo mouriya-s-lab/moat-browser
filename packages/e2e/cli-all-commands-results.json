@@ -1,0 +1,2533 @@
+{
+  "generatedAt": "2026-07-17T22:05:08.129Z",
+  "controller": "ws://browser.hb.lan:3000",
+  "moat": "/Users/mouriya/Ext/code/moat-browser-worktrees/0718-ea01/cli/target/release/moat",
+  "expectedActions": 121,
+  "coveredActions": 121,
+  "cases": 121,
+  "missing": [],
+  "failed": [],
+  "noOp": [],
+  "internalDiagnostics": [],
+  "expectedTopLevel": 15,
+  "coveredTopLevel": 15,
+  "topLevelMissing": [],
+  "topLevelFailed": [],
+  "topLevelResults": [
+    {
+      "name": "--help",
+      "kind": "local_output",
+      "argv": [
+        "--help"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "-h",
+      "kind": "local_output",
+      "argv": [
+        "-h"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "help",
+      "kind": "local_output",
+      "argv": [
+        "help"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "--version",
+      "kind": "local_output",
+      "argv": [
+        "--version"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "-V",
+      "kind": "local_output",
+      "argv": [
+        "-V"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 0,
+      "diagnostic": ""
+    },
+    {
+      "name": "dashboard",
+      "kind": "stable_unsupported",
+      "argv": [
+        "dashboard"
+      ],
+      "exit": 1,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "install",
+      "kind": "stable_unsupported",
+      "argv": [
+        "install"
+      ],
+      "exit": 1,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "profiles",
+      "kind": "stable_unsupported",
+      "argv": [
+        "profiles"
+      ],
+      "exit": 1,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "session",
+      "kind": "stable_unsupported",
+      "argv": [
+        "session"
+      ],
+      "exit": 1,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "upgrade",
+      "kind": "stable_unsupported",
+      "argv": [
+        "upgrade"
+      ],
+      "exit": 1,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "init",
+      "kind": "controller_session",
+      "argv": [
+        "init"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "status",
+      "kind": "local_session",
+      "argv": [
+        "status"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "disconnect",
+      "kind": "controller_session",
+      "argv": [
+        "disconnect"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "connect",
+      "kind": "controller_session",
+      "argv": [
+        "connect"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    },
+    {
+      "name": "close-session",
+      "kind": "controller_session",
+      "argv": [
+        "close-session"
+      ],
+      "exit": 0,
+      "passed": true,
+      "jsonValues": 1,
+      "diagnostic": ""
+    }
+  ],
+  "isolationPassed": true,
+  "results": [
+    {
+      "name": "cookies_clear",
+      "parserAction": "cookies_clear",
+      "availability": "controller",
+      "argv": [
+        "cookies",
+        "clear"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 19.273708000000624,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "navigate",
+      "parserAction": "navigate",
+      "availability": "controller",
+      "argv": [
+        "open",
+        "https://example.com/"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 102.30629200000021,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "url",
+      "parserAction": "url",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "url"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 7.466500000000451,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "title",
+      "parserAction": "title",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "title"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 52.16920800000116,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "back",
+      "parserAction": "back",
+      "availability": "controller",
+      "argv": [
+        "back"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 172.1509160000005,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "forward",
+      "parserAction": "forward",
+      "availability": "controller",
+      "argv": [
+        "forward"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 3018.159875000001,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "reload",
+      "parserAction": "reload",
+      "availability": "controller",
+      "argv": [
+        "reload"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 135.3217079999995,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "click",
+      "parserAction": "click",
+      "availability": "controller",
+      "argv": [
+        "click",
+        "#button"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 292.89229200000045,
+      "effectAssertion": [
+        "eval",
+        "document.querySelector('#button').dataset.clicked"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "dblclick",
+      "parserAction": "dblclick",
+      "availability": "controller",
+      "argv": [
+        "dblclick",
+        "#button"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 175.50600000000122,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('dblclick')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "fill",
+      "parserAction": "fill",
+      "availability": "controller",
+      "argv": [
+        "fill",
+        "#input",
+        "filled"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 62.002707999999984,
+      "effectAssertion": [
+        "get",
+        "value",
+        "#input"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "type",
+      "parserAction": "type",
+      "availability": "controller",
+      "argv": [
+        "type",
+        "#input",
+        "-typed"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 65.93362499999967,
+      "effectAssertion": [
+        "get",
+        "value",
+        "#input"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "hover",
+      "parserAction": "hover",
+      "availability": "controller",
+      "argv": [
+        "hover",
+        "#button"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 128.09412499999962,
+      "effectAssertion": [
+        "eval",
+        "document.querySelector('#button').matches(':hover')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "focus",
+      "parserAction": "focus",
+      "availability": "controller",
+      "argv": [
+        "focus",
+        "#input"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 69.85954200000015,
+      "effectAssertion": [
+        "eval",
+        "document.activeElement.id"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "check",
+      "parserAction": "check",
+      "availability": "controller",
+      "argv": [
+        "check",
+        "#check"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 231.35475000000042,
+      "effectAssertion": [
+        "is",
+        "checked",
+        "#check"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "uncheck",
+      "parserAction": "uncheck",
+      "availability": "controller",
+      "argv": [
+        "uncheck",
+        "#check"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 232.36245899999994,
+      "effectAssertion": [
+        "is",
+        "checked",
+        "#check"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "select",
+      "parserAction": "select",
+      "availability": "controller",
+      "argv": [
+        "select",
+        "#select",
+        "b"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 60.925208000000566,
+      "effectAssertion": [
+        "get",
+        "value",
+        "#select"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "drag",
+      "parserAction": "drag",
+      "availability": "controller",
+      "argv": [
+        "drag",
+        "#source",
+        "#target"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 473.16058299999895,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('drop')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "upload",
+      "parserAction": "upload",
+      "availability": "controller",
+      "argv": [
+        "upload",
+        "#file",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/upload.txt"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 101.660167,
+      "effectAssertion": [
+        "eval",
+        "document.querySelector('#file').files[0].name"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "download",
+      "parserAction": "download",
+      "availability": "controller",
+      "argv": [
+        "download",
+        "#download",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/download.txt"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 308.7079169999997,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/download.txt"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "press",
+      "parserAction": "press",
+      "availability": "controller",
+      "argv": [
+        "press",
+        "Tab"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 9.358707999999751,
+      "effectAssertion": [
+        "eval",
+        "document.activeElement !== document.body"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "keydown",
+      "parserAction": "keydown",
+      "availability": "controller",
+      "argv": [
+        "keydown",
+        "Shift"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 8.013457999999446,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('keydown')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "keyup",
+      "parserAction": "keyup",
+      "availability": "controller",
+      "argv": [
+        "keyup",
+        "Shift"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 7.965541999999914,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('keyup')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "keyboard",
+      "parserAction": "keyboard",
+      "availability": "controller",
+      "argv": [
+        "keyboard",
+        "type",
+        "keyboard"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 19.273541999998997,
+      "effectAssertion": [
+        "get",
+        "value",
+        "#input"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "scroll",
+      "parserAction": "scroll",
+      "availability": "controller",
+      "argv": [
+        "scroll",
+        "down",
+        "100"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 10.068916000000172,
+      "effectAssertion": [
+        "eval",
+        "window.scrollY > 0"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "scrollintoview",
+      "parserAction": "scrollintoview",
+      "availability": "controller",
+      "argv": [
+        "scrollintoview",
+        "#target"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 249.69866699999875,
+      "effectAssertion": [
+        "eval",
+        "document.querySelector('#target').getBoundingClientRect().top < innerHeight"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "wait",
+      "parserAction": "wait",
+      "availability": "controller",
+      "argv": [
+        "wait",
+        "10"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 1010.0894580000004,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "waitforurl",
+      "parserAction": "waitforurl",
+      "availability": "controller",
+      "argv": [
+        "wait",
+        "--url",
+        "https://example.com/*"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 18.341291999999157,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "waitforloadstate",
+      "parserAction": "waitforloadstate",
+      "availability": "controller",
+      "argv": [
+        "wait",
+        "--load",
+        "domcontentloaded"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 13.924791999999798,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "waitforfunction",
+      "parserAction": "waitforfunction",
+      "availability": "controller",
+      "argv": [
+        "wait",
+        "--fn",
+        "document.querySelector('h1')?.textContent === 'Moat CLI Matrix'"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 13.933666999999332,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "waitfordownload",
+      "parserAction": "waitfordownload",
+      "availability": "controller",
+      "argv": [
+        "wait",
+        "--download",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/wait-download.txt",
+        "--timeout",
+        "10000"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 551.2064579999987,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/wait-download.txt"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "screenshot",
+      "parserAction": "screenshot",
+      "availability": "controller",
+      "argv": [
+        "screenshot",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/screen.png"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 216.69254100000035,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/screen.png"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "pdf",
+      "parserAction": "pdf",
+      "availability": "controller",
+      "argv": [
+        "pdf",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/page.pdf"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 69.68366599999717,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/page.pdf"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "snapshot",
+      "parserAction": "snapshot",
+      "availability": "controller",
+      "argv": [
+        "snapshot",
+        "-i"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 69.85454199999731,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "evaluate",
+      "parserAction": "evaluate",
+      "availability": "controller",
+      "argv": [
+        "eval",
+        "document.title"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 22.334333999999217,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "gettext",
+      "parserAction": "gettext",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "text",
+        "h1"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 13.728000000002794,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "innerhtml",
+      "parserAction": "innerhtml",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "html",
+        "h1"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 13.130875000002561,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "inputvalue",
+      "parserAction": "inputvalue",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "value",
+        "#input"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 13.083041999998386,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getattribute",
+      "parserAction": "getattribute",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "attr",
+        "h1",
+        "title"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 12.634084000001167,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "count",
+      "parserAction": "count",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "count",
+        "button"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 147.01854200000162,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "boundingbox",
+      "parserAction": "boundingbox",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "box",
+        "h1"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 113.79658299999937,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "styles",
+      "parserAction": "styles",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "styles",
+        "h1"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 21.403833000000304,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "cdp_url",
+      "parserAction": "cdp_url",
+      "availability": "controller",
+      "argv": [
+        "get",
+        "cdp-url"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 11.667709000001196,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "isvisible",
+      "parserAction": "isvisible",
+      "availability": "controller",
+      "argv": [
+        "is",
+        "visible",
+        "h1"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 150.58520800000042,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "isenabled",
+      "parserAction": "isenabled",
+      "availability": "controller",
+      "argv": [
+        "is",
+        "enabled",
+        "#button"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 18.783792000001995,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "ischecked",
+      "parserAction": "ischecked",
+      "availability": "controller",
+      "argv": [
+        "is",
+        "checked",
+        "#check"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 16.10200000000259,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getbyrole",
+      "parserAction": "getbyrole",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "role",
+        "heading",
+        "--name",
+        "Moat CLI Matrix"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 150.45933300000252,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getbytext",
+      "parserAction": "getbytext",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "text",
+        "Moat CLI Matrix"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 148.02470800000083,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getbylabel",
+      "parserAction": "getbylabel",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "label",
+        "Name"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 156.41549999999916,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getbyplaceholder",
+      "parserAction": "getbyplaceholder",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "placeholder",
+        "Your name"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 156.20966599999883,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getbyalttext",
+      "parserAction": "getbyalttext",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "alt",
+        "pixel"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 155.15029200000208,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getbytitle",
+      "parserAction": "getbytitle",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "title",
+        "matrix-title"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 155.9988749999975,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "getbytestid",
+      "parserAction": "getbytestid",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "testid",
+        "name"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 151.9117499999993,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "nth",
+      "parserAction": "nth",
+      "availability": "controller",
+      "argv": [
+        "find",
+        "nth",
+        "0",
+        "button"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 14.074500000002445,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "mousemove",
+      "parserAction": "mousemove",
+      "availability": "controller",
+      "argv": [
+        "mouse",
+        "move",
+        "10",
+        "10"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 22.237042000000656,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('mousemove')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "mousedown",
+      "parserAction": "mousedown",
+      "availability": "controller",
+      "argv": [
+        "mouse",
+        "down"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 10.460790999997698,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('mousedown')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "mouseup",
+      "parserAction": "mouseup",
+      "availability": "controller",
+      "argv": [
+        "mouse",
+        "up"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 10.09912500000064,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('mouseup')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "wheel",
+      "parserAction": "wheel",
+      "availability": "controller",
+      "argv": [
+        "mouse",
+        "wheel",
+        "100",
+        "0"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 9.153874999999971,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('wheel')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "viewport",
+      "parserAction": "viewport",
+      "availability": "controller",
+      "argv": [
+        "set",
+        "viewport",
+        "1024",
+        "768"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 51.84850000000006,
+      "effectAssertion": [
+        "eval",
+        "innerWidth + 'x' + innerHeight"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "device",
+      "parserAction": "device",
+      "availability": "controller",
+      "argv": [
+        "set",
+        "device",
+        "Desktop Chrome"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 101.47849999999744,
+      "effectAssertion": [
+        "eval",
+        "innerWidth + 'x' + innerHeight"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "geolocation",
+      "parserAction": "geolocation",
+      "availability": "controller",
+      "argv": [
+        "set",
+        "geo",
+        "35.6812",
+        "139.7671"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 12.102374999998574,
+      "effectAssertion": [
+        "eval",
+        "new Promise(r => navigator.geolocation.getCurrentPosition(p => r(p.coords.latitude.toFixed(4))))"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "offline",
+      "parserAction": "offline",
+      "availability": "controller",
+      "argv": [
+        "set",
+        "offline",
+        "off"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 9.72229199999856,
+      "effectAssertion": [
+        "eval",
+        "navigator.onLine"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "headers",
+      "parserAction": "headers",
+      "availability": "controller",
+      "argv": [
+        "set",
+        "headers",
+        "{\"X-Moat-Matrix\":\"yes\"}"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 8.276499999999942,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "credentials",
+      "parserAction": "credentials",
+      "availability": "controller",
+      "argv": [
+        "set",
+        "credentials",
+        "matrix",
+        "matrix"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 50.79012500000317,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "emulatemedia",
+      "parserAction": "emulatemedia",
+      "availability": "controller",
+      "argv": [
+        "set",
+        "media",
+        "dark",
+        "reduced-motion"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 11.539917000001878,
+      "effectAssertion": [
+        "eval",
+        "matchMedia('(prefers-color-scheme: dark)').matches && matchMedia('(prefers-reduced-motion: reduce)').matches"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "storage_set",
+      "parserAction": "storage_set",
+      "availability": "controller",
+      "argv": [
+        "storage",
+        "local",
+        "set",
+        "matrix",
+        "stored"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 53.32679199999984,
+      "effectAssertion": [
+        "storage",
+        "local",
+        "get",
+        "matrix"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "storage_get",
+      "parserAction": "storage_get",
+      "availability": "controller",
+      "argv": [
+        "storage",
+        "local",
+        "get",
+        "matrix"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 10.480333999999857,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "storage_clear",
+      "parserAction": "storage_clear",
+      "availability": "controller",
+      "argv": [
+        "storage",
+        "local",
+        "clear"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 10.695959000000585,
+      "effectAssertion": [
+        "storage",
+        "local",
+        "get",
+        "matrix"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "cookies_set",
+      "parserAction": "cookies_set",
+      "availability": "controller",
+      "argv": [
+        "cookies",
+        "set",
+        "matrix",
+        "cookie"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 8.779583999999886,
+      "effectAssertion": [
+        "cookies",
+        "get"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "cookies_get",
+      "parserAction": "cookies_get",
+      "availability": "controller",
+      "argv": [
+        "cookies",
+        "get"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 8.567250000000058,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "route",
+      "parserAction": "route",
+      "availability": "controller",
+      "argv": [
+        "network",
+        "route",
+        "**/matrix-route",
+        "--body",
+        "{\"ok\":true}"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 9.729834000001574,
+      "effectAssertion": [
+        "eval",
+        "fetch('https://moat.invalid/matrix-route').then(r => r.text())"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "requests",
+      "parserAction": "requests",
+      "availability": "controller",
+      "argv": [
+        "network",
+        "requests"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 12.920458000000508,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "request_detail",
+      "parserAction": "request_detail",
+      "availability": "controller",
+      "argv": [
+        "network",
+        "request",
+        "3"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 8.953750000000582,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "unroute",
+      "parserAction": "unroute",
+      "availability": "controller",
+      "argv": [
+        "network",
+        "unroute",
+        "**/matrix-route"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 8.639957999999751,
+      "effectAssertion": [
+        "eval",
+        "fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "har_start",
+      "parserAction": "har_start",
+      "availability": "controller",
+      "argv": [
+        "network",
+        "har",
+        "start"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 12.1306250000016,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "har_stop",
+      "parserAction": "har_stop",
+      "availability": "controller",
+      "argv": [
+        "network",
+        "har",
+        "stop",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/network.har"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 13.151292000002286,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/network.har"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "console",
+      "parserAction": "console",
+      "availability": "controller",
+      "argv": [
+        "console"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 20.68512499999997,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "errors",
+      "parserAction": "errors",
+      "availability": "controller",
+      "argv": [
+        "errors"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 12.93475000000035,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "highlight",
+      "parserAction": "highlight",
+      "availability": "controller",
+      "argv": [
+        "highlight",
+        "h1"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 55.847624999998516,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "clipboard",
+      "parserAction": "clipboard",
+      "availability": "controller",
+      "argv": [
+        "clipboard",
+        "write",
+        "matrix-clipboard"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 31.533166000001074,
+      "effectAssertion": [
+        "clipboard",
+        "read"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "tab_new",
+      "parserAction": "tab_new",
+      "availability": "controller",
+      "argv": [
+        "tab",
+        "new",
+        "https://example.com/"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 212.02058300000135,
+      "effectAssertion": [
+        "get",
+        "url"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "tab_list",
+      "parserAction": "tab_list",
+      "availability": "controller",
+      "argv": [
+        "tab",
+        "list"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 56.39074999999866,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "tab_switch",
+      "parserAction": "tab_switch",
+      "availability": "controller",
+      "argv": [
+        "tab",
+        "switch",
+        "0"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 56.702416999996785,
+      "effectAssertion": [
+        "get",
+        "url"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "tab_close",
+      "parserAction": "tab_close",
+      "availability": "controller",
+      "argv": [
+        "tab",
+        "close"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 58.78562500000044,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "window_new",
+      "parserAction": "window_new",
+      "availability": "controller",
+      "argv": [
+        "window",
+        "new"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 125.09233299999687,
+      "effectAssertion": [
+        "get",
+        "url"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "frame",
+      "parserAction": "frame",
+      "availability": "controller",
+      "argv": [
+        "frame",
+        "#frame"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 327.2712079999983,
+      "effectAssertion": [
+        "get",
+        "text",
+        "#inside"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "mainframe",
+      "parserAction": "mainframe",
+      "availability": "controller",
+      "argv": [
+        "frame",
+        "main"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 11.597750000000815,
+      "effectAssertion": [
+        "get",
+        "text",
+        "h1"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "dialog",
+      "parserAction": "dialog",
+      "availability": "controller",
+      "argv": [
+        "dialog",
+        "accept",
+        "matrix"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 550.7734579999997,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "tap",
+      "parserAction": "tap",
+      "availability": "controller",
+      "argv": [
+        "tap",
+        "#button"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 266.023624999998,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.includes('touchstart') && window.matrixEvents.includes('touchend')"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "swipe",
+      "parserAction": "swipe",
+      "availability": "controller",
+      "argv": [
+        "swipe",
+        "up",
+        "100"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 494.1922909999994,
+      "effectAssertion": [
+        "eval",
+        "window.matrixEvents.filter(x => x === 'touchstart' || x === 'touchend').length >= 4"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "trace_start",
+      "parserAction": "trace_start",
+      "availability": "controller",
+      "argv": [
+        "trace",
+        "start"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 238.12833300000057,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "trace_stop",
+      "parserAction": "trace_stop",
+      "availability": "controller",
+      "argv": [
+        "trace",
+        "stop",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/trace.zip"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 18.22399999999834,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/trace.zip"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "profiler_start",
+      "parserAction": "profiler_start",
+      "availability": "controller",
+      "argv": [
+        "profiler",
+        "start"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 65.30891699999847,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "profiler_stop",
+      "parserAction": "profiler_stop",
+      "availability": "controller",
+      "argv": [
+        "profiler",
+        "stop",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/profile.json"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 105.56762499999968,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/profile.json"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "state_save",
+      "parserAction": "state_save",
+      "availability": "controller",
+      "argv": [
+        "state",
+        "save",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/.moat/states/matrix-state.json"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 34.123875000001135,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/.moat/states/matrix-state.json"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "state_load",
+      "parserAction": "state_load",
+      "availability": "controller",
+      "argv": [
+        "state",
+        "load",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/.moat/states/matrix-state.json"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 146.05516699999862,
+      "effectAssertion": [
+        "storage",
+        "local",
+        "get",
+        "matrix-state-proof"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "batch",
+      "parserAction": "batch",
+      "availability": "controller",
+      "argv": [
+        "batch"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 31.652125000000524,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "state_list",
+      "parserAction": "state_list",
+      "availability": "local",
+      "argv": [
+        "state",
+        "list"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 4.144083999999566,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "state_show",
+      "parserAction": "state_show",
+      "availability": "local",
+      "argv": [
+        "state",
+        "show",
+        "matrix-state"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 3.8466669999979786,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "state_rename",
+      "parserAction": "state_rename",
+      "availability": "local",
+      "argv": [
+        "state",
+        "rename",
+        "matrix-state",
+        "matrix-renamed"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 3.1084159999991243,
+      "effectAssertion": [
+        "state",
+        "list"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "state_clean",
+      "parserAction": "state_clean",
+      "availability": "local",
+      "argv": [
+        "state",
+        "clean",
+        "--older-than",
+        "30"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 2.6951669999980368,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "state_clear",
+      "parserAction": "state_clear",
+      "availability": "local",
+      "argv": [
+        "state",
+        "clear",
+        "--all"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 2.4168339999996533,
+      "effectAssertion": [
+        "state",
+        "list"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "diff_snapshot",
+      "parserAction": "diff_snapshot",
+      "availability": "orchestrated",
+      "argv": [
+        "diff",
+        "snapshot"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 63.23133299999972,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "diff_screenshot",
+      "parserAction": "diff_screenshot",
+      "availability": "orchestrated",
+      "argv": [
+        "diff",
+        "screenshot",
+        "--baseline",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/screen.png",
+        "--output",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/diff.png"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 383.90008300000045,
+      "effectAssertion": [
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/diff.png"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "diff_url",
+      "parserAction": "diff_url",
+      "availability": "orchestrated",
+      "argv": [
+        "diff",
+        "url",
+        "data:text/html,%3Ctitle%3EFirst%3C%2Ftitle%3E%3Ch1%3EFirst%3C%2Fh1%3E",
+        "data:text/html,%3Ctitle%3EDifferent%3C%2Ftitle%3E%3Ch1%3EDifferent%3C%2Fh1%3E"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 383.3555830000005,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "auth_save",
+      "parserAction": "auth_save",
+      "availability": "stable_unsupported",
+      "argv": [
+        "auth",
+        "save",
+        "x"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 7.235583000001498,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "auth_list",
+      "parserAction": "auth_list",
+      "availability": "stable_unsupported",
+      "argv": [
+        "auth",
+        "list"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 6.42041700000118,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "auth_show",
+      "parserAction": "auth_show",
+      "availability": "stable_unsupported",
+      "argv": [
+        "auth",
+        "show",
+        "x"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 5.369749999998021,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "auth_delete",
+      "parserAction": "auth_delete",
+      "availability": "stable_unsupported",
+      "argv": [
+        "auth",
+        "delete",
+        "x"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 3.754666000000725,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "auth_login",
+      "parserAction": "auth_login",
+      "availability": "stable_unsupported",
+      "argv": [
+        "auth",
+        "login",
+        "x"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 3.261833000000479,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "confirm",
+      "parserAction": "confirm",
+      "availability": "stable_unsupported",
+      "argv": [
+        "confirm"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: confirm is unavailable: moat has no CLI-local action-policy confirmation layer",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.633749999997235,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "deny",
+      "parserAction": "deny",
+      "availability": "stable_unsupported",
+      "argv": [
+        "deny"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: deny is unavailable: moat has no CLI-local action-policy confirmation layer",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.353125000001455,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "inspect",
+      "parserAction": "inspect",
+      "availability": "stable_unsupported",
+      "argv": [
+        "inspect"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: inspect is unavailable: CDP is private and Controller-managed",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.332209000000148,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "launch",
+      "parserAction": "launch",
+      "availability": "stable_unsupported",
+      "argv": [
+        "launch"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: launch is unavailable: the Controller owns browser creation",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.051167000001442,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "stream_enable",
+      "parserAction": "stream_enable",
+      "availability": "stable_unsupported",
+      "argv": [
+        "stream",
+        "enable"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: stream is unavailable: live viewing uses neko WebRTC",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.138999999999214,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "stream_disable",
+      "parserAction": "stream_disable",
+      "availability": "stable_unsupported",
+      "argv": [
+        "stream",
+        "disable"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: stream is unavailable: live viewing uses neko WebRTC",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.1057919999984733,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "stream_status",
+      "parserAction": "stream_status",
+      "availability": "stable_unsupported",
+      "argv": [
+        "stream",
+        "status"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: stream is unavailable: live viewing uses neko WebRTC",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.292041999997309,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "recording_start",
+      "parserAction": "recording_start",
+      "availability": "stable_unsupported",
+      "argv": [
+        "record",
+        "start"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: record is unavailable: browser video recording is outside the Controller contract",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 1.9152090000025055,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "recording_stop",
+      "parserAction": "recording_stop",
+      "availability": "stable_unsupported",
+      "argv": [
+        "record",
+        "stop"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: record is unavailable: browser video recording is outside the Controller contract",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 1.833083000001352,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "recording_restart",
+      "parserAction": "recording_restart",
+      "availability": "stable_unsupported",
+      "argv": [
+        "record",
+        "restart"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: record is unavailable: browser video recording is outside the Controller contract",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 1.893000000000029,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "device_list",
+      "parserAction": "device_list",
+      "availability": "stable_unsupported",
+      "argv": [
+        "device",
+        "list"
+      ],
+      "exit": 1,
+      "success": false,
+      "error": "unsupported_in_moat: device is unavailable: moat has no local Xcode/Appium device backend",
+      "errorType": "unsupported_in_moat",
+      "jsonValues": 1,
+      "elapsedMs": 2.028958999999304,
+      "effectAssertion": [
+        "stable unsupported error"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "close",
+      "parserAction": "close",
+      "availability": "controller",
+      "argv": [
+        "close"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 1625.440499999997,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    }
+  ]
+}
