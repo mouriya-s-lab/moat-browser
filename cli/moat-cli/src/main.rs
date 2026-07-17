@@ -99,6 +99,15 @@ async fn main() {
     match clean[0].as_str() {
         // init: register session, create container + CDP
         "connect" | "init" => {
+            if clean.len() > 1 {
+                let message = "unsupported_in_moat: direct CDP connect is unavailable; use `moat init` and let the Controller create the browser";
+                if flags.json {
+                    print_json_error(message);
+                } else {
+                    eprintln!("{} {}", color::error_indicator(), message);
+                }
+                exit(1);
+            }
             let url = match controller_url() {
                 Ok(u) => u,
                 Err(e) => {
@@ -218,7 +227,10 @@ async fn main() {
                     if flags.json {
                         println!(r#"{{"success":true}}"#);
                     } else {
-                        println!("{} Cleaned up (session already gone).", color::success_indicator());
+                        println!(
+                            "{} Cleaned up (session already gone).",
+                            color::success_indicator()
+                        );
                     }
                 }
             }
@@ -308,6 +320,25 @@ async fn main() {
         return;
     }
 
+    let output_opts = OutputOptions::from_flags(&flags);
+    if let Some(result) = moat_sdk::local_command(&cmd) {
+        match result {
+            Ok(resp) => {
+                let action = cmd.get("action").and_then(|value| value.as_str());
+                print_response_with_opts(&resp, action, &output_opts);
+            }
+            Err(error) => {
+                if flags.json {
+                    print_json_error(error.to_string());
+                } else {
+                    eprintln!("{} {}", color::error_indicator(), error);
+                }
+                exit(1);
+            }
+        }
+        return;
+    }
+
     // ─── Send command to Controller via SDK ───
 
     let url = match controller_url() {
@@ -321,8 +352,6 @@ async fn main() {
             exit(78);
         }
     };
-
-    let output_opts = OutputOptions::from_flags(&flags);
 
     match send_command(cmd.clone(), &url).await {
         Ok(resp) => {

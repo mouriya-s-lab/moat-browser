@@ -9,6 +9,9 @@ pub use moat_sdk::wire::Response;
 
 /// Send a command through a fresh WebSocket connection to the Controller.
 pub async fn send_command(cmd: Value, controller_url: &str) -> Result<Response, String> {
+    if let Some(result) = moat_sdk::local_command(&cmd) {
+        return result.map_err(|e| e.to_string());
+    }
     let session_id = moat_sdk::session::read_session_id()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No active session. Run `moat init` first.".to_string())?;
