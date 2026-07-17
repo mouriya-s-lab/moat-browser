@@ -34,6 +34,7 @@ function mockLocator(overrides?: Partial<Locator>): Locator {
         borderRadius: "0px",
       },
     }])),
+    ariaSnapshot: mock(() => Promise.resolve('- heading "Test"\n- button "Click me"')),
     nth: mock(function (this: Locator) { return this; }),
     ...overrides,
   } as unknown as Locator;
@@ -58,6 +59,7 @@ function mockPage(overrides?: Partial<Page>): Page {
     locator: mock(() => loc),
     screenshot: mock(() => Promise.resolve(Buffer.from("png-data"))),
     pdf: mock(() => Promise.resolve(Buffer.from("pdf-data"))),
+    viewportSize: mock(() => ({ width: 800, height: 600 })),
     evaluate: mock((_code: unknown) => Promise.resolve({ answer: 42 })),
     keyboard: {
       press: mock(() => Promise.resolve()),
@@ -112,6 +114,7 @@ function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): Browse
     setGeolocation: mock(() => Promise.resolve()),
     setOffline: mock(() => Promise.resolve()),
     setHTTPCredentials: mock(() => Promise.resolve()),
+    storageState: mock(() => Promise.resolve({ cookies: [], origins: [] })),
     newCDPSession: mock(() => Promise.resolve({
       send: mock(() => Promise.resolve()),
       detach: mock(() => Promise.resolve()),
@@ -686,6 +689,222 @@ describe("cdp-bridge", () => {
     });
   });
 
+  describe("clipboard, touch, dialog, and frame state", () => {
+    it("clipboard reads, writes, copies, and pastes through the active page", async () => {
+      page = mockPage({ evaluate: mock(() => Promise.resolve("clipboard text")) });
+      ctx = mockContext([page]);
+
+      expect(assertOk(await executeCommand(ctx, {
+        action: "clipboard",
+        operation: "read",
+      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", text: "clipboard text" });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "clipboard",
+        operation: "write",
+        text: "new text",
+      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", written: "new text" });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "clipboard",
+        operation: "copy",
+      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", copied: true });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "clipboard",
+        operation: "paste",
+      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", pasted: true });
+      expect(page.keyboard.press).toHaveBeenCalledWith("Control+C");
+      expect(page.keyboard.press).toHaveBeenCalledWith("Control+V");
+    });
+
+    it("tap and swipe dispatch touch events through CDP", async () => {
+      const send = mock(() => Promise.resolve());
+      const detach = mock(() => Promise.resolve());
+      ctx = mockContext([page], {
+        newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
+      });
+
+      expect(assertOk(await executeCommand(ctx, {
+        action: "tap",
+        selector: "#touch",
+      }, refStore, SESSION))).toEqual({ _tag: "TouchResult", tapped: "#touch" });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "swipe",
+        direction: "up",
+        distance: 200,
+      }, refStore, SESSION))).toEqual({ _tag: "TouchResult", swiped: "up" });
+      expect(send.mock.calls[0]).toEqual([
+        "Input.dispatchTouchEvent",
+        { type: "touchStart", touchPoints: [{ x: 2.5, y: 4 }] },
+      ]);
+      expect(send).toHaveBeenCalledTimes(14);
+      expect(detach).toHaveBeenCalledTimes(2);
+    });
+
+    it("dialog status exposes the pending dialog and accept resolves it", async () => {
+      const handlers = new Map<string, (value: unknown) => void>();
+      page = mockPage({
+        on: mock((event: string, handler: (value: unknown) => void) => {
+          handlers.set(event, handler);
+          return page;
+        }) as Page["on"],
+      });
+      ctx = mockContext([page]);
+      const accept = mock(() => Promise.resolve());
+      handlers.set("placeholder", () => {});
+      await executeCommand(ctx, { action: "dialog", response: "status" }, refStore, SESSION);
+      handlers.get("dialog")?.({
+        type: () => "prompt",
+        message: () => "Your name?",
+        defaultValue: () => "Guest",
+        accept,
+        dismiss: mock(() => Promise.resolve()),
+      });
+
+      expect(assertOk(await executeCommand(ctx, {
+        action: "dialog",
+        response: "status",
+      }, refStore, SESSION))).toEqual({
+        _tag: "DialogResult",
+        hasDialog: true,
+        type: "prompt",
+        message: "Your name?",
+        defaultPrompt: "Guest",
+      });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "dialog",
+        response: "accept",
+        promptText: "Moat",
+      }, refStore, SESSION))).toEqual({
+        _tag: "DialogResult",
+        handled: true,
+        accepted: true,
+      });
+      expect(accept).toHaveBeenCalledWith("Moat");
+      expect(assertOk(await executeCommand(ctx, {
+        action: "dialog",
+        response: "status",
+      }, refStore, SESSION))).toEqual({ _tag: "DialogResult", hasDialog: false });
+    });
+
+    it("frame scopes later locator commands until returning to main", async () => {
+      const inside = mockLocator({ textContent: mock(() => Promise.resolve("inside")) });
+      const frame = mockPage({ locator: mock(() => inside) });
+      const iframe = mockLocator({
+        elementHandle: mock(() => Promise.resolve({
+          contentFrame: mock(() => Promise.resolve(frame)),
+        })),
+      });
+      const outside = mockLocator({ textContent: mock(() => Promise.resolve("outside")) });
+      page = mockPage({
+        locator: mock((selector: string) => selector === "iframe" ? iframe : outside),
+      });
+      ctx = mockContext([page]);
+
+      expect(assertOk(await executeCommand(ctx, {
+        action: "frame",
+        selector: "iframe",
+      }, refStore, SESSION))).toEqual({ _tag: "FrameResult", frame: "iframe" });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "gettext",
+        selector: "#content",
+      }, refStore, SESSION))).toEqual({ _tag: "GetTextResult", text: "inside" });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "mainframe",
+      }, refStore, SESSION))).toEqual({ _tag: "FrameResult", frame: "main" });
+      expect(assertOk(await executeCommand(ctx, {
+        action: "gettext",
+        selector: "#content",
+      }, refStore, SESSION))).toEqual({ _tag: "GetTextResult", text: "outside" });
+    });
+
+    it("returns stable moat-specific errors for local-only commands", async () => {
+      const inspect = assertErr(await executeCommand(ctx, { action: "inspect" }, refStore, SESSION));
+      const devices = assertErr(await executeCommand(ctx, { action: "device_list" }, refStore, SESSION));
+      expect(inspect._tag).toBe("CommandFailed");
+      expect(devices._tag).toBe("CommandFailed");
+      if (inspect._tag === "CommandFailed") expect(inspect.message).toStartWith("unsupported_in_moat:");
+      if (devices._tag === "CommandFailed") expect(devices.message).toStartWith("unsupported_in_moat:");
+    });
+  });
+
+  describe("browser state transfer", () => {
+    it("state_save serializes cookies plus local and session storage", async () => {
+      page = mockPage({
+        url: mock(() => "https://example.com/page"),
+        evaluate: mock(() => Promise.resolve([{ name: "session-key", value: "session-value" }])),
+      });
+      ctx = mockContext([page], {
+        storageState: mock(() => Promise.resolve({
+          cookies: [{
+            name: "sid",
+            value: "cookie-value",
+            domain: "example.com",
+            path: "/",
+            expires: -1,
+            httpOnly: true,
+            secure: true,
+            sameSite: "Lax",
+          }],
+          origins: [{
+            origin: "https://example.com",
+            localStorage: [{ name: "local-key", value: "local-value" }],
+          }],
+        })),
+      });
+
+      const data = assertOk(await executeCommand(ctx, { action: "state_save" }, refStore, SESSION));
+
+      expect(data._tag).toBe("BinaryFileResult");
+      if (data._tag === "BinaryFileResult") {
+        const state = JSON.parse(Buffer.from(data.base64, "base64").toString());
+        expect(state.cookies[0].name).toBe("sid");
+        expect(state.origins[0].localStorage[0]).toEqual({ name: "local-key", value: "local-value" });
+        expect(state.origins[0].sessionStorage[0]).toEqual({ name: "session-key", value: "session-value" });
+      }
+    });
+
+    it("state_load replaces cookies and restores local and session storage through CDP", async () => {
+      const send = mock(() => Promise.resolve());
+      const detach = mock(() => Promise.resolve());
+      ctx = mockContext([page], {
+        newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
+      });
+      const state = {
+        cookies: [{
+          name: "sid",
+          value: "cookie-value",
+          domain: "example.com",
+          path: "/",
+          expires: -1,
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax" as const,
+        }],
+        origins: [{
+          origin: "https://example.com",
+          localStorage: [{ name: "local-key", value: "local-value" }],
+          sessionStorage: [{ name: "session-key", value: "session-value" }],
+        }],
+      };
+
+      const data = assertOk(await executeCommand(ctx, { action: "state_load", state }, refStore, SESSION));
+
+      expect(data).toEqual({ _tag: "StateLoadResult", loaded: true, cookies: 1, origins: 1 });
+      expect(ctx.clearCookies).toHaveBeenCalledTimes(1);
+      expect(ctx.addCookies).toHaveBeenCalledWith(state.cookies);
+      expect(send).toHaveBeenCalledWith("DOMStorage.setDOMStorageItem", {
+        storageId: { securityOrigin: "https://example.com", isLocalStorage: true },
+        key: "local-key",
+        value: "local-value",
+      });
+      expect(send).toHaveBeenCalledWith("DOMStorage.setDOMStorageItem", {
+        storageId: { securityOrigin: "https://example.com", isLocalStorage: false },
+        key: "session-key",
+        value: "session-value",
+      });
+      expect(detach).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // ─── Tab actions → TabResult ───
 
   describe("tab management", () => {
@@ -732,6 +951,14 @@ describe("cdp-bridge", () => {
     it("tab_switch returns TabResult", async () => {
       const r = await executeCommand(ctx, { action: "tab_switch", index: 0 }, refStore, SESSION);
       expect(assertOk(r)._tag).toBe("TabResult");
+    });
+
+    it("tab_switch rejects an unknown index instead of silently using page zero", async () => {
+      const error = assertErr(await executeCommand(ctx, {
+        action: "tab_switch",
+        index: 9,
+      }, refStore, SESSION));
+      expect(error).toEqual({ _tag: "CommandFailed", message: "Unknown tab index: 9" });
     });
 
     it("tab_close returns TabResult", async () => {

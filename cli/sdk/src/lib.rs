@@ -275,6 +275,26 @@ fn prepare_command(
         obj.insert("files".into(), Value::Array(payloads));
     }
 
+    if obj.get("action").and_then(|v| v.as_str()) == Some("state_load") {
+        let path = obj
+            .get("path")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| SdkError::CommandFailed {
+                error: "state load requires a path".into(),
+                code: 1,
+            })?;
+        let contents = std::fs::read_to_string(path).map_err(|e| SdkError::CommandFailed {
+            error: format!("read state file {}: {}", path, e),
+            code: 1,
+        })?;
+        let state = serde_json::from_str::<Value>(&contents).map_err(|e| SdkError::CommandFailed {
+            error: format!("parse state file {}: {}", path, e),
+            code: 1,
+        })?;
+        obj.remove("path");
+        obj.insert("state".into(), state);
+    }
+
     match obj.get("action").and_then(|value| value.as_str()) {
         Some("download") | Some("waitfordownload") => {
             binary_output = Some(BinaryOutput {
@@ -289,6 +309,14 @@ fn prepare_command(
                 requested_path: obj.get("path").and_then(|value| value.as_str()).map(String::from),
                 default_directory: "moat-pdfs".into(),
                 default_filename: "page.pdf".into(),
+            });
+            obj.remove("path");
+        }
+        Some("state_save") => {
+            binary_output = Some(BinaryOutput {
+                requested_path: obj.get("path").and_then(|value| value.as_str()).map(String::from),
+                default_directory: "moat-states".into(),
+                default_filename: "state.json".into(),
             });
             obj.remove("path");
         }
@@ -524,6 +552,45 @@ mod tests {
                 default_filename: "download.bin".into(),
             })
         );
+    }
+
+    #[test]
+    fn prepare_state_save_keeps_output_path_local() {
+        let mut request = json!({
+            "action": "state_save",
+            "path": "artifacts/auth-state.json"
+        });
+
+        let (_, output) = prepare_command(&mut request).unwrap();
+
+        assert_eq!(request, json!({ "action": "state_save" }));
+        assert_eq!(
+            output,
+            Some(BinaryOutput {
+                requested_path: Some("artifacts/auth-state.json".into()),
+                default_directory: "moat-states".into(),
+                default_filename: "state.json".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn prepare_state_load_reads_and_parses_local_state_file() {
+        let dir = test_dir("state-load");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let state = json!({ "cookies": [], "origins": [] });
+        std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let mut request = json!({
+            "action": "state_load",
+            "path": path.to_string_lossy()
+        });
+
+        let outputs = prepare_command(&mut request).unwrap();
+
+        assert_eq!(outputs, (None, None));
+        assert_eq!(request, json!({ "action": "state_load", "state": state }));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

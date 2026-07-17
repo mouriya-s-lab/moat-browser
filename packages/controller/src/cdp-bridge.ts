@@ -1,5 +1,5 @@
 import { chromium, devices } from "patchright";
-import type { Browser, BrowserContext, Locator, Page, Request } from "patchright";
+import type { Browser, BrowserContext, Dialog, Frame, Locator, Page, Request } from "patchright";
 import type {
   BrowserCommand,
   CommandResultData,
@@ -31,6 +31,12 @@ import type {
   NetworkRequestsResult,
   NetworkRequestDetailResult,
   BinaryFileResult,
+  ClipboardResult,
+  DialogResult,
+  FrameResult,
+  CdpUrlResult,
+  TouchResult,
+  StateLoadResult,
   BooleanResult,
   BatchResult,
   BatchResultEntry,
@@ -59,9 +65,12 @@ export type CdpConnection = {
   readonly context: BrowserContext;
 };
 
+const contextCdpUrls = new WeakMap<BrowserContext, string>();
+
 export async function connectCDP(cdpUrl: string): Promise<CdpConnection> {
   const browser = await chromium.connectOverCDP(cdpUrl);
   const context = browser.contexts()[0];
+  contextCdpUrls.set(context, cdpUrl);
   return { browser, context };
 }
 
@@ -75,6 +84,13 @@ type SessionRuntimeState = {
   readonly pageErrors: Array<{ readonly message: string }>;
   readonly requestIds: WeakMap<Request, string>;
   readonly requests: Map<string, NetworkRequestEntry>;
+  activeFrame?: Frame;
+  pendingDialog?: Dialog;
+  dialogInfo?: {
+    readonly type: string;
+    readonly message: string;
+    readonly defaultPrompt: string;
+  };
   nextRequestId: number;
 };
 
@@ -105,6 +121,14 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
   });
   page.on("pageerror", (error) => {
     state.pageErrors.push({ message: error.message });
+  });
+  page.on("dialog", (dialog) => {
+    state.pendingDialog = dialog;
+    state.dialogInfo = {
+      type: dialog.type(),
+      message: dialog.message(),
+      defaultPrompt: dialog.defaultValue(),
+    };
   });
   page.on("request", (request) => {
     const requestId = String(state.nextRequestId++);
@@ -201,21 +225,21 @@ async function executeLocatorAction(
 // ─── resolveLocator ───
 
 function resolveLocator(
-  page: Page,
+  scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
   ref?: string,
   selector?: string,
 ): Locator | null {
   if (ref) return refStore.resolve(sessionId, ref) ?? null;
-  if (selector) return page.locator(selector);
+  if (selector) return scope.locator(selector);
   return null;
 }
 
 // ─── executeElementAction ───
 
 async function executeElementAction(
-  page: Page,
+  scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
   ref: string | undefined,
@@ -223,7 +247,7 @@ async function executeElementAction(
   action: "click" | "fill" | "type" | "hover",
   value?: string,
 ): Promise<Result<CommandResultData, ControllerError>> {
-  const locator = resolveLocator(page, refStore, sessionId, ref, selector);
+  const locator = resolveLocator(scope, refStore, sessionId, ref, selector);
   if (!locator) return err({ _tag: "ElementNotFound", selector: ref ?? selector } as const);
 
   switch (action) {
@@ -259,11 +283,11 @@ const INTERACTIVE_ROLES = new Set([
 const ARIA_LINE_RE = /^(\s*- )(\w+)(?: "([^"]*)")?(.*)$/;
 
 async function buildAriaSnapshot(
-  page: Page,
+  scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
 ): Promise<string> {
-  const snapshot = await page.ariaSnapshot();
+  const snapshot = await scope.locator("body").ariaSnapshot();
   const refs = new Map<string, Locator>();
   let counter = 1;
   const nthByRole = new Map<string, number>();
@@ -277,11 +301,11 @@ async function buildAriaSnapshot(
 
     const key = `@e${counter}`;
     const locator = name
-      ? page.getByRole(role as Parameters<Page["getByRole"]>[0], { name, exact: true })
+      ? scope.getByRole(role as Parameters<Page["getByRole"]>[0], { name, exact: true })
       : (() => {
           const n = nthByRole.get(role) ?? 0;
           nthByRole.set(role, n + 1);
-          return page.getByRole(role as Parameters<Page["getByRole"]>[0]).nth(n);
+          return scope.getByRole(role as Parameters<Page["getByRole"]>[0]).nth(n);
         })();
     refs.set(key, locator);
     counter++;
@@ -345,16 +369,19 @@ export async function executeCommand(
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
   const runtimeState = observePageRuntime(sessionId, page);
+  const scope = runtimeState.activeFrame ?? page;
 
   try {
     switch (command.action) {
       case "navigate": {
+        runtimeState.activeFrame = undefined;
         await page.goto(command.url, { waitUntil: "domcontentloaded" });
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
 
       case "back": {
+        runtimeState.activeFrame = undefined;
         const urlBefore = page.url();
         try {
           await page.goBack({ waitUntil: "domcontentloaded", timeout: 3000 });
@@ -368,6 +395,7 @@ export async function executeCommand(
       }
 
       case "forward": {
+        runtimeState.activeFrame = undefined;
         const urlBefore = page.url();
         try {
           await page.goForward({ waitUntil: "domcontentloaded", timeout: 3000 });
@@ -381,13 +409,14 @@ export async function executeCommand(
       }
 
       case "reload": {
+        runtimeState.activeFrame = undefined;
         await page.reload({ waitUntil: "domcontentloaded" });
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
 
       case "getbyrole": {
-        let loc = page.getByRole(command.role as Parameters<Page["getByRole"]>[0], {
+        let loc = scope.getByRole(command.role as Parameters<Page["getByRole"]>[0], {
           name: command.name,
           exact: command.exact,
         });
@@ -399,54 +428,54 @@ export async function executeCommand(
 
       case "getbylabel":
         return executeLocatorAction(
-          page.getByLabel(command.label, { exact: command.exact }),
+          scope.getByLabel(command.label, { exact: command.exact }),
           command.subaction, command.value,
         );
 
       case "getbyplaceholder":
         return executeLocatorAction(
-          page.getByPlaceholder(command.placeholder, { exact: command.exact }),
+          scope.getByPlaceholder(command.placeholder, { exact: command.exact }),
           command.subaction, command.value,
         );
 
       case "getbytext":
         return executeLocatorAction(
-          page.getByText(command.text, { exact: command.exact }),
+          scope.getByText(command.text, { exact: command.exact }),
           command.subaction,
         );
 
       case "getbyalttext":
         return executeLocatorAction(
-          page.getByAltText(command.text, { exact: command.exact }),
+          scope.getByAltText(command.text, { exact: command.exact }),
           command.subaction,
         );
 
       case "getbytitle":
         return executeLocatorAction(
-          page.getByTitle(command.text, { exact: command.exact }),
+          scope.getByTitle(command.text, { exact: command.exact }),
           command.subaction,
         );
 
       case "getbytestid":
         return executeLocatorAction(
-          page.getByTestId(command.testId),
+          scope.getByTestId(command.testId),
           command.subaction, command.value,
         );
 
       case "click":
-        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "click");
+        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "click");
 
       case "fill":
-        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "fill", command.value);
+        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "fill", command.value);
 
       case "type":
-        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "type", command.text);
+        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "type", command.text);
 
       case "hover":
-        return executeElementAction(page, refStore, sessionId, command.ref, command.selector, "hover");
+        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "hover");
 
       case "snapshot": {
-        const snapshot = await buildAriaSnapshot(page, refStore, sessionId);
+        const snapshot = await buildAriaSnapshot(scope, refStore, sessionId);
         const result: SnapshotResult = { _tag: "SnapshotResult", snapshot };
         return ok(result);
       }
@@ -466,7 +495,7 @@ export async function executeCommand(
       }
 
       case "eval": {
-        const raw = await page.evaluate(command.code);
+        const raw = await scope.evaluate(command.code);
         const result: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
         return ok(result);
       }
@@ -476,7 +505,7 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "scroll":
-        await page.evaluate(({ dir, amt }) => {
+        await scope.evaluate(({ dir, amt }) => {
           const m: Record<string, [number, number]> = {
             up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0],
           };
@@ -495,24 +524,35 @@ export async function executeCommand(
         if (command.url) await newPage.goto(command.url);
         activeTabIndex = context.pages().length - 1;
         sessionTabIndex.set(sessionId, activeTabIndex);
+        runtimeState.activeFrame = undefined;
+        observePageRuntime(sessionId, newPage);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
 
       case "tab_switch": {
+        if (!Number.isInteger(command.index) || command.index < 0 || command.index >= context.pages().length) {
+          return err({ _tag: "CommandFailed", message: `Unknown tab index: ${command.index}` });
+        }
         activeTabIndex = command.index;
         sessionTabIndex.set(sessionId, activeTabIndex);
+        runtimeState.activeFrame = undefined;
+        observePageRuntime(sessionId, context.pages()[activeTabIndex]);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
 
       case "tab_close": {
         const closeIndex = command.index ?? activeTabIndex;
+        if (!Number.isInteger(closeIndex) || closeIndex < 0 || closeIndex >= context.pages().length) {
+          return err({ _tag: "CommandFailed", message: `Unknown tab index: ${closeIndex}` });
+        }
         await context.pages()[closeIndex].close();
         if (activeTabIndex >= context.pages().length) {
           activeTabIndex = Math.max(0, context.pages().length - 1);
         }
         sessionTabIndex.set(sessionId, activeTabIndex);
+        runtimeState.activeFrame = undefined;
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -540,12 +580,12 @@ export async function executeCommand(
       case "wait": {
         if (command.selector) {
           const state = (command.state ?? "visible") as "visible" | "hidden" | "attached" | "detached";
-          await page.locator(command.selector).waitFor({ state, timeout: command.timeout });
+          await scope.locator(command.selector).waitFor({ state, timeout: command.timeout });
           const wr: WaitResult = { _tag: "WaitResult", waited: "selector" };
           return ok(wr);
         }
         if (command.text) {
-          await page.getByText(command.text).waitFor({ timeout: command.timeout });
+          await scope.getByText(command.text).waitFor({ timeout: command.timeout });
           const wr: WaitResult = { _tag: "WaitResult", waited: "text" };
           return ok(wr);
         }
@@ -555,20 +595,20 @@ export async function executeCommand(
       }
 
       case "waitforurl": {
-        await page.waitForURL(command.url, { timeout: command.timeout });
+        await scope.waitForURL(command.url, { timeout: command.timeout });
         const wr: WaitResult = { _tag: "WaitResult", waited: "url", url: page.url() };
         return ok(wr);
       }
 
       case "waitforloadstate": {
         const state = command.state as "load" | "domcontentloaded" | "networkidle";
-        await page.waitForLoadState(state, { timeout: command.timeout });
+        await scope.waitForLoadState(state, { timeout: command.timeout });
         const wr: WaitResult = { _tag: "WaitResult", waited: "loadstate", state: command.state };
         return ok(wr);
       }
 
       case "waitforfunction": {
-        const handle = await page.waitForFunction(command.expression, undefined, { timeout: command.timeout });
+        const handle = await scope.waitForFunction(command.expression, undefined, { timeout: command.timeout });
         const val = await handle.jsonValue();
         const wr: WaitResult = { _tag: "WaitResult", waited: "function", result: JSON.stringify(val) };
         return ok(wr);
@@ -577,31 +617,31 @@ export async function executeCommand(
       // ─── Get (element property queries) ───
 
       case "gettext": {
-        const text = await page.locator(command.selector).textContent() ?? "";
+        const text = await scope.locator(command.selector).textContent() ?? "";
         const r: GetTextResult = { _tag: "GetTextResult", text };
         return ok(r);
       }
 
       case "innertext": {
-        const text = await page.locator(command.selector).innerText();
+        const text = await scope.locator(command.selector).innerText();
         const r: GetTextResult = { _tag: "GetTextResult", text };
         return ok(r);
       }
 
       case "innerhtml": {
-        const html = await page.locator(command.selector).innerHTML();
+        const html = await scope.locator(command.selector).innerHTML();
         const r: GetHtmlResult = { _tag: "GetHtmlResult", html };
         return ok(r);
       }
 
       case "inputvalue": {
-        const value = await page.locator(command.selector).inputValue();
+        const value = await scope.locator(command.selector).inputValue();
         const r: GetValueResult = { _tag: "GetValueResult", value };
         return ok(r);
       }
 
       case "getattribute": {
-        const value = await page.locator(command.selector).getAttribute(command.attribute) ?? "";
+        const value = await scope.locator(command.selector).getAttribute(command.attribute) ?? "";
         const r: GetValueResult = { _tag: "GetValueResult", value };
         return ok(r);
       }
@@ -617,20 +657,20 @@ export async function executeCommand(
       }
 
       case "count": {
-        const r: CountResult = { _tag: "CountResult", count: await page.locator(command.selector).count() };
+        const r: CountResult = { _tag: "CountResult", count: await scope.locator(command.selector).count() };
         return ok(r);
       }
 
       case "boundingbox": {
         const r: BoundingBoxResult = {
           _tag: "BoundingBoxResult",
-          box: await page.locator(command.selector).boundingBox(),
+          box: await scope.locator(command.selector).boundingBox(),
         };
         return ok(r);
       }
 
       case "styles": {
-        const elements = await page.locator(command.selector).evaluateAll((nodes) =>
+        const elements = await scope.locator(command.selector).evaluateAll((nodes) =>
           nodes.map((node) => {
             const element = node as HTMLElement;
             const rect = element.getBoundingClientRect();
@@ -662,19 +702,19 @@ export async function executeCommand(
       // ─── Is (element state queries) ───
 
       case "isvisible": {
-        const visible = await page.locator(command.selector).isVisible();
+        const visible = await scope.locator(command.selector).isVisible();
         const r: BooleanResult = { _tag: "BooleanResult", visible };
         return ok(r);
       }
 
       case "isenabled": {
-        const enabled = await page.locator(command.selector).isEnabled();
+        const enabled = await scope.locator(command.selector).isEnabled();
         const r: BooleanResult = { _tag: "BooleanResult", enabled };
         return ok(r);
       }
 
       case "ischecked": {
-        const checked = await page.locator(command.selector).isChecked();
+        const checked = await scope.locator(command.selector).isChecked();
         const r: BooleanResult = { _tag: "BooleanResult", checked };
         return ok(r);
       }
@@ -682,7 +722,7 @@ export async function executeCommand(
       // ─── evaluate alias ───
 
       case "evaluate": {
-        const raw = await page.evaluate(command.script);
+        const raw = await scope.evaluate(command.script);
         const r: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
         return ok(r);
       }
@@ -712,25 +752,25 @@ export async function executeCommand(
       // ─── P1 element operations ───
 
       case "dblclick":
-        await page.locator(command.selector).dblclick();
+        await scope.locator(command.selector).dblclick();
         return ok({ _tag: "VoidResult" } as const);
 
       case "check":
-        await page.locator(command.selector).check();
+        await scope.locator(command.selector).check();
         return ok({ _tag: "VoidResult" } as const);
 
       case "uncheck":
-        await page.locator(command.selector).uncheck();
+        await scope.locator(command.selector).uncheck();
         return ok({ _tag: "VoidResult" } as const);
 
       case "select": {
         const values = Array.isArray(command.values) ? command.values : [command.values];
-        await page.locator(command.selector).selectOption(values);
+        await scope.locator(command.selector).selectOption(values);
         return ok({ _tag: "VoidResult" } as const);
       }
 
       case "focus":
-        await page.locator(command.selector).focus();
+        await scope.locator(command.selector).focus();
         return ok({ _tag: "VoidResult" } as const);
 
       case "keyboard":
@@ -750,11 +790,11 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "scrollintoview":
-        await page.locator(command.selector).scrollIntoViewIfNeeded();
+        await scope.locator(command.selector).scrollIntoViewIfNeeded();
         return ok({ _tag: "VoidResult" } as const);
 
       case "drag":
-        await page.locator(command.source).dragTo(page.locator(command.target));
+        await scope.locator(command.source).dragTo(scope.locator(command.target));
         return ok({ _tag: "VoidResult" } as const);
 
       case "mousemove":
@@ -837,14 +877,14 @@ export async function executeCommand(
       case "storage_get": {
         const storageName = command.type === "local" ? "localStorage" : "sessionStorage";
         if (command.key !== undefined) {
-          const value = await page.evaluate(
+          const value = await scope.evaluate(
             ({ name, key }) => window[name as "localStorage" | "sessionStorage"].getItem(key),
             { name: storageName, key: command.key },
           );
           const r: StorageResult = { _tag: "StorageResult", key: command.key, value };
           return ok(r);
         }
-        const data = await page.evaluate((name) => {
+        const data = await scope.evaluate((name) => {
           const storage = window[name as "localStorage" | "sessionStorage"];
           return Object.fromEntries(
             Array.from({ length: storage.length }, (_, index) => storage.key(index))
@@ -858,7 +898,7 @@ export async function executeCommand(
 
       case "storage_set": {
         const storageName = command.type === "local" ? "localStorage" : "sessionStorage";
-        await page.evaluate(
+        await scope.evaluate(
           ({ name, key, value }) => window[name as "localStorage" | "sessionStorage"].setItem(key, value),
           { name: storageName, key: command.key, value: command.value },
         );
@@ -867,7 +907,7 @@ export async function executeCommand(
 
       case "storage_clear": {
         const storageName = command.type === "local" ? "localStorage" : "sessionStorage";
-        await page.evaluate((name) => window[name as "localStorage" | "sessionStorage"].clear(), storageName);
+        await scope.evaluate((name) => window[name as "localStorage" | "sessionStorage"].clear(), storageName);
         return ok({ _tag: "VoidResult" } as const);
       }
 
@@ -918,13 +958,14 @@ export async function executeCommand(
       }
 
       case "highlight":
-        await page.locator(command.selector).highlight();
+        await scope.locator(command.selector).highlight();
         return ok({ _tag: "VoidResult" } as const);
 
       case "window_new": {
         const newPage = await context.newPage();
         activeTabIndex = context.pages().indexOf(newPage);
         sessionTabIndex.set(sessionId, activeTabIndex);
+        runtimeState.activeFrame = undefined;
         observePageRuntime(sessionId, newPage);
         const r: TabResult = {
           _tag: "TabResult",
@@ -934,7 +975,7 @@ export async function executeCommand(
       }
 
       case "nth": {
-        const loc = page.locator(command.selector).nth(command.index);
+        const loc = scope.locator(command.selector).nth(command.index);
         if (command.subaction === "click") {
           await loc.click();
         } else if (command.subaction === "fill" && command.value) {
@@ -948,7 +989,7 @@ export async function executeCommand(
       }
 
       case "upload":
-        await page.locator(command.selector).setInputFiles(command.files.map((file) => ({
+        await scope.locator(command.selector).setInputFiles(command.files.map((file) => ({
           name: file.name,
           mimeType: file.mimeType,
           buffer: Buffer.from(file.base64, "base64"),
@@ -956,7 +997,7 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "download": {
-        const locator = resolveLocator(page, refStore, sessionId, command.ref, command.selector);
+        const locator = resolveLocator(scope, refStore, sessionId, command.ref, command.selector);
         if (!locator) return err({ _tag: "ElementNotFound", selector: command.ref ?? command.selector });
         const [download] = await Promise.all([
           page.waitForEvent("download"),
@@ -996,6 +1037,155 @@ export async function executeCommand(
         return ok(r);
       }
 
+      case "clipboard": {
+        if (command.operation === "write") {
+          if (command.text === undefined) {
+            return err({ _tag: "CommandFailed", message: "clipboard write requires text" });
+          }
+          await scope.evaluate((text) => navigator.clipboard.writeText(text), command.text);
+          const r: ClipboardResult = { _tag: "ClipboardResult", written: command.text };
+          return ok(r);
+        }
+        if (command.operation === "copy") {
+          await page.keyboard.press("Control+C");
+          const r: ClipboardResult = { _tag: "ClipboardResult", copied: true };
+          return ok(r);
+        }
+        if (command.operation === "paste") {
+          await page.keyboard.press("Control+V");
+          const r: ClipboardResult = { _tag: "ClipboardResult", pasted: true };
+          return ok(r);
+        }
+        const text = await scope.evaluate(() => navigator.clipboard.readText());
+        const r: ClipboardResult = { _tag: "ClipboardResult", text };
+        return ok(r);
+      }
+
+      case "tap": {
+        const box = await scope.locator(command.selector).boundingBox();
+        if (!box) return err({ _tag: "ElementNotFound", selector: command.selector });
+        const cdp = await context.newCDPSession(page);
+        const x = box.x + box.width / 2;
+        const y = box.y + box.height / 2;
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await cdp.detach();
+        const r: TouchResult = { _tag: "TouchResult", tapped: command.selector };
+        return ok(r);
+      }
+
+      case "swipe": {
+        const viewport = page.viewportSize() ?? { width: 800, height: 600 };
+        const distance = command.distance ?? Math.min(viewport.width, viewport.height) / 2;
+        const startX = viewport.width / 2;
+        const startY = viewport.height / 2;
+        const [deltaX, deltaY] = command.direction === "up" ? [0, -distance]
+          : command.direction === "down" ? [0, distance]
+            : command.direction === "left" ? [-distance, 0]
+              : [distance, 0];
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x: startX, y: startY }],
+        });
+        for (let step = 1; step <= 10; step++) {
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [{
+              x: startX + (deltaX * step) / 10,
+              y: startY + (deltaY * step) / 10,
+            }],
+          });
+        }
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await cdp.detach();
+        const r: TouchResult = { _tag: "TouchResult", swiped: command.direction };
+        return ok(r);
+      }
+
+      case "cdp_url": {
+        const cdpUrl = contextCdpUrls.get(context);
+        if (!cdpUrl) return err({ _tag: "CdpDisconnected", containerId: "" });
+        const r: CdpUrlResult = { _tag: "CdpUrlResult", cdpUrl };
+        return ok(r);
+      }
+
+      case "inspect":
+        return err({
+          _tag: "CommandFailed",
+          message: "unsupported_in_moat: inspect requires a local DevTools proxy, but moat sessions use private remote CDP",
+        });
+
+      case "device_list":
+        return err({
+          _tag: "CommandFailed",
+          message: "unsupported_in_moat: device list requires local Xcode/Appium, which moat-browser does not provide",
+        });
+
+      case "state_save": {
+        const playwrightState = await context.storageState();
+        const sessionStorageByOrigin = new Map<string, ReadonlyArray<{ name: string; value: string }>>();
+        for (const statePage of context.pages()) {
+          let origin: string;
+          try {
+            origin = new URL(statePage.url()).origin;
+          } catch {
+            continue;
+          }
+          if (origin === "null") continue;
+          const entries = await statePage.evaluate(() =>
+            Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+              .filter((name): name is string => name !== null)
+              .map((name) => ({ name, value: sessionStorage.getItem(name) ?? "" })),
+          );
+          sessionStorageByOrigin.set(origin, entries);
+        }
+        const localOrigins = new Map(playwrightState.origins.map((entry) => [entry.origin, entry.localStorage]));
+        const origins = [...new Set([...localOrigins.keys(), ...sessionStorageByOrigin.keys()])].map((origin) => ({
+          origin,
+          localStorage: localOrigins.get(origin) ?? [],
+          sessionStorage: sessionStorageByOrigin.get(origin) ?? [],
+        }));
+        const bytes = Buffer.from(JSON.stringify({ cookies: playwrightState.cookies, origins }));
+        const r: BinaryFileResult = {
+          _tag: "BinaryFileResult",
+          base64: bytes.toString("base64"),
+          suggestedFilename: "state.json",
+        };
+        return ok(r);
+      }
+
+      case "state_load": {
+        await context.clearCookies();
+        await context.addCookies(command.state.cookies);
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("DOMStorage.enable");
+        for (const origin of command.state.origins) {
+          for (const [isLocalStorage, entries] of [
+            [true, origin.localStorage],
+            [false, origin.sessionStorage],
+          ] as const) {
+            const storageId = { securityOrigin: origin.origin, isLocalStorage };
+            await cdp.send("DOMStorage.clear", { storageId });
+            for (const entry of entries) {
+              await cdp.send("DOMStorage.setDOMStorageItem", {
+                storageId,
+                key: entry.name,
+                value: entry.value,
+              });
+            }
+          }
+        }
+        await cdp.detach();
+        const r: StateLoadResult = {
+          _tag: "StateLoadResult",
+          loaded: true,
+          cookies: command.state.cookies.length,
+          origins: command.state.origins.length,
+        };
+        return ok(r);
+      }
+
       case "cookies_set":
         await context.addCookies(command.cookies.map((cookie) => ({
           name: cookie.name,
@@ -1012,17 +1202,48 @@ export async function executeCommand(
         })));
         return ok({ _tag: "VoidResult" } as const);
 
-      case "dialog":
-        // Dialog status/accept/dismiss — requires listener setup
-        // For now return void; full dialog state tracking is a follow-up
-        return ok({ _tag: "VoidResult" } as const);
+      case "dialog": {
+        if (command.response === "status") {
+          const info = runtimeState.dialogInfo;
+          const r: DialogResult = info === undefined
+            ? { _tag: "DialogResult", hasDialog: false }
+            : {
+                _tag: "DialogResult",
+                hasDialog: true,
+                type: info.type,
+                message: info.message,
+                ...(info.defaultPrompt ? { defaultPrompt: info.defaultPrompt } : {}),
+              };
+          return ok(r);
+        }
+        const dialog = runtimeState.pendingDialog;
+        if (!dialog) return err({ _tag: "CommandFailed", message: "No dialog is currently open" });
+        const accepted = command.response === "accept";
+        if (accepted) await dialog.accept(command.promptText);
+        else await dialog.dismiss();
+        runtimeState.pendingDialog = undefined;
+        runtimeState.dialogInfo = undefined;
+        const r: DialogResult = { _tag: "DialogResult", handled: true, accepted };
+        return ok(r);
+      }
 
-      case "frame":
-        // Frame switching requires tracking active frame context — follow-up
-        return ok({ _tag: "VoidResult" } as const);
+      case "frame": {
+        const handle = await scope.locator(command.selector).elementHandle();
+        if (!handle) return err({ _tag: "ElementNotFound", selector: command.selector });
+        const frame = await handle.contentFrame();
+        if (!frame) {
+          return err({ _tag: "CommandFailed", message: `Selector is not a frame: ${command.selector}` });
+        }
+        runtimeState.activeFrame = frame;
+        const r: FrameResult = { _tag: "FrameResult", frame: command.selector };
+        return ok(r);
+      }
 
-      case "mainframe":
-        return ok({ _tag: "VoidResult" } as const);
+      case "mainframe": {
+        runtimeState.activeFrame = undefined;
+        const r: FrameResult = { _tag: "FrameResult", frame: "main" };
+        return ok(r);
+      }
 
       case "console": {
         if (command.clear) {

@@ -204,6 +204,65 @@ export type BinaryFileResult = {
   readonly suggestedFilename?: string;
 };
 
+export type ClipboardResult = {
+  readonly _tag: "ClipboardResult";
+  readonly text?: string;
+  readonly written?: string;
+  readonly copied?: true;
+  readonly pasted?: true;
+};
+
+export type DialogResult = {
+  readonly _tag: "DialogResult";
+  readonly hasDialog?: boolean;
+  readonly type?: string;
+  readonly message?: string;
+  readonly defaultPrompt?: string;
+  readonly handled?: true;
+  readonly accepted?: boolean;
+};
+
+export type FrameResult = {
+  readonly _tag: "FrameResult";
+  readonly frame: string;
+};
+
+export type CdpUrlResult = {
+  readonly _tag: "CdpUrlResult";
+  readonly cdpUrl: string;
+};
+
+export type TouchResult = {
+  readonly _tag: "TouchResult";
+  readonly tapped?: string;
+  readonly swiped?: "up" | "down" | "left" | "right";
+};
+
+export type BrowserStorageState = {
+  readonly cookies: ReadonlyArray<{
+    readonly name: string;
+    readonly value: string;
+    readonly domain: string;
+    readonly path: string;
+    readonly expires: number;
+    readonly httpOnly: boolean;
+    readonly secure: boolean;
+    readonly sameSite: "Strict" | "Lax" | "None";
+  }>;
+  readonly origins: ReadonlyArray<{
+    readonly origin: string;
+    readonly localStorage: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+    readonly sessionStorage: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  }>;
+};
+
+export type StateLoadResult = {
+  readonly _tag: "StateLoadResult";
+  readonly loaded: true;
+  readonly cookies: number;
+  readonly origins: number;
+};
+
 export type BooleanResult = {
   readonly _tag: "BooleanResult";
   readonly visible?: boolean;
@@ -247,6 +306,12 @@ export type CommandResultData =
   | NetworkRequestsResult
   | NetworkRequestDetailResult
   | BinaryFileResult
+  | ClipboardResult
+  | DialogResult
+  | FrameResult
+  | CdpUrlResult
+  | TouchResult
+  | StateLoadResult
   | BooleanResult
   | BatchResult;
 
@@ -448,6 +513,14 @@ export type BrowserCommand =
   | { readonly action: "download"; readonly ref?: string; readonly selector?: string }
   | { readonly action: "waitfordownload"; readonly timeout?: number }
   | { readonly action: "pdf" }
+  | { readonly action: "clipboard"; readonly operation: "read" | "write" | "copy" | "paste"; readonly text?: string }
+  | { readonly action: "tap"; readonly selector: string }
+  | { readonly action: "swipe"; readonly direction: "up" | "down" | "left" | "right"; readonly distance?: number }
+  | { readonly action: "cdp_url" }
+  | { readonly action: "inspect" }
+  | { readonly action: "device_list" }
+  | { readonly action: "state_save" }
+  | { readonly action: "state_load"; readonly state: BrowserStorageState }
   | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{
       readonly name: string;
       readonly value: string;
@@ -459,7 +532,7 @@ export type BrowserCommand =
       readonly sameSite?: "Strict" | "Lax" | "None";
       readonly expires?: number;
     }> }
-  | { readonly action: "dialog"; readonly response: "accept" | "dismiss" | "status"; readonly text?: string }
+  | { readonly action: "dialog"; readonly response: "accept" | "dismiss" | "status"; readonly promptText?: string }
   | { readonly action: "frame"; readonly selector: string }
   | { readonly action: "mainframe" }
   | { readonly action: "console"; readonly clear?: boolean }
@@ -640,6 +713,33 @@ const browserCommandSchema = type({
   .or({ action: "'download'", "ref?": "string", "selector?": "string" })
   .or({ action: "'waitfordownload'", "timeout?": "number" })
   .or({ action: "'pdf'" })
+  .or({ action: "'clipboard'", operation: "'read' | 'write' | 'copy' | 'paste'", "text?": "string" })
+  .or({ action: "'tap'", selector: "string" })
+  .or({ action: "'swipe'", direction: "'up' | 'down' | 'left' | 'right'", "distance?": "number" })
+  .or({ action: "'cdp_url'" })
+  .or({ action: "'inspect'" })
+  .or({ action: "'device_list'" })
+  .or({ action: "'state_save'" })
+  .or({
+    action: "'state_load'",
+    state: {
+      cookies: type({
+        name: "string",
+        value: "string",
+        domain: "string",
+        path: "string",
+        expires: "number",
+        httpOnly: "boolean",
+        secure: "boolean",
+        sameSite: "'Strict' | 'Lax' | 'None'",
+      }).array(),
+      origins: type({
+        origin: "string",
+        localStorage: type({ name: "string", value: "string" }).array(),
+        sessionStorage: type({ name: "string", value: "string" }).array(),
+      }).array(),
+    },
+  })
   .or({ action: "'cookies_set'", cookies: type({
     name: "string",
     value: "string",
@@ -651,7 +751,7 @@ const browserCommandSchema = type({
     "sameSite?": "'Strict' | 'Lax' | 'None'",
     "expires?": "number",
   }).array() })
-  .or({ action: "'dialog'", response: "'accept' | 'dismiss' | 'status'", "text?": "string" })
+  .or({ action: "'dialog'", response: "'accept' | 'dismiss' | 'status'", "promptText?": "string" })
   .or({ action: "'frame'", selector: "string" })
   .or({ action: "'mainframe'" })
   .or({ action: "'console'", "clear?": "boolean" })

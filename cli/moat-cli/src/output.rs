@@ -602,7 +602,9 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             return;
         }
         // Download response (has "suggestedFilename" or "filename" field)
-        if data.get("suggestedFilename").is_some() || data.get("filename").is_some() {
+        if matches!(action, Some("download" | "waitfordownload"))
+            && (data.get("suggestedFilename").is_some() || data.get("filename").is_some())
+        {
             if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
                 let filename = data
                     .get("suggestedFilename")
