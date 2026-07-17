@@ -122,12 +122,12 @@ pub fn print_command_help(command: &str) -> bool {
         "highlight" => "highlight <selector>",
         "clipboard" => "clipboard <read|write> [text]",
         "state" => "state <save|load|list|show|rename|clean|clear> ...",
-        "tap" => "tap <x> <y>",
-        "swipe" => "swipe <x1> <y1> <x2> <y2> [duration-ms]",
+        "tap" => "tap <selector>",
+        "swipe" => "swipe <up|down|left|right> [distance]",
         "diff" => "diff <snapshot|screenshot|url> ...",
         "batch" => "batch  # reads a JSON command array from stdin",
-        "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "device"
-        | "install" | "upgrade" | "dashboard" | "profiles" | "session" | "launch" => {
+        "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "device" | "install"
+        | "upgrade" | "dashboard" | "profiles" | "session" | "launch" => {
             println!(
                 "moat {command} - unavailable in the moat Controller architecture\n\n\
                  This command returns a nonzero unsupported_in_moat error.\n\

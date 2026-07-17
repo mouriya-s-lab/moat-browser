@@ -51,7 +51,9 @@ pub fn unsupported_flag(args: &[String], command: &str) -> Option<String> {
             );
         }
         if arg == "--headers" && !matches!(command, "open" | "goto" | "navigate") {
-            return Some("unsupported_in_moat: --headers only applies to navigation commands".into());
+            return Some(
+                "unsupported_in_moat: --headers only applies to navigation commands".into(),
+            );
         }
         if arg == "--annotate" && command != "screenshot" {
             return Some("unsupported_in_moat: --annotate only applies to screenshot".into());
@@ -79,19 +81,32 @@ mod tests {
 
     #[test]
     fn rejects_controller_owned_and_local_daemon_flags() {
-        assert!(unsupported_flag(&args(&["open", "x", "--proxy", "p"]), "open")
-            .unwrap()
-            .contains("unsupported_in_moat"));
-        assert!(unsupported_flag(&args(&["snapshot", "--session", "x"]), "snapshot")
-            .unwrap()
-            .contains("unsupported_in_moat"));
+        assert!(
+            unsupported_flag(&args(&["open", "x", "--proxy", "p"]), "open")
+                .unwrap()
+                .contains("unsupported_in_moat")
+        );
+        assert!(
+            unsupported_flag(&args(&["snapshot", "--session", "x"]), "snapshot")
+                .unwrap()
+                .contains("unsupported_in_moat")
+        );
     }
 
     #[test]
     fn allows_profile_only_for_session_creation_and_scoped_output_flags() {
-        assert_eq!(unsupported_flag(&args(&["init", "--profile", "p"]), "init"), None);
+        assert_eq!(
+            unsupported_flag(&args(&["init", "--profile", "p"]), "init"),
+            None
+        );
         assert!(unsupported_flag(&args(&["open", "x", "--profile", "p"]), "open").is_some());
-        assert_eq!(unsupported_flag(&args(&["screenshot", "--annotate"]), "screenshot"), None);
-        assert_eq!(unsupported_flag(&args(&["open", "x", "--headers", "{}"]), "open"), None);
+        assert_eq!(
+            unsupported_flag(&args(&["screenshot", "--annotate"]), "screenshot"),
+            None
+        );
+        assert_eq!(
+            unsupported_flag(&args(&["open", "x", "--headers", "{}"]), "open"),
+            None
+        );
     }
 }

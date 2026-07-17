@@ -1,5 +1,7 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
-import { Readable } from "node:stream";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BrowserContext, Locator, Page, Response } from "patchright";
 import type { BrowserCommand, CookieEntry } from "@moat-browser/types";
 import { clearSessionRuntimeState, executeCommand, type Result } from "./cdp-bridge.js";
@@ -137,6 +139,50 @@ function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): Browse
   } as unknown as BrowserContext;
 }
 
+function remoteDownloadContext(page: Page, bytes: Buffer): {
+  readonly context: BrowserContext;
+  readonly emitDownload: (filename: string) => void;
+  readonly browserSend: ReturnType<typeof mock>;
+  readonly pageSend: ReturnType<typeof mock>;
+} {
+  const listeners = new Map<string, (event: unknown) => void>();
+  const browserSend = mock(() => Promise.resolve({}));
+  const browserCdp = {
+    send: browserSend,
+    on: mock((event: string, listener: (value: unknown) => void) => {
+      listeners.set(event, listener);
+      return browserCdp;
+    }),
+    detach: mock(() => Promise.resolve()),
+  };
+  const pageSend = mock((method: string) => {
+    if (method === "Page.getFrameTree") return Promise.resolve({ frameTree: { frame: { id: "frame-1" } } });
+    return Promise.resolve({});
+  });
+  const pageCdp = { send: pageSend, detach: mock(() => Promise.resolve()) };
+  const browser = { newBrowserCDPSession: mock(() => Promise.resolve(browserCdp)) };
+  const context = mockContext([page], {
+    browser: mock(() => browser) as BrowserContext["browser"],
+    newCDPSession: mock(() => Promise.resolve(pageCdp)) as BrowserContext["newCDPSession"],
+  });
+  return {
+    context,
+    browserSend,
+    pageSend,
+    emitDownload(filename: string) {
+      const directory = join(TEST_PROFILES_WORK, `agent-${SESSION}`, ".moat-downloads");
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "download-guid"), bytes);
+      listeners.get("Browser.downloadWillBegin")?.({
+        frameId: "frame-1",
+        guid: "download-guid",
+        suggestedFilename: filename,
+      });
+      listeners.get("Browser.downloadProgress")?.({ guid: "download-guid", state: "completed" });
+    },
+  };
+}
+
 function mockRefStore(): RefStore {
   const store = new Map<string, Map<string, Locator>>();
   return {
@@ -167,6 +213,7 @@ function assertErr(r: Result<CommandResultData, ControllerError>): ControllerErr
 // ─── Tests ───
 
 const SESSION = "test-session";
+const TEST_PROFILES_WORK = mkdtempSync(join(tmpdir(), "moat-controller-profiles-"));
 
 describe("cdp-bridge", () => {
   let page: Page;
@@ -174,6 +221,7 @@ describe("cdp-bridge", () => {
   let refStore: RefStore;
 
   beforeEach(() => {
+    process.env.PROFILES_WORK = TEST_PROFILES_WORK;
     clearSessionRuntimeState(SESSION);
     page = mockPage();
     ctx = mockContext([page]);
@@ -699,17 +747,16 @@ describe("cdp-bridge", () => {
     });
 
     it("download clicks the target and returns streamed bytes", async () => {
-      const click = mock(() => Promise.resolve());
-      const locator = mockLocator({ click });
-      const download = {
-        createReadStream: mock(() => Promise.resolve(Readable.from([Buffer.from("downloaded bytes")]))),
-        suggestedFilename: mock(() => "report.txt"),
-      };
-      page = mockPage({
-        locator: mock(() => locator),
-        waitForEvent: mock(() => Promise.resolve(download)) as Page["waitForEvent"],
+      let emitDownload = (_filename: string): void => {};
+      const click = mock(() => {
+        emitDownload("report.txt");
+        return Promise.resolve();
       });
-      ctx = mockContext([page]);
+      const locator = mockLocator({ click });
+      page = mockPage({ locator: mock(() => locator) });
+      const remote = remoteDownloadContext(page, Buffer.from("downloaded bytes"));
+      emitDownload = remote.emitDownload;
+      ctx = remote.context;
 
       const data = assertOk(await executeCommand(ctx, {
         action: "download",
@@ -722,23 +769,24 @@ describe("cdp-bridge", () => {
         base64: Buffer.from("downloaded bytes").toString("base64"),
         suggestedFilename: "report.txt",
       });
+      expect(remote.browserSend).toHaveBeenCalledWith("Browser.setDownloadBehavior", {
+        behavior: "allowAndName",
+        downloadPath: "/data/profile/.moat-downloads",
+        eventsEnabled: true,
+      });
     });
 
-    it("wait for download forwards timeout and returns streamed bytes", async () => {
-      const download = {
-        createReadStream: mock(() => Promise.resolve(Readable.from([Buffer.from("event bytes")]))),
-        suggestedFilename: mock(() => "event.bin"),
-      };
-      const waitForEvent = mock(() => Promise.resolve(download));
-      page = mockPage({ waitForEvent: waitForEvent as Page["waitForEvent"] });
-      ctx = mockContext([page]);
+    it("wait for download returns bytes from the remote Chrome filesystem", async () => {
+      page = mockPage();
+      const remote = remoteDownloadContext(page, Buffer.from("event bytes"));
+      ctx = remote.context;
+      setTimeout(() => remote.emitDownload("event.bin"), 0);
 
       const data = assertOk(await executeCommand(ctx, {
         action: "waitfordownload",
         timeout: 1234,
       }, refStore, SESSION));
 
-      expect(waitForEvent).toHaveBeenCalledWith("download", { timeout: 1234 });
       expect(data).toEqual({
         _tag: "BinaryFileResult",
         base64: Buffer.from("event bytes").toString("base64"),

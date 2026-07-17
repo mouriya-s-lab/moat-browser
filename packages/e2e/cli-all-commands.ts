@@ -25,19 +25,13 @@ const html = `<!doctype html><title>Moat CLI Matrix</title><style>body{min-heigh
 <button id="button" onclick="this.dataset.clicked='yes'">Run</button><input id="check" type="checkbox"><select id="select"><option value="a">A</option><option value="b">B</option></select>
 <img alt="pixel" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="><div id="source" draggable="true">drag</div><div id="target">drop</div>
 <input id="file" type="file"><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button>
-<iframe id="frame" srcdoc="<p id='inside'>frame</p>"></iframe><script>
-window.matrixReady=true; window.matrixEvents=[]; localStorage.clear(); sessionStorage.clear(); console.log('matrix-console');
-for (const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop']) {
-  document.addEventListener(event, e => window.matrixEvents.push(event));
-}
-document.addEventListener('dragover', e => e.preventDefault());
-</script>`;
+<iframe id="frame" srcdoc="<p id='inside'>frame</p>"></iframe>`;
 // A non-opaque origin is mandatory: cookies, local/session storage, permission
 // grants, state save/load, and request headers cannot be proven on a data URL.
 // The runner installs the deterministic DOM after each navigation that would
 // otherwise replace it.
 const fixture = process.env.MOAT_FIXTURE_URL ?? "https://example.com/";
-const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();true`];
+const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop'])document.addEventListener(event,()=>window.matrixEvents.push(event));document.addEventListener('dragover',e=>e.preventDefault());true`];
 
 const C = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string, artifacts?: string[]): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts });
 const L = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string): Case => ({ action, argv, availability: "local", verify, contains, notContains });
@@ -69,15 +63,15 @@ const cases: Case[] = [
   C("storage_set",["storage","local","set","matrix","stored"],["storage","local","get","matrix"],"stored"), C("storage_get",["storage","local","get","matrix"],undefined,"stored"), C("storage_clear",["storage","local","clear"],["storage","local","get","matrix"],undefined,"stored"),
   C("cookies_set",["cookies","set","matrix","cookie"],["cookies","get"],"matrix"), C("cookies_get",["cookies","get"],undefined,"matrix"),
   C("route",["network","route","**/matrix-route","--body",'{"ok":true}'],["eval","fetch('https://moat.invalid/matrix-route').then(r => r.text())"],"ok"), C("requests",["network","requests"]),
-  C("request_detail",["network","request","missing-request-id"],undefined,"moat-matrix"), C("unroute",["network","unroute","**/matrix-route"],["eval","fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"],"unrouted"), C("har_start",["network","har","start"]), C("har_stop",["network","har","stop",join(artifacts,"network.har")],undefined,undefined,undefined,[join(artifacts,"network.har")]),
+  C("request_detail",["network","request","missing-request-id"],undefined,"x-moat-matrix"), C("unroute",["network","unroute","**/matrix-route"],["eval","fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"],"unrouted"), C("har_start",["network","har","start"]), C("har_stop",["network","har","stop",join(artifacts,"network.har")],undefined,undefined,undefined,[join(artifacts,"network.har")]),
   C("console",["console"],undefined,"matrix-console"), C("errors",["errors"]), C("highlight",["highlight","h1"]), C("clipboard",["clipboard","write","matrix-clipboard"],["clipboard","read"],"matrix-clipboard"),
   C("tab_new",["tab","new",fixture],["get","url"],fixture), C("tab_list",["tab","list"],undefined,fixture), C("tab_switch",["tab","switch","0"],["get","url"],fixture), C("tab_close",["tab","close"]),
   C("window_new",["window","new"], ["get","url"], "about:blank"), C("frame",["frame","#frame"],["get","text","#inside"],"frame"), C("mainframe",["frame","main"],["get","text","h1"],"Moat CLI Matrix"), C("dialog",["dialog","accept","matrix"]),
-  C("tap",["tap","10","10"],["eval","window.matrixEvents.includes('touchstart') && window.matrixEvents.includes('touchend')"],"true"), C("swipe",["swipe","10","10","20","20","100"],["eval","window.matrixEvents.filter(x => x === 'touchstart' || x === 'touchend').length >= 4"],"true"),
+  C("tap",["tap","#button"],["eval","window.matrixEvents.includes('touchstart') && window.matrixEvents.includes('touchend')"],"true"), C("swipe",["swipe","up","100"],["eval","window.matrixEvents.filter(x => x === 'touchstart' || x === 'touchend').length >= 4"],"true"),
   C("trace_start",["trace","start"]), C("trace_stop",["trace","stop",join(artifacts,"trace.zip")],undefined,undefined,undefined,[join(artifacts,"trace.zip")]), C("profiler_start",["profiler","start"]), C("profiler_stop",["profiler","stop",join(artifacts,"profile.json")],undefined,undefined,undefined,[join(artifacts,"profile.json")]),
   C("state_save",["state","save",statePath],undefined,undefined,undefined,[statePath]), C("state_load",["state","load",statePath],["storage","local","get","matrix-state-proof"],"saved"),
   C("batch",["batch"]),
-  L("state_list",["state","list"],undefined,state), L("state_show",["state","show",state],undefined,"origins"), L("state_rename",["state","rename",state,"matrix-renamed"],["state","list"],"matrix-renamed",state), L("state_clean",["state","clean"]), L("state_clear",["state","clear"],["state","list"],undefined,"matrix-renamed"),
+  L("state_list",["state","list"],undefined,state), L("state_show",["state","show",state],undefined,"origins"), L("state_rename",["state","rename",state,"matrix-renamed"],["state","list"],"matrix-renamed",state), L("state_clean",["state","clean","--older-than","30"]), L("state_clear",["state","clear","--all"],["state","list"],undefined,"matrix-renamed"),
   O("diff_snapshot",["diff","snapshot"]), O("diff_screenshot",["diff","screenshot","--baseline",shot,"--output",join(artifacts,"diff.png")],[join(artifacts,"diff.png")]), O("diff_url",["diff","url",`data:text/html,${encodeURIComponent("<title>First</title><h1>First</h1>")}`,`data:text/html,${encodeURIComponent("<title>Different</title><h1>Different</h1>")}`]),
   ...[["auth_save",["auth","save","x"]],["auth_list",["auth","list"]],["auth_show",["auth","show","x"]],["auth_delete",["auth","delete","x"]],["auth_login",["auth","login","x"]],
     ["confirm",["confirm"]],["deny",["deny"]],["inspect",["inspect"]],["launch",["launch"]],["stream_enable",["stream","enable"]],["stream_disable",["stream","disable"]],["stream_status",["stream","status"]],
@@ -135,7 +129,7 @@ for (const c of cases) {
       if (Array.isArray(value)) for (const item of value) { const found = findId(item); if (found) return found; }
       if (value && typeof value === "object") {
         const record = value as Record<string,unknown>;
-        for (const key of ["requestId","id"]) if (typeof record[key] === "string") return record[key] as string;
+        if (typeof record.requestId === "string" && typeof record.url === "string" && record.url.includes("/matrix-route")) return record.requestId;
         for (const item of Object.values(record)) { const found = findId(item); if (found) return found; }
       }
     };

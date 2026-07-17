@@ -19,7 +19,7 @@ use std::process::exit;
 use commands::{parse_command, ParseError};
 use connection::send_command;
 use flags::{clean_args, parse_flags};
-use fork_features::{print_command_help, print_help, unsupported_flag};
+use fork_features::{print_command_help, print_help, unsupported_command, unsupported_flag};
 use output::{print_response_with_opts, OutputOptions};
 
 use moat_sdk::MoatClient;
@@ -123,6 +123,17 @@ async fn main() {
     if clean.is_empty() {
         print_help();
         return;
+    }
+
+    // This must precede parse_command: upstream argument validation must not
+    // turn an architectural rejection into missing_arguments/invalid_input.
+    if let Some(message) = unsupported_command(&clean[0]) {
+        if flags.json {
+            print_json_error(message);
+        } else {
+            eprintln!("{} {}", color::error_indicator(), message);
+        }
+        exit(1);
     }
 
     if let Some(message) = unsupported_flag(&args, &clean[0]) {

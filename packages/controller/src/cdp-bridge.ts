@@ -1,6 +1,6 @@
 import { chromium, devices } from "patchright";
 import type { Browser, BrowserContext, CDPSession, Dialog, Frame, Locator, Page, Request } from "patchright";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -70,6 +70,90 @@ export type CdpConnection = {
 };
 
 const contextCdpUrls = new WeakMap<BrowserContext, string>();
+
+const REMOTE_DOWNLOAD_PATH = "/data/profile/.moat-downloads";
+
+type DownloadWillBegin = {
+  readonly frameId: string;
+  readonly guid: string;
+  readonly suggestedFilename: string;
+};
+
+type DownloadProgress = {
+  readonly guid: string;
+  readonly state: "inProgress" | "completed" | "canceled";
+};
+
+function frameIds(frameTree: { readonly frame: { readonly id: string }; readonly childFrames?: readonly unknown[] }): Set<string> {
+  const ids = new Set<string>();
+  const visit = (tree: typeof frameTree): void => {
+    ids.add(tree.frame.id);
+    for (const child of tree.childFrames ?? []) visit(child as typeof frameTree);
+  };
+  visit(frameTree);
+  return ids;
+}
+
+async function remoteDownload(
+  context: BrowserContext,
+  page: Page,
+  sessionId: string,
+  timeout: number | undefined,
+  trigger?: () => Promise<void>,
+): Promise<BinaryFileResult> {
+  const browser = context.browser();
+  if (!browser) throw new Error("The CDP browser connection is unavailable");
+
+  const browserCdp = await browser.newBrowserCDPSession();
+  const pageCdp = await context.newCDPSession(page);
+  const localDownloadPath = join(
+    process.env.PROFILES_WORK ?? "/data/profiles",
+    `agent-${sessionId}`,
+    ".moat-downloads",
+  );
+  try {
+    await mkdir(localDownloadPath, { recursive: true });
+    await chmod(localDownloadPath, 0o777);
+    const tree = await pageCdp.send("Page.getFrameTree");
+    const ownedFrames = frameIds(tree.frameTree);
+    await browserCdp.send("Browser.setDownloadBehavior", {
+      behavior: "allowAndName",
+      downloadPath: REMOTE_DOWNLOAD_PATH,
+      eventsEnabled: true,
+    });
+
+    const finished = new Promise<DownloadWillBegin>((resolve, reject) => {
+      let begun: DownloadWillBegin | undefined;
+      const timer = setTimeout(() => reject(new Error("Timeout waiting for download")), timeout ?? 30_000);
+      browserCdp.on("Browser.downloadWillBegin", (event: DownloadWillBegin) => {
+        if (!ownedFrames.has(event.frameId) || begun) return;
+        begun = event;
+      });
+      browserCdp.on("Browser.downloadProgress", (event: DownloadProgress) => {
+        if (!begun || event.guid !== begun.guid || event.state === "inProgress") return;
+        clearTimeout(timer);
+        if (event.state === "canceled") reject(new Error("Download was canceled"));
+        else resolve(begun);
+      });
+    });
+
+    if (trigger) await trigger();
+    const download = await finished;
+    const localFile = join(localDownloadPath, download.guid);
+    try {
+      const bytes = await readFile(localFile);
+      return {
+        _tag: "BinaryFileResult",
+        base64: bytes.toString("base64"),
+        suggestedFilename: download.suggestedFilename,
+      };
+    } finally {
+      await rm(localFile, { force: true });
+    }
+  } finally {
+    await Promise.allSettled([browserCdp.detach(), pageCdp.detach()]);
+  }
+}
 
 export async function connectCDP(cdpUrl: string): Promise<CdpConnection> {
   const browser = await chromium.connectOverCDP(cdpUrl);
@@ -1130,32 +1214,11 @@ export async function executeCommand(
       case "download": {
         const locator = resolveLocator(scope, refStore, sessionId, command.ref, command.selector);
         if (!locator) return err({ _tag: "ElementNotFound", selector: command.ref ?? command.selector });
-        const [download] = await Promise.all([
-          page.waitForEvent("download"),
-          locator.click(),
-        ]);
-        const stream = await download.createReadStream();
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-        const r: BinaryFileResult = {
-          _tag: "BinaryFileResult",
-          base64: Buffer.concat(chunks).toString("base64"),
-          suggestedFilename: download.suggestedFilename(),
-        };
-        return ok(r);
+        return ok(await remoteDownload(context, page, sessionId, undefined, () => locator.click()));
       }
 
       case "waitfordownload": {
-        const download = await page.waitForEvent("download", { timeout: command.timeout });
-        const stream = await download.createReadStream();
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-        const r: BinaryFileResult = {
-          _tag: "BinaryFileResult",
-          base64: Buffer.concat(chunks).toString("base64"),
-          suggestedFilename: download.suggestedFilename(),
-        };
-        return ok(r);
+        return ok(await remoteDownload(context, page, sessionId, command.timeout));
       }
 
       case "pdf": {

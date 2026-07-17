@@ -146,7 +146,10 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                     } else {
                         "command_failed"
                     };
-                    obj.insert("errorType".into(), serde_json::Value::String(error_type.into()));
+                    obj.insert(
+                        "errorType".into(),
+                        serde_json::Value::String(error_type.into()),
+                    );
                 }
             }
             value
@@ -170,7 +173,10 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             }
             println!("{}", serde_json::to_string(&json_val).unwrap_or_default());
         } else {
-            println!("{}", serde_json::to_string(&response_json()).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string(&response_json()).unwrap_or_default()
+            );
         }
         // JSON mode includes the warning field in the JSON payload already
         return;
