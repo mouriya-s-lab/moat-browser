@@ -855,6 +855,32 @@ describe("cdp-bridge", () => {
       }, refStore, SESSION))).toEqual({ _tag: "DialogResult", hasDialog: false });
     });
 
+    it("waits for a scheduled dialog before accepting it", async () => {
+      const accept = mock(() => Promise.resolve());
+      const dialog = {
+        type: () => "prompt",
+        message: () => "Later",
+        defaultValue: () => "",
+        accept,
+        dismiss: mock(() => Promise.resolve()),
+      };
+      const waitForEvent = mock(() => Promise.resolve(dialog));
+      page = mockPage({ waitForEvent: waitForEvent as Page["waitForEvent"] });
+      ctx = mockContext([page]);
+
+      expect(assertOk(await executeCommand(ctx, {
+        action: "dialog",
+        response: "accept",
+        promptText: "ready",
+      }, refStore, SESSION))).toEqual({
+        _tag: "DialogResult",
+        handled: true,
+        accepted: true,
+      });
+      expect(waitForEvent).toHaveBeenCalledWith("dialog", { timeout: 5_000 });
+      expect(accept).toHaveBeenCalledWith("ready");
+    });
+
     it("frame scopes later locator commands until returning to main", async () => {
       const inside = mockLocator({ textContent: mock(() => Promise.resolve("inside")) });
       const frame = mockPage({ locator: mock(() => inside) });

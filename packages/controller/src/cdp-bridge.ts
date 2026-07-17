@@ -1496,8 +1496,13 @@ export async function executeCommand(
               };
           return ok(r);
         }
-        const dialog = runtimeState.pendingDialog;
-        if (!dialog) return err({ _tag: "CommandFailed", message: "No dialog is currently open" });
+        // A page cannot synchronously open a JavaScript dialog and return from
+        // evaluate: the page is blocked until the dialog is handled.  CLI
+        // callers therefore commonly schedule the dialog (for example with
+        // setTimeout) immediately before issuing `dialog accept`.  Waiting for
+        // the next event here closes that unavoidable race instead of returning
+        // "No dialog" and leaving a modal behind to block every later command.
+        const dialog = runtimeState.pendingDialog ?? await page.waitForEvent("dialog", { timeout: 5_000 });
         const accepted = command.response === "accept";
         if (accepted) await dialog.accept(command.promptText);
         else await dialog.dismiss();

@@ -89,10 +89,21 @@ async function run(argv: string[]): Promise<Run> {
   const batch = argv[0] === "batch";
   const proc = Bun.spawn([moat, "--json", ...argv], { env: { ...process.env, HOME: home, MOAT_CONTROLLER: controller }, stdin: batch ? "pipe" : undefined, stdout: "pipe", stderr: "pipe" });
   if (batch) { proc.stdin!.write(JSON.stringify([["get","title"],["get","url"]])); proc.stdin!.end(); }
-  const [stdout, stderr, exit] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  const stdoutPromise = new Response(proc.stdout).text();
+  const stderrPromise = new Response(proc.stderr).text();
+  const completed = await Promise.race([
+    proc.exited.then(exit => ({ _tag: "Exited" as const, exit })),
+    new Promise<{ _tag: "TimedOut" }>(resolve => setTimeout(() => resolve({ _tag: "TimedOut" }), 60_000)),
+  ]);
+  if (completed._tag === "TimedOut") {
+    proc.kill(9);
+    return { exit: 124, stdout: "", stderr: "command timed out after 60s", jsonValues: 0 };
+  }
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+  const exit = completed.exit;
   const trimmed = stdout.trim();
   try { return { exit, stdout, stderr, value: JSON.parse(trimmed), jsonValues: 1 }; }
-  catch { return { exit, stdout, stderr, jsonValues: trimmed ? 0 : 0 }; }
+  catch { return { exit, stdout, stderr, jsonValues: 0 }; }
 }
 const init = await run(["init"]);
 if (init.exit !== 0 || init.jsonValues !== 1 || init.value?.success !== true) throw new Error(`init failed: ${init.stdout}${init.stderr}`);
@@ -102,6 +113,7 @@ const contract = JSON.parse(new TextDecoder().decode(contractProc.stdout)) as { 
 const expected = Object.values(contract.actions).flat().sort();
 const results = [] as Record<string, unknown>[];
 for (const c of cases) {
+  process.stderr.write(`[cli-matrix] ${results.length + 1}/${cases.length} ${c.action}\n`);
   let argv = c.argv;
   if (c.action === "waitfordownload") {
     await run(["eval","setTimeout(() => document.querySelector('#download').click(), 500); true"]);
