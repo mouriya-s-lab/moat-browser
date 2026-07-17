@@ -112,6 +112,7 @@ function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): Browse
         },
       ]),
     ),
+    grantPermissions: mock(() => Promise.resolve()),
     clearCookies: mock(() => Promise.resolve()),
     addCookies: mock(() => Promise.resolve()),
     setGeolocation: mock(() => Promise.resolve()),
@@ -548,6 +549,7 @@ describe("cdp-bridge", () => {
         colorScheme: "dark",
         reducedMotion: "reduce",
       }, refStore, SESSION);
+      expect(ctx.grantPermissions).toHaveBeenCalledWith(["geolocation"]);
       expect(ctx.setGeolocation).toHaveBeenCalledWith({ latitude: 35, longitude: 139 });
       expect(ctx.setOffline).toHaveBeenCalledWith(true);
       expect(page.setExtraHTTPHeaders).toHaveBeenCalledWith({ "X-Audit": "1" });
@@ -777,6 +779,8 @@ describe("cdp-bridge", () => {
         action: "clipboard",
         operation: "paste",
       }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", pasted: true });
+      expect(ctx.grantPermissions).toHaveBeenCalledTimes(4);
+      expect(ctx.grantPermissions).toHaveBeenCalledWith(["clipboard-read", "clipboard-write"]);
       expect(page.keyboard.press).toHaveBeenCalledWith("Control+C");
       expect(page.keyboard.press).toHaveBeenCalledWith("Control+V");
     });

@@ -8,6 +8,7 @@ mod color;
 mod commands;
 mod connection;
 mod flags;
+mod fork_features;
 mod output;
 mod validation;
 
@@ -18,7 +19,8 @@ use std::process::exit;
 use commands::{parse_command, ParseError};
 use connection::send_command;
 use flags::{clean_args, parse_flags};
-use output::{print_command_help, print_help, print_response_with_opts, OutputOptions};
+use fork_features::{print_command_help, print_help, unsupported_flag};
+use output::{print_response_with_opts, OutputOptions};
 
 use moat_sdk::MoatClient;
 
@@ -46,14 +48,32 @@ fn controller_url() -> Result<String, String> {
 }
 
 fn print_json_error(message: impl AsRef<str>) {
+    let message = message.as_ref();
     println!(
         "{}",
         serde_json::to_string(&json!({
             "success": false,
-            "error": message.as_ref(),
+            "error": message,
+            "errorType": error_type(message),
         }))
         .unwrap_or_default()
     );
+}
+
+fn error_type(message: &str) -> &'static str {
+    if message.contains("unsupported_in_moat") || message.contains("not available in moat CLI") {
+        "unsupported_in_moat"
+    } else if message.contains("No active session") || message.contains("NoSession") {
+        "no_session"
+    } else if message.starts_with("Usage:") || message.contains("Missing required") {
+        "missing_arguments"
+    } else if message.contains("Invalid JSON") || message.contains("invalid_value") {
+        "invalid_input"
+    } else if message.contains("MOAT_CONTROLLER") || message.contains("no home dir") {
+        "configuration_error"
+    } else {
+        "command_failed"
+    }
 }
 
 fn print_version() {
@@ -71,6 +91,17 @@ async fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let flags = parse_flags(&args);
     let clean = clean_args(&args);
+
+    // `help` is a local documentation command, not a Controller wire action.
+    if clean.first().map(String::as_str) == Some("help") {
+        if let Some(cmd) = clean.get(1) {
+            if print_command_help(cmd) {
+                return;
+            }
+        }
+        print_help();
+        return;
+    }
 
     // --help
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -92,6 +123,15 @@ async fn main() {
     if clean.is_empty() {
         print_help();
         return;
+    }
+
+    if let Some(message) = unsupported_flag(&args, &clean[0]) {
+        if flags.json {
+            print_json_error(message);
+        } else {
+            eprintln!("{} {}", color::error_indicator(), message);
+        }
+        exit(1);
     }
 
     // ─── moat-specific subcommands ───
@@ -193,7 +233,7 @@ async fn main() {
         }
 
         // destroy: deregister session, destroy container
-        "disconnect" | "destroy" => {
+        "disconnect" | "destroy" | "close-session" => {
             let url = match controller_url() {
                 Ok(u) => u,
                 Err(e) => {
@@ -302,7 +342,7 @@ async fn main() {
                     serde_json::to_string(&json!({
                         "success": false,
                         "error": e.format(),
-                        "type": error_type,
+                        "errorType": error_type,
                     }))
                     .unwrap_or_default()
                 );
@@ -423,6 +463,8 @@ async fn run_batch(flags: &flags::Flags) {
     };
 
     let output_opts = OutputOptions::from_flags(&flags);
+    let mut json_results = Vec::new();
+    let mut json_success = true;
 
     for args in &commands {
         let cmd = match parse_command(args, flags) {
@@ -439,20 +481,41 @@ async fn run_batch(flags: &flags::Flags) {
 
         match send_command(cmd.clone(), &url).await {
             Ok(resp) => {
-                let action = cmd.get("action").and_then(|v| v.as_str());
-                print_response_with_opts(&resp, action, &output_opts);
-                if !resp.success && flags.json {
-                    exit(1);
+                if flags.json {
+                    json_success &= resp.success;
+                    json_results.push(serde_json::to_value(&resp).unwrap_or_default());
+                } else {
+                    let action = cmd.get("action").and_then(|v| v.as_str());
+                    print_response_with_opts(&resp, action, &output_opts);
                 }
             }
             Err(e) => {
                 if flags.json {
-                    print_json_error(&e);
+                    json_success = false;
+                    json_results.push(json!({
+                        "success": false,
+                        "error": e,
+                        "errorType": error_type(&e),
+                    }));
                 } else {
                     eprintln!("{} {}", color::error_indicator(), e);
+                    exit(1);
                 }
-                exit(1);
             }
+        }
+    }
+
+    if flags.json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "success": json_success,
+                "data": { "results": json_results },
+            }))
+            .unwrap_or_default()
+        );
+        if !json_success {
+            exit(1);
         }
     }
 }

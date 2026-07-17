@@ -1,0 +1,233 @@
+#!/usr/bin/env bun
+/** Exhaustive, black-box moat CLI contract runner for issue #220. */
+import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+type Availability = "controller" | "local" | "orchestrated" | "stable_unsupported";
+type Case = { action: string; argv: string[]; availability: Availability; verify?: string[]; contains?: string; notContains?: string; artifacts?: string[] };
+type Run = { exit: number; stdout: string; stderr: string; value?: Record<string, unknown>; jsonValues: number };
+
+const root = resolve(import.meta.dir, "../..");
+const moat = resolve(process.env.MOAT ?? join(root, "cli/target/release/moat"));
+const controller = process.env.MOAT_CONTROLLER ?? "ws://browser.hb.lan:3000";
+const resultPath = join(import.meta.dir, "cli-all-commands-results.json");
+const ownHome = !process.env.HOME || process.argv.includes("--verify-isolation");
+const home = ownHome ? await mkdtemp(join(tmpdir(), "moat-cli-e2e-")) : process.env.HOME!;
+const artifacts = join(home, "artifacts");
+await mkdir(artifacts, { recursive: true });
+await mkdir(join(home, ".moat", "states"), { recursive: true });
+const upload = join(artifacts, "upload.txt");
+await writeFile(upload, "moat upload fixture\n");
+
+const html = `<!doctype html><title>Moat CLI Matrix</title><style>body{min-height:1800px}.box{width:80px;height:30px}</style>
+<h1 title="matrix-title">Moat CLI Matrix</h1><label>Name <input id="input" placeholder="Your name" data-testid="name"></label>
+<button id="button" onclick="this.dataset.clicked='yes'">Run</button><input id="check" type="checkbox"><select id="select"><option value="a">A</option><option value="b">B</option></select>
+<img alt="pixel" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="><div id="source" draggable="true">drag</div><div id="target">drop</div>
+<input id="file" type="file"><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button>
+<iframe id="frame" srcdoc="<p id='inside'>frame</p>"></iframe><script>
+window.matrixReady=true; window.matrixEvents=[]; localStorage.clear(); sessionStorage.clear(); console.log('matrix-console');
+for (const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop']) {
+  document.addEventListener(event, e => window.matrixEvents.push(event));
+}
+document.addEventListener('dragover', e => e.preventDefault());
+</script>`;
+// A non-opaque origin is mandatory: cookies, local/session storage, permission
+// grants, state save/load, and request headers cannot be proven on a data URL.
+// The runner installs the deterministic DOM after each navigation that would
+// otherwise replace it.
+const fixture = process.env.MOAT_FIXTURE_URL ?? "https://example.com/";
+const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();true`];
+
+const C = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string, artifacts?: string[]): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts });
+const L = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string): Case => ({ action, argv, availability: "local", verify, contains, notContains });
+const O = (action: string, argv: string[], artifacts?: string[]): Case => ({ action, argv, availability: "orchestrated", artifacts });
+const U = (action: string, argv: string[]): Case => ({ action, argv, availability: "stable_unsupported" });
+const shot = join(artifacts, "screen.png"), pdf = join(artifacts, "page.pdf"), state = "matrix-state";
+const statePath = join(home, ".moat", "states", `${state}.json`);
+const cases: Case[] = [
+  C("cookies_clear", ["cookies", "clear"]), C("navigate", ["open", fixture]),
+  C("url", ["get","url"]), C("title",["get","title"],undefined,"Moat CLI Matrix"), C("back",["back"]), C("forward",["forward"]), C("reload",["reload"]),
+  C("click",["click","#button"],["eval","document.querySelector('#button').dataset.clicked"],"yes"), C("dblclick",["dblclick","#button"],["eval","window.matrixEvents.includes('dblclick')"],"true"),
+  C("fill",["fill","#input","filled"],["get","value","#input"],"filled"), C("type",["type","#input","-typed"],["get","value","#input"],"typed"),
+  C("hover",["hover","#button"],["eval","document.querySelector('#button').matches(':hover')"],"true"), C("focus",["focus","#input"],["eval","document.activeElement.id"],"input"), C("check",["check","#check"],["is","checked","#check"],"true"),
+  C("uncheck",["uncheck","#check"],["is","checked","#check"],"false"), C("select",["select","#select","b"],["get","value","#select"],"b"),
+  C("drag",["drag","#source","#target"],["eval","window.matrixEvents.includes('drop')"],"true"), C("upload",["upload","#file",upload],["eval","document.querySelector('#file').files[0].name"],"upload.txt"), C("download",["download","#download",join(artifacts,"download.txt")],undefined,undefined,undefined,[join(artifacts,"download.txt")]),
+  C("press",["press","Tab"],["eval","document.activeElement !== document.body"],"true"), C("keydown",["keydown","Shift"],["eval","window.matrixEvents.includes('keydown')"],"true"), C("keyup",["keyup","Shift"],["eval","window.matrixEvents.includes('keyup')"],"true"), C("keyboard",["keyboard","type","keyboard"],["get","value","#input"],"keyboard"),
+  C("scroll",["scroll","down","100"],["eval","window.scrollY > 0"],"true"), C("scrollintoview",["scrollintoview","#target"],["eval","document.querySelector('#target').getBoundingClientRect().top < innerHeight"],"true"), C("wait",["wait","10"]),
+  C("waitforurl",["wait","--url",`${new URL(fixture).origin}/*`]), C("waitforloadstate",["wait","--load","domcontentloaded"]), C("waitforfunction",["wait","--fn","window.matrixReady === true"]),
+  C("waitfordownload",["wait","--download",join(artifacts,"wait-download.txt"),"--timeout","10000"],undefined,undefined,undefined,[join(artifacts,"wait-download.txt")]),
+  C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
+  C("gettext",["get","text","h1"],undefined,"Moat CLI Matrix"), C("innerhtml",["get","html","h1"]), C("inputvalue",["get","value","#input"]),
+  C("getattribute",["get","attr","h1","title"],undefined,"matrix-title"), C("count",["get","count","button"]), C("boundingbox",["get","box","h1"]), C("styles",["get","styles","h1"]), C("cdp_url",["get","cdp-url"]),
+  C("isvisible",["is","visible","h1"],undefined,"true"), C("isenabled",["is","enabled","#button"],undefined,"true"), C("ischecked",["is","checked","#check"]),
+  C("getbyrole",["find","role","heading","--name","Moat CLI Matrix"]), C("getbytext",["find","text","Moat CLI Matrix"]), C("getbylabel",["find","label","Name"]),
+  C("getbyplaceholder",["find","placeholder","Your name"]), C("getbyalttext",["find","alt","pixel"]), C("getbytitle",["find","title","matrix-title"]), C("getbytestid",["find","testid","name"]), C("nth",["find","nth","0","button"]),
+  C("mousemove",["mouse","move","10","10"],["eval","window.matrixEvents.includes('mousemove')"],"true"), C("mousedown",["mouse","down"],["eval","window.matrixEvents.includes('mousedown')"],"true"), C("mouseup",["mouse","up"],["eval","window.matrixEvents.includes('mouseup')"],"true"), C("wheel",["mouse","wheel","100","0"],["eval","window.matrixEvents.includes('wheel')"],"true"),
+  C("viewport",["set","viewport","1024","768"],["eval","innerWidth + 'x' + innerHeight"],"1024x768"), C("device",["set","device","Desktop Chrome"],["eval","innerWidth + 'x' + innerHeight"],"1280x720"), C("geolocation",["set","geo","35.6812","139.7671"],["eval","new Promise(r => navigator.geolocation.getCurrentPosition(p => r(p.coords.latitude.toFixed(4))))"],"35.6812"),
+  C("offline",["set","offline","off"],["eval","navigator.onLine"],"true"), C("headers",["set","headers",'{"X-Moat-Matrix":"yes"}']), C("credentials",["set","credentials","matrix","matrix"]), C("emulatemedia",["set","media","dark","reduced-motion"],["eval","matchMedia('(prefers-color-scheme: dark)').matches && matchMedia('(prefers-reduced-motion: reduce)').matches"],"true"),
+  C("storage_set",["storage","local","set","matrix","stored"],["storage","local","get","matrix"],"stored"), C("storage_get",["storage","local","get","matrix"],undefined,"stored"), C("storage_clear",["storage","local","clear"],["storage","local","get","matrix"],undefined,"stored"),
+  C("cookies_set",["cookies","set","matrix","cookie"],["cookies","get"],"matrix"), C("cookies_get",["cookies","get"],undefined,"matrix"),
+  C("route",["network","route","**/matrix-route","--body",'{"ok":true}'],["eval","fetch('https://moat.invalid/matrix-route').then(r => r.text())"],"ok"), C("requests",["network","requests"]),
+  C("request_detail",["network","request","missing-request-id"],undefined,"moat-matrix"), C("unroute",["network","unroute","**/matrix-route"],["eval","fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"],"unrouted"), C("har_start",["network","har","start"]), C("har_stop",["network","har","stop",join(artifacts,"network.har")],undefined,undefined,undefined,[join(artifacts,"network.har")]),
+  C("console",["console"],undefined,"matrix-console"), C("errors",["errors"]), C("highlight",["highlight","h1"]), C("clipboard",["clipboard","write","matrix-clipboard"],["clipboard","read"],"matrix-clipboard"),
+  C("tab_new",["tab","new",fixture],["get","url"],fixture), C("tab_list",["tab","list"],undefined,fixture), C("tab_switch",["tab","switch","0"],["get","url"],fixture), C("tab_close",["tab","close"]),
+  C("window_new",["window","new"], ["get","url"], "about:blank"), C("frame",["frame","#frame"],["get","text","#inside"],"frame"), C("mainframe",["frame","main"],["get","text","h1"],"Moat CLI Matrix"), C("dialog",["dialog","accept","matrix"]),
+  C("tap",["tap","10","10"],["eval","window.matrixEvents.includes('touchstart') && window.matrixEvents.includes('touchend')"],"true"), C("swipe",["swipe","10","10","20","20","100"],["eval","window.matrixEvents.filter(x => x === 'touchstart' || x === 'touchend').length >= 4"],"true"),
+  C("trace_start",["trace","start"]), C("trace_stop",["trace","stop",join(artifacts,"trace.zip")],undefined,undefined,undefined,[join(artifacts,"trace.zip")]), C("profiler_start",["profiler","start"]), C("profiler_stop",["profiler","stop",join(artifacts,"profile.json")],undefined,undefined,undefined,[join(artifacts,"profile.json")]),
+  C("state_save",["state","save",statePath],undefined,undefined,undefined,[statePath]), C("state_load",["state","load",statePath],["storage","local","get","matrix-state-proof"],"saved"),
+  C("batch",["batch"]),
+  L("state_list",["state","list"],undefined,state), L("state_show",["state","show",state],undefined,"origins"), L("state_rename",["state","rename",state,"matrix-renamed"],["state","list"],"matrix-renamed",state), L("state_clean",["state","clean"]), L("state_clear",["state","clear"],["state","list"],undefined,"matrix-renamed"),
+  O("diff_snapshot",["diff","snapshot"]), O("diff_screenshot",["diff","screenshot","--baseline",shot,"--output",join(artifacts,"diff.png")],[join(artifacts,"diff.png")]), O("diff_url",["diff","url",`data:text/html,${encodeURIComponent("<title>First</title><h1>First</h1>")}`,`data:text/html,${encodeURIComponent("<title>Different</title><h1>Different</h1>")}`]),
+  ...[["auth_save",["auth","save","x"]],["auth_list",["auth","list"]],["auth_show",["auth","show","x"]],["auth_delete",["auth","delete","x"]],["auth_login",["auth","login","x"]],
+    ["confirm",["confirm"]],["deny",["deny"]],["inspect",["inspect"]],["launch",["launch"]],["stream_enable",["stream","enable"]],["stream_disable",["stream","disable"]],["stream_status",["stream","status"]],
+    ["recording_start",["record","start"]],["recording_stop",["record","stop"]],["recording_restart",["record","restart"]],["device_list",["device","list"]]] .map(([a,v])=>U(a as string,v as string[])),
+  C("close",["close"]),
+];
+
+async function run(argv: string[]): Promise<Run> {
+  const batch = argv[0] === "batch";
+  const proc = Bun.spawn([moat, "--json", ...argv], { env: { ...process.env, HOME: home, MOAT_CONTROLLER: controller }, stdin: batch ? "pipe" : undefined, stdout: "pipe", stderr: "pipe" });
+  if (batch) { proc.stdin!.write(JSON.stringify([["get","title"],["get","url"]])); proc.stdin!.end(); }
+  const [stdout, stderr, exit] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  const trimmed = stdout.trim();
+  try { return { exit, stdout, stderr, value: JSON.parse(trimmed), jsonValues: 1 }; }
+  catch { return { exit, stdout, stderr, jsonValues: trimmed ? 0 : 0 }; }
+}
+const init = await run(["init"]);
+if (init.exit !== 0 || init.jsonValues !== 1 || init.value?.success !== true) throw new Error(`init failed: ${init.stdout}${init.stderr}`);
+
+const contractProc = Bun.spawnSync(["python3",join(root,"scripts/cli-command-contract.py")],{stdout:"pipe",stderr:"pipe"});
+const contract = JSON.parse(new TextDecoder().decode(contractProc.stdout)) as { actions: Record<Availability,string[]> };
+const expected = Object.values(contract.actions).flat().sort();
+const results = [] as Record<string, unknown>[];
+for (const c of cases) {
+  let argv = c.argv;
+  if (c.action === "waitfordownload") {
+    await run(["eval","setTimeout(() => document.querySelector('#download').click(), 500); true"]);
+  }
+  if (c.action === "keyboard") await run(["focus","#input"]);
+  if (c.action === "offline") {
+    const setup = await run(["set","offline","on"]);
+    const offline = await run(["eval","navigator.onLine"]);
+    if (setup.exit !== 0 || !JSON.stringify(offline.value).includes("false")) {
+      throw new Error(`offline fixture setup failed: ${setup.stdout}${offline.stdout}`);
+    }
+  }
+  if (c.action === "dialog") {
+    await run(["eval","setTimeout(() => document.querySelector('#prompt').click(), 500); true"]);
+  }
+  if (c.action === "request_detail") {
+    const requestList = await run(["network","requests"]);
+    const findId = (value: unknown): string | undefined => {
+      if (Array.isArray(value)) for (const item of value) { const found = findId(item); if (found) return found; }
+      if (value && typeof value === "object") {
+        const record = value as Record<string,unknown>;
+        for (const key of ["requestId","id"]) if (typeof record[key] === "string") return record[key] as string;
+        for (const item of Object.values(record)) { const found = findId(item); if (found) return found; }
+      }
+    };
+    const requestId = findId(requestList.value);
+    if (requestId) argv = ["network","request",requestId];
+  }
+  if (c.action === "har_stop") {
+    await run(["eval","fetch('data:text/plain,har-activity').then(r => r.text())"]);
+  }
+  if (c.action === "state_save") {
+    await run(["storage","local","set","matrix-state-proof","saved"]);
+  }
+  if (c.action === "state_load") {
+    await run(["storage","local","set","matrix-state-proof","changed"]);
+  }
+  // The first snapshot invocation creates the session baseline. The recorded
+  // invocation must compare a changed page, rather than counting baseline
+  // creation as a successful diff.
+  if (c.action === "diff_snapshot") {
+    await run(argv);
+    await run(["eval","document.querySelector('h1').textContent='Snapshot Changed'"]);
+  }
+  if (c.action === "diff_screenshot") {
+    await run(["eval","document.body.style.background='rgb(1, 2, 3)'"]);
+  }
+  const startedAt = performance.now();
+  const r = await run(argv);
+  const elapsedMs = performance.now() - startedAt;
+  if (r.exit === 0 && ["navigate","forward","reload"].includes(c.action)) {
+    await run(installFixtureArgv);
+  }
+  if (r.exit === 0 && c.action === "tab_new") {
+    const currentUrl = await run(["get","url"]);
+    if (JSON.stringify(currentUrl.value).includes(fixture)) await run(installFixtureArgv);
+  }
+  const unsupported = c.availability === "stable_unsupported";
+  let effectPassed = unsupported ? r.exit !== 0 && r.value?.errorType === "unsupported_in_moat" : r.exit === 0 && r.value?.success === true;
+  let diagnostic = "";
+  if (effectPassed && c.verify) {
+    const check = await run(c.verify); const rendered = JSON.stringify(check.value);
+    effectPassed = check.exit === 0 && check.value?.success === true && (!c.contains || rendered.includes(c.contains)) && (!c.notContains || !rendered.includes(c.notContains));
+    if (!effectPassed) diagnostic = `effect verifier failed: ${check.stdout}${check.stderr}`;
+  } else if (effectPassed && c.contains) {
+    effectPassed = JSON.stringify(r.value).includes(c.contains);
+    if (!effectPassed) diagnostic = `response missing ${c.contains}`;
+  }
+  if (effectPassed && c.artifacts) {
+    for (const path of c.artifacts) {
+      try {
+        const metadata = await stat(path);
+        if (!metadata.isFile() || metadata.size === 0) throw new Error("empty or not a file");
+      } catch (error) {
+        effectPassed = false;
+        diagnostic = `artifact assertion failed for ${path}: ${String(error)}`;
+      }
+    }
+  }
+  if (effectPassed && c.action === "batch") {
+    const rendered = JSON.stringify(r.value);
+    effectPassed = rendered.includes("Moat CLI Matrix") && rendered.includes(fixture);
+    if (!effectPassed) diagnostic = `batch did not return both command results: ${r.stdout}`;
+  }
+  if (effectPassed && c.action === "wait") {
+    effectPassed = elapsedMs >= 5;
+    if (!effectPassed) diagnostic = `wait returned too early after ${elapsedMs.toFixed(1)}ms`;
+  }
+  if (effectPassed && c.action === "request_detail" && argv.includes("missing-request-id")) {
+    effectPassed = false;
+    diagnostic = "request fixture produced no real request id";
+  }
+  if (effectPassed && c.action === "diff_snapshot") {
+    effectPassed = JSON.stringify(r.value).includes("Snapshot Changed");
+    if (!effectPassed) diagnostic = `snapshot diff did not expose the changed content: ${r.stdout}`;
+  }
+  if (effectPassed && c.action === "diff_screenshot") {
+    try {
+      const metadata = await stat(join(artifacts,"diff.png"));
+      effectPassed = metadata.size > 0;
+    } catch (error) {
+      effectPassed = false; diagnostic = `screenshot diff artifact missing: ${String(error)}`;
+    }
+  }
+  if (effectPassed && c.action === "diff_url") {
+    const rendered = JSON.stringify(r.value);
+    effectPassed = rendered.includes("First") && rendered.includes("Different");
+    if (!effectPassed) diagnostic = `URL diff did not contain both distinct documents: ${r.stdout}`;
+  }
+  if (r.jsonValues !== 1) diagnostic = `stdout is not exactly one JSON value: ${r.stdout}`;
+  results.push({ name:c.action, parserAction:c.action, availability:c.availability, argv, exit:r.exit, success:r.value?.success === true, error:r.value?.error, errorType:r.value?.errorType, jsonValues:r.jsonValues, elapsedMs, effectAssertion:c.verify ?? c.artifacts ?? (unsupported ? ["stable unsupported error"] : ["successful observable response"]), effectPassed, internalDiagnostic:diagnostic || r.stderr.trim() });
+  // `window new` intentionally creates an about:blank page. Restore the
+  // deterministic fixture only after its blank-page contract was asserted.
+  if (c.action === "window_new" && r.exit === 0) {
+    const restore = await run(["open", fixture]);
+    if (restore.exit === 0) await run(installFixtureArgv);
+  }
+}
+const covered = [...new Set(cases.map(c=>c.action))].sort();
+const missing = expected.filter(a=>!covered.includes(a));
+const failed = results.filter(r=>r.jsonValues !== 1 || (r.availability !== "stable_unsupported" && !r.success) || (r.availability === "stable_unsupported" && (r.exit === 0 || r.errorType !== "unsupported_in_moat")));
+const noOp = results.filter(r=>r.effectPassed !== true);
+const status = await run(["status"]);
+const isolationPassed = status.exit === 77 && status.value?.success === false;
+const report = { generatedAt:new Date().toISOString(), controller, moat, expectedActions:expected.length, coveredActions:covered.length, cases:results.length, missing, failed:failed.map(r=>r.name), noOp:noOp.map(r=>r.name), internalDiagnostics:results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic})), isolationPassed, results };
+await writeFile(resultPath, JSON.stringify(report,null,2)+"\n");
+console.log(JSON.stringify(report));
+if (ownHome) await rm(home,{recursive:true,force:true});
+if (missing.length || failed.length || noOp.length || report.internalDiagnostics.length || !isolationPassed) process.exit(1);

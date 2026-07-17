@@ -982,6 +982,7 @@ export async function executeCommand(
       }
 
       case "geolocation":
+        await context.grantPermissions(["geolocation"]);
         await context.setGeolocation({ latitude: command.latitude, longitude: command.longitude });
         return ok({ _tag: "VoidResult" } as const);
 
@@ -1168,6 +1169,7 @@ export async function executeCommand(
       }
 
       case "clipboard": {
+        await context.grantPermissions(["clipboard-read", "clipboard-write"]);
         if (command.operation === "write") {
           if (command.text === undefined) {
             return err({ _tag: "CommandFailed", message: "clipboard write requires text" });

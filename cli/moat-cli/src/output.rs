@@ -132,8 +132,27 @@ fn format_stream_status_text(action: Option<&str>, data: &serde_json::Value) -> 
 
 pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &OutputOptions) {
     if opts.json {
+        let response_json = || {
+            let mut value = serde_json::to_value(resp).unwrap_or_default();
+            if !resp.success {
+                if let Some(obj) = value.as_object_mut() {
+                    let error = resp.error.as_deref().unwrap_or_default();
+                    let error_type = if error.contains("unsupported_in_moat") {
+                        "unsupported_in_moat"
+                    } else if error.contains("Session") {
+                        "session_error"
+                    } else if error.contains("Validation") || error.contains("discriminant") {
+                        "wire_validation_error"
+                    } else {
+                        "command_failed"
+                    };
+                    obj.insert("errorType".into(), serde_json::Value::String(error_type.into()));
+                }
+            }
+            value
+        };
         if opts.content_boundaries {
-            let mut json_val = serde_json::to_value(resp).unwrap_or_default();
+            let mut json_val = response_json();
             if let Some(obj) = json_val.as_object_mut() {
                 let nonce = get_boundary_nonce();
                 let origin = obj
@@ -151,7 +170,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             }
             println!("{}", serde_json::to_string(&json_val).unwrap_or_default());
         } else {
-            println!("{}", serde_json::to_string(resp).unwrap_or_default());
+            println!("{}", serde_json::to_string(&response_json()).unwrap_or_default());
         }
         // JSON mode includes the warning field in the JSON payload already
         return;
