@@ -1015,6 +1015,16 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 }
                 Ok(cmd)
             }
+            Some("switch") => {
+                let index = rest
+                    .get(1)
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .ok_or_else(|| ParseError::MissingArguments {
+                        context: "tab switch".to_string(),
+                        usage: "tab switch <index>",
+                    })?;
+                Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
+            }
             Some(n) if n.parse::<i32>().is_ok() => {
                 let index = n.parse::<i32>().expect("already checked parse succeeds");
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
@@ -2804,6 +2814,20 @@ mod tests {
         let cmd = parse_command(&args("tab 2"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "tab_switch");
         assert_eq!(cmd["index"], 2);
+    }
+
+    #[test]
+    fn test_tab_switch_word_alias() {
+        let cmd = parse_command(&args("tab switch 2"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "tab_switch");
+        assert_eq!(cmd["index"], 2);
+    }
+
+    #[test]
+    fn test_tab_switch_word_requires_index() {
+        let args = vec!["tab".to_string(), "switch".to_string()];
+        let err = parse_command(&args, &default_flags()).unwrap_err();
+        assert!(matches!(err, ParseError::MissingArguments { .. }));
     }
 
     #[test]

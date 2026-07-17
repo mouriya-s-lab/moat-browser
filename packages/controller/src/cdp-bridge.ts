@@ -18,6 +18,12 @@ import type {
   GetTextResult,
   GetValueResult,
   GetHtmlResult,
+  PageUrlResult,
+  PageTitleResult,
+  CountResult,
+  BoundingBoxResult,
+  ElementStylesResult,
+  StorageResult,
   BooleanResult,
   BatchResult,
   BatchResultEntry,
@@ -511,6 +517,59 @@ export async function executeCommand(
         return ok(r);
       }
 
+      case "url": {
+        const r: PageUrlResult = { _tag: "PageUrlResult", url: page.url() };
+        return ok(r);
+      }
+
+      case "title": {
+        const r: PageTitleResult = { _tag: "PageTitleResult", title: await page.title() };
+        return ok(r);
+      }
+
+      case "count": {
+        const r: CountResult = { _tag: "CountResult", count: await page.locator(command.selector).count() };
+        return ok(r);
+      }
+
+      case "boundingbox": {
+        const r: BoundingBoxResult = {
+          _tag: "BoundingBoxResult",
+          box: await page.locator(command.selector).boundingBox(),
+        };
+        return ok(r);
+      }
+
+      case "styles": {
+        const elements = await page.locator(command.selector).evaluateAll((nodes) =>
+          nodes.map((node) => {
+            const element = node as HTMLElement;
+            const rect = element.getBoundingClientRect();
+            const styles = getComputedStyle(element);
+            return {
+              tag: element.tagName.toLowerCase(),
+              text: element.innerText ?? element.textContent ?? "",
+              box: {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              },
+              styles: {
+                fontSize: styles.fontSize,
+                fontWeight: styles.fontWeight,
+                fontFamily: styles.fontFamily,
+                color: styles.color,
+                backgroundColor: styles.backgroundColor,
+                borderRadius: styles.borderRadius,
+              },
+            };
+          }),
+        );
+        const r: ElementStylesResult = { _tag: "ElementStylesResult", elements };
+        return ok(r);
+      }
+
       // ─── Is (element state queries) ───
 
       case "isvisible": {
@@ -605,6 +664,101 @@ export async function executeCommand(
         await page.locator(command.selector).scrollIntoViewIfNeeded();
         return ok({ _tag: "VoidResult" } as const);
 
+      case "drag":
+        await page.locator(command.source).dragTo(page.locator(command.target));
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "mousemove":
+        await page.mouse.move(command.x, command.y);
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "mousedown":
+        await page.mouse.down({ button: command.button });
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "mouseup":
+        await page.mouse.up({ button: command.button });
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "wheel":
+        await page.mouse.wheel(command.deltaX, command.deltaY);
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "viewport": {
+        await page.setViewportSize({ width: command.width, height: command.height });
+        if (command.deviceScaleFactor !== undefined) {
+          const cdp = await context.newCDPSession(page);
+          await cdp.send("Emulation.setDeviceMetricsOverride", {
+            width: command.width,
+            height: command.height,
+            deviceScaleFactor: command.deviceScaleFactor,
+            mobile: false,
+          });
+          await cdp.detach();
+        }
+        return ok({ _tag: "VoidResult" } as const);
+      }
+
+      case "geolocation":
+        await context.setGeolocation({ latitude: command.latitude, longitude: command.longitude });
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "offline":
+        await context.setOffline(command.offline);
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "headers":
+        await page.setExtraHTTPHeaders(command.headers);
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "credentials":
+        await context.setHTTPCredentials({ username: command.username, password: command.password });
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "emulatemedia":
+        await page.emulateMedia({
+          colorScheme: command.colorScheme,
+          reducedMotion: command.reducedMotion,
+        });
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "storage_get": {
+        const storageName = command.type === "local" ? "localStorage" : "sessionStorage";
+        if (command.key !== undefined) {
+          const value = await page.evaluate(
+            ({ name, key }) => window[name as "localStorage" | "sessionStorage"].getItem(key),
+            { name: storageName, key: command.key },
+          );
+          const r: StorageResult = { _tag: "StorageResult", key: command.key, value };
+          return ok(r);
+        }
+        const data = await page.evaluate((name) => {
+          const storage = window[name as "localStorage" | "sessionStorage"];
+          return Object.fromEntries(
+            Array.from({ length: storage.length }, (_, index) => storage.key(index))
+              .filter((key): key is string => key !== null)
+              .map((key) => [key, storage.getItem(key) ?? ""]),
+          );
+        }, storageName);
+        const r: StorageResult = { _tag: "StorageResult", data };
+        return ok(r);
+      }
+
+      case "storage_set": {
+        const storageName = command.type === "local" ? "localStorage" : "sessionStorage";
+        await page.evaluate(
+          ({ name, key, value }) => window[name as "localStorage" | "sessionStorage"].setItem(key, value),
+          { name: storageName, key: command.key, value: command.value },
+        );
+        return ok({ _tag: "VoidResult" } as const);
+      }
+
+      case "storage_clear": {
+        const storageName = command.type === "local" ? "localStorage" : "sessionStorage";
+        await page.evaluate((name) => window[name as "localStorage" | "sessionStorage"].clear(), storageName);
+        return ok({ _tag: "VoidResult" } as const);
+      }
+
       case "nth": {
         const loc = page.locator(command.selector).nth(command.index);
         if (command.subaction === "click") {
@@ -624,9 +778,18 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "cookies_set":
-        await context.addCookies(command.cookies.map(c => ({
-          name: c.name, value: c.value,
-          url: c.url, domain: c.domain, path: c.path ?? "/",
+        await context.addCookies(command.cookies.map((cookie) => ({
+          name: cookie.name,
+          value: cookie.value,
+          ...(cookie.url !== undefined
+            ? { url: cookie.url }
+            : cookie.domain !== undefined
+              ? { domain: cookie.domain, path: cookie.path ?? "/" }
+              : { url: page.url() }),
+          ...(cookie.httpOnly !== undefined ? { httpOnly: cookie.httpOnly } : {}),
+          ...(cookie.secure !== undefined ? { secure: cookie.secure } : {}),
+          ...(cookie.sameSite !== undefined ? { sameSite: cookie.sameSite } : {}),
+          ...(cookie.expires !== undefined ? { expires: cookie.expires } : {}),
         })));
         return ok({ _tag: "VoidResult" } as const);
 

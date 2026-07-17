@@ -15,7 +15,22 @@ function mockLocator(overrides?: Partial<Locator>): Locator {
     check: mock(() => Promise.resolve()),
     uncheck: mock(() => Promise.resolve()),
     hover: mock(() => Promise.resolve()),
+    dragTo: mock(() => Promise.resolve()),
     count: mock(() => Promise.resolve(1)),
+    boundingBox: mock(() => Promise.resolve({ x: 1, y: 2, width: 3, height: 4 })),
+    evaluateAll: mock(() => Promise.resolve([{
+      tag: "button",
+      text: "Submit",
+      box: { x: 1, y: 2, width: 3, height: 4 },
+      styles: {
+        fontSize: "16px",
+        fontWeight: "400",
+        fontFamily: "sans-serif",
+        color: "rgb(0, 0, 0)",
+        backgroundColor: "rgb(255, 255, 255)",
+        borderRadius: "0px",
+      },
+    }])),
     nth: mock(function (this: Locator) { return this; }),
     ...overrides,
   } as unknown as Locator;
@@ -37,9 +52,25 @@ function mockPage(overrides?: Partial<Page>): Page {
     getByAltText: mock(() => loc),
     getByTitle: mock(() => loc),
     getByTestId: mock(() => loc),
+    locator: mock(() => loc),
     screenshot: mock(() => Promise.resolve(Buffer.from("png-data"))),
     evaluate: mock((_code: unknown) => Promise.resolve({ answer: 42 })),
-    keyboard: { press: mock(() => Promise.resolve()) },
+    keyboard: {
+      press: mock(() => Promise.resolve()),
+      down: mock(() => Promise.resolve()),
+      up: mock(() => Promise.resolve()),
+      type: mock(() => Promise.resolve()),
+      insertText: mock(() => Promise.resolve()),
+    },
+    mouse: {
+      move: mock(() => Promise.resolve()),
+      down: mock(() => Promise.resolve()),
+      up: mock(() => Promise.resolve()),
+      wheel: mock(() => Promise.resolve()),
+    },
+    setViewportSize: mock(() => Promise.resolve()),
+    setExtraHTTPHeaders: mock(() => Promise.resolve()),
+    emulateMedia: mock(() => Promise.resolve()),
     ariaSnapshot: mock(() => Promise.resolve('- heading "Test"\n- button "Click me"')),
     close: mock(() => Promise.resolve()),
     ...overrides,
@@ -69,6 +100,14 @@ function mockContext(pages: Page[]): BrowserContext {
       ]),
     ),
     clearCookies: mock(() => Promise.resolve()),
+    addCookies: mock(() => Promise.resolve()),
+    setGeolocation: mock(() => Promise.resolve()),
+    setOffline: mock(() => Promise.resolve()),
+    setHTTPCredentials: mock(() => Promise.resolve()),
+    newCDPSession: mock(() => Promise.resolve({
+      send: mock(() => Promise.resolve()),
+      detach: mock(() => Promise.resolve()),
+    })),
   } as unknown as BrowserContext;
 }
 
@@ -295,6 +334,35 @@ describe("cdp-bridge", () => {
         expect(data.result).toBe('{"answer":42}');
       }
     });
+
+    it("url returns the active page URL", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "url" }, refStore, SESSION));
+      expect(data).toEqual({ _tag: "PageUrlResult", url: "https://example.com" });
+    });
+
+    it("title returns the active page title", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "title" }, refStore, SESSION));
+      expect(data).toEqual({ _tag: "PageTitleResult", title: "Example" });
+    });
+
+    it("count returns matching element count", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "count", selector: ".item" }, refStore, SESSION));
+      expect(data).toEqual({ _tag: "CountResult", count: 1 });
+    });
+
+    it("boundingbox returns locator geometry", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "boundingbox", selector: "button" }, refStore, SESSION));
+      expect(data).toEqual({ _tag: "BoundingBoxResult", box: { x: 1, y: 2, width: 3, height: 4 } });
+    });
+
+    it("styles returns computed style details", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "styles", selector: "button" }, refStore, SESSION));
+      expect(data._tag).toBe("ElementStylesResult");
+      if (data._tag === "ElementStylesResult") {
+        expect(data.elements[0].tag).toBe("button");
+        expect(data.elements[0].styles.fontSize).toBe("16px");
+      }
+    });
   });
 
   // ─── Keyboard / scroll / wait ───
@@ -313,6 +381,98 @@ describe("cdp-bridge", () => {
     it("wait returns VoidResult", async () => {
       const r = await executeCommand(ctx, { action: "wait", time: 1 }, refStore, SESSION);
       expect(assertOk(r)._tag).toBe("WaitResult");
+    });
+  });
+
+  describe("mouse, drag, and browser settings", () => {
+    it("drag moves the source locator to the target locator", async () => {
+      const source = mockLocator();
+      const target = mockLocator();
+      page = mockPage({
+        locator: mock((selector: string) => selector === "#source" ? source : target),
+      });
+      ctx = mockContext([page]);
+      const data = assertOk(await executeCommand(ctx, {
+        action: "drag",
+        source: "#source",
+        target: "#target",
+      }, refStore, SESSION));
+      expect(data._tag).toBe("VoidResult");
+      expect(source.dragTo).toHaveBeenCalledWith(target);
+    });
+
+    it("mouse commands call the corresponding page mouse APIs", async () => {
+      await executeCommand(ctx, { action: "mousemove", x: 10, y: 20 }, refStore, SESSION);
+      await executeCommand(ctx, { action: "mousedown", button: "left" }, refStore, SESSION);
+      await executeCommand(ctx, { action: "mouseup", button: "right" }, refStore, SESSION);
+      await executeCommand(ctx, { action: "wheel", deltaX: 3, deltaY: 4 }, refStore, SESSION);
+      expect(page.mouse.move).toHaveBeenCalledWith(10, 20);
+      expect(page.mouse.down).toHaveBeenCalledWith({ button: "left" });
+      expect(page.mouse.up).toHaveBeenCalledWith({ button: "right" });
+      expect(page.mouse.wheel).toHaveBeenCalledWith(3, 4);
+    });
+
+    it("viewport applies dimensions and device scale factor", async () => {
+      const data = assertOk(await executeCommand(ctx, {
+        action: "viewport",
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 2,
+      }, refStore, SESSION));
+      expect(data._tag).toBe("VoidResult");
+      expect(page.setViewportSize).toHaveBeenCalledWith({ width: 800, height: 600 });
+      expect(ctx.newCDPSession).toHaveBeenCalledWith(page);
+    });
+
+    it("geolocation, offline, headers, credentials, and media update the browser", async () => {
+      await executeCommand(ctx, { action: "geolocation", latitude: 35, longitude: 139 }, refStore, SESSION);
+      await executeCommand(ctx, { action: "offline", offline: true }, refStore, SESSION);
+      await executeCommand(ctx, { action: "headers", headers: { "X-Audit": "1" } }, refStore, SESSION);
+      await executeCommand(ctx, { action: "credentials", username: "u", password: "p" }, refStore, SESSION);
+      await executeCommand(ctx, {
+        action: "emulatemedia",
+        colorScheme: "dark",
+        reducedMotion: "reduce",
+      }, refStore, SESSION);
+      expect(ctx.setGeolocation).toHaveBeenCalledWith({ latitude: 35, longitude: 139 });
+      expect(ctx.setOffline).toHaveBeenCalledWith(true);
+      expect(page.setExtraHTTPHeaders).toHaveBeenCalledWith({ "X-Audit": "1" });
+      expect(ctx.setHTTPCredentials).toHaveBeenCalledWith({ username: "u", password: "p" });
+      expect(page.emulateMedia).toHaveBeenCalledWith({ colorScheme: "dark", reducedMotion: "reduce" });
+    });
+  });
+
+  describe("storage", () => {
+    it("storage_get returns one key", async () => {
+      page = mockPage({ evaluate: mock(() => Promise.resolve("saved")) });
+      ctx = mockContext([page]);
+      const data = assertOk(await executeCommand(ctx, {
+        action: "storage_get",
+        type: "local",
+        key: "audit",
+      }, refStore, SESSION));
+      expect(data).toEqual({ _tag: "StorageResult", key: "audit", value: "saved" });
+    });
+
+    it("storage_get returns all entries", async () => {
+      page = mockPage({ evaluate: mock(() => Promise.resolve({ audit: "saved" })) });
+      ctx = mockContext([page]);
+      const data = assertOk(await executeCommand(ctx, {
+        action: "storage_get",
+        type: "session",
+      }, refStore, SESSION));
+      expect(data).toEqual({ _tag: "StorageResult", data: { audit: "saved" } });
+    });
+
+    it("storage_set and storage_clear execute in the selected storage", async () => {
+      await executeCommand(ctx, {
+        action: "storage_set",
+        type: "local",
+        key: "audit",
+        value: "saved",
+      }, refStore, SESSION);
+      await executeCommand(ctx, { action: "storage_clear", type: "session" }, refStore, SESSION);
+      expect(page.evaluate).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -362,6 +522,59 @@ describe("cdp-bridge", () => {
     it("cookies_clear returns VoidResult", async () => {
       const r = await executeCommand(ctx, { action: "cookies_clear" }, refStore, SESSION);
       expect(assertOk(r)._tag).toBe("VoidResult");
+    });
+
+    it("cookies_set with url does not also send domain or path", async () => {
+      const r = await executeCommand(ctx, {
+        action: "cookies_set",
+        cookies: [{ name: "audit", value: "ok", url: "https://example.com" }],
+      }, refStore, SESSION);
+      expect(assertOk(r)._tag).toBe("VoidResult");
+      expect(ctx.addCookies).toHaveBeenCalledWith([{
+        name: "audit",
+        value: "ok",
+        url: "https://example.com",
+      }]);
+    });
+
+    it("cookies_set without scope uses the active page URL", async () => {
+      const r = await executeCommand(ctx, {
+        action: "cookies_set",
+        cookies: [{ name: "audit", value: "ok" }],
+      }, refStore, SESSION);
+      expect(assertOk(r)._tag).toBe("VoidResult");
+      expect(ctx.addCookies).toHaveBeenCalledWith([{
+        name: "audit",
+        value: "ok",
+        url: "https://example.com",
+      }]);
+    });
+
+    it("cookies_set preserves optional cookie attributes", async () => {
+      const r = await executeCommand(ctx, {
+        action: "cookies_set",
+        cookies: [{
+          name: "audit",
+          value: "ok",
+          domain: ".example.com",
+          path: "/audit",
+          httpOnly: true,
+          secure: true,
+          sameSite: "Strict",
+          expires: 2_000_000_000,
+        }],
+      }, refStore, SESSION);
+      expect(assertOk(r)._tag).toBe("VoidResult");
+      expect(ctx.addCookies).toHaveBeenCalledWith([{
+        name: "audit",
+        value: "ok",
+        domain: ".example.com",
+        path: "/audit",
+        httpOnly: true,
+        secure: true,
+        sameSite: "Strict",
+        expires: 2_000_000_000,
+      }]);
     });
   });
 

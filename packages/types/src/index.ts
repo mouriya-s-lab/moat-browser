@@ -104,6 +104,60 @@ export type GetHtmlResult = {
   readonly html: string;
 };
 
+export type PageUrlResult = {
+  readonly _tag: "PageUrlResult";
+  readonly url: string;
+};
+
+export type PageTitleResult = {
+  readonly _tag: "PageTitleResult";
+  readonly title: string;
+};
+
+export type CountResult = {
+  readonly _tag: "CountResult";
+  readonly count: number;
+};
+
+export type BoundingBoxResult = {
+  readonly _tag: "BoundingBoxResult";
+  readonly box: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  } | null;
+};
+
+export type ElementStylesResult = {
+  readonly _tag: "ElementStylesResult";
+  readonly elements: ReadonlyArray<{
+    readonly tag: string;
+    readonly text: string;
+    readonly box: {
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+    } | null;
+    readonly styles: {
+      readonly fontSize: string;
+      readonly fontWeight: string;
+      readonly fontFamily: string;
+      readonly color: string;
+      readonly backgroundColor: string;
+      readonly borderRadius: string;
+    };
+  }>;
+};
+
+export type StorageResult = {
+  readonly _tag: "StorageResult";
+  readonly data?: Readonly<Record<string, string>>;
+  readonly key?: string;
+  readonly value?: string | null;
+};
+
 export type BooleanResult = {
   readonly _tag: "BooleanResult";
   readonly visible?: boolean;
@@ -135,6 +189,12 @@ export type CommandResultData =
   | GetTextResult
   | GetValueResult
   | GetHtmlResult
+  | PageUrlResult
+  | PageTitleResult
+  | CountResult
+  | BoundingBoxResult
+  | ElementStylesResult
+  | StorageResult
   | BooleanResult
   | BatchResult;
 
@@ -280,6 +340,11 @@ export type BrowserCommand =
   | { readonly action: "innerhtml"; readonly selector: string }
   | { readonly action: "inputvalue"; readonly selector: string }
   | { readonly action: "getattribute"; readonly selector: string; readonly attribute: string }
+  | { readonly action: "url" }
+  | { readonly action: "title" }
+  | { readonly action: "count"; readonly selector: string }
+  | { readonly action: "boundingbox"; readonly selector: string }
+  | { readonly action: "styles"; readonly selector: string }
 
   // 元素状态查询 (is)
   | { readonly action: "isvisible"; readonly selector: string }
@@ -301,9 +366,33 @@ export type BrowserCommand =
   | { readonly action: "keydown"; readonly key: string }
   | { readonly action: "keyup"; readonly key: string }
   | { readonly action: "scrollintoview"; readonly selector: string }
+  | { readonly action: "drag"; readonly source: string; readonly target: string }
+  | { readonly action: "mousemove"; readonly x: number; readonly y: number }
+  | { readonly action: "mousedown"; readonly button: "left" | "right" | "middle" }
+  | { readonly action: "mouseup"; readonly button: "left" | "right" | "middle" }
+  | { readonly action: "wheel"; readonly deltaX: number; readonly deltaY: number }
+  | { readonly action: "viewport"; readonly width: number; readonly height: number; readonly deviceScaleFactor?: number }
+  | { readonly action: "geolocation"; readonly latitude: number; readonly longitude: number }
+  | { readonly action: "offline"; readonly offline: boolean }
+  | { readonly action: "headers"; readonly headers: Readonly<Record<string, string>> }
+  | { readonly action: "credentials"; readonly username: string; readonly password: string }
+  | { readonly action: "emulatemedia"; readonly colorScheme: "dark" | "light" | "no-preference"; readonly reducedMotion: "reduce" | "no-preference" }
+  | { readonly action: "storage_get"; readonly type: "local" | "session"; readonly key?: string }
+  | { readonly action: "storage_set"; readonly type: "local" | "session"; readonly key: string; readonly value: string }
+  | { readonly action: "storage_clear"; readonly type: "local" | "session" }
   | { readonly action: "nth"; readonly selector: string; readonly index: number; readonly subaction?: string; readonly value?: string }
   | { readonly action: "upload"; readonly selector: string; readonly files: ReadonlyArray<string> }
-  | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{ readonly name: string; readonly value: string; readonly url?: string; readonly domain?: string; readonly path?: string }> }
+  | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{
+      readonly name: string;
+      readonly value: string;
+      readonly url?: string;
+      readonly domain?: string;
+      readonly path?: string;
+      readonly httpOnly?: boolean;
+      readonly secure?: boolean;
+      readonly sameSite?: "Strict" | "Lax" | "None";
+      readonly expires?: number;
+    }> }
   | { readonly action: "dialog"; readonly response: "accept" | "dismiss" | "status"; readonly text?: string }
   | { readonly action: "frame"; readonly selector: string }
   | { readonly action: "mainframe" }
@@ -439,6 +528,11 @@ const browserCommandSchema = type({
   .or({ action: "'innerhtml'", selector: "string" })
   .or({ action: "'inputvalue'", selector: "string" })
   .or({ action: "'getattribute'", selector: "string", attribute: "string" })
+  .or({ action: "'url'" })
+  .or({ action: "'title'" })
+  .or({ action: "'count'", selector: "string" })
+  .or({ action: "'boundingbox'", selector: "string" })
+  .or({ action: "'styles'", selector: "string" })
   .or({ action: "'isvisible'", selector: "string" })
   .or({ action: "'isenabled'", selector: "string" })
   .or({ action: "'ischecked'", selector: "string" })
@@ -454,9 +548,33 @@ const browserCommandSchema = type({
   .or({ action: "'keydown'", key: "string" })
   .or({ action: "'keyup'", key: "string" })
   .or({ action: "'scrollintoview'", selector: "string" })
+  .or({ action: "'drag'", source: "string", target: "string" })
+  .or({ action: "'mousemove'", x: "number", y: "number" })
+  .or({ action: "'mousedown'", button: "'left' | 'right' | 'middle'" })
+  .or({ action: "'mouseup'", button: "'left' | 'right' | 'middle'" })
+  .or({ action: "'wheel'", deltaX: "number", deltaY: "number" })
+  .or({ action: "'viewport'", width: "number", height: "number", "deviceScaleFactor?": "number" })
+  .or({ action: "'geolocation'", latitude: "number", longitude: "number" })
+  .or({ action: "'offline'", offline: "boolean" })
+  .or({ action: "'headers'", headers: type("Record<string, string>") })
+  .or({ action: "'credentials'", username: "string", password: "string" })
+  .or({ action: "'emulatemedia'", colorScheme: "'dark' | 'light' | 'no-preference'", reducedMotion: "'reduce' | 'no-preference'" })
+  .or({ action: "'storage_get'", type: "'local' | 'session'", "key?": "string" })
+  .or({ action: "'storage_set'", type: "'local' | 'session'", key: "string", value: "string" })
+  .or({ action: "'storage_clear'", type: "'local' | 'session'" })
   .or({ action: "'nth'", selector: "string", index: "number", "subaction?": "string", "value?": "string" })
   .or({ action: "'upload'", selector: "string", files: "string[]" })
-  .or({ action: "'cookies_set'", cookies: type({ name: "string", value: "string", "url?": "string", "domain?": "string", "path?": "string" }).array() })
+  .or({ action: "'cookies_set'", cookies: type({
+    name: "string",
+    value: "string",
+    "url?": "string",
+    "domain?": "string",
+    "path?": "string",
+    "httpOnly?": "boolean",
+    "secure?": "boolean",
+    "sameSite?": "'Strict' | 'Lax' | 'None'",
+    "expires?": "number",
+  }).array() })
   .or({ action: "'dialog'", response: "'accept' | 'dismiss' | 'status'", "text?": "string" })
   .or({ action: "'frame'", selector: "string" })
   .or({ action: "'mainframe'" })
