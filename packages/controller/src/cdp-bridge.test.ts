@@ -133,6 +133,7 @@ function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): Browse
     },
     newCDPSession: mock(() => Promise.resolve({
       send: mock(() => Promise.resolve()),
+      on: mock(() => undefined),
       detach: mock(() => Promise.resolve()),
     })),
     ...overrides,
@@ -656,26 +657,51 @@ describe("cdp-bridge", () => {
 
     it("console and page error commands return observed events and clear them", async () => {
       const handlers = new Map<string, (value: unknown) => void>();
+      const pageHandlers = new Map<string, (value: unknown) => void>();
+      const detach = mock(() => Promise.resolve());
       page = mockPage({
         on: mock((event: string, handler: (value: unknown) => void) => {
-          handlers.set(event, handler);
+          pageHandlers.set(event, handler);
           return page;
         }) as Page["on"],
       });
-      ctx = mockContext([page]);
-      await executeCommand(ctx, { action: "reload" }, refStore, SESSION);
-      handlers.get("console")?.({ type: () => "log", text: () => "hello" });
-      handlers.get("pageerror")?.(new Error("broken"));
+      ctx = mockContext([page], {
+        newCDPSession: mock(() => Promise.resolve({
+          send: mock(() => Promise.resolve()),
+          on: mock((event: string, handler: (value: unknown) => void) => {
+            handlers.set(event, handler);
+          }),
+          detach,
+        })) as BrowserContext["newCDPSession"],
+      });
+      await executeCommand(ctx, { action: "eval", code: "true" }, refStore, SESSION);
+      handlers.get("Runtime.consoleAPICalled")?.({
+        type: "log",
+        args: [{ type: "string", value: "hello" }, { type: "number", value: 42 }],
+      });
+      handlers.get("Runtime.exceptionThrown")?.({
+        exceptionDetails: { text: "Uncaught", exception: { description: "Error: broken" } },
+      });
+      // Patchright may emit the corresponding high-level events too. Once the
+      // CDP observer is active they must not duplicate the same browser event.
+      pageHandlers.get("console")?.({ type: () => "log", text: () => "hello 42" });
+      pageHandlers.get("pageerror")?.(new Error("Error: broken"));
 
       const consoleData = assertOk(await executeCommand(ctx, { action: "console" }, refStore, SESSION));
       const errorData = assertOk(await executeCommand(ctx, { action: "errors" }, refStore, SESSION));
-      expect(consoleData).toEqual({ _tag: "ConsoleResult", messages: [{ type: "log", text: "hello" }] });
-      expect(errorData).toEqual({ _tag: "PageErrorsResult", errors: [{ message: "broken" }] });
+      expect(consoleData).toEqual({ _tag: "ConsoleResult", messages: [{ type: "log", text: "hello 42" }] });
+      expect(errorData).toEqual({ _tag: "PageErrorsResult", errors: [{ message: "Error: broken" }] });
 
       expect(assertOk(await executeCommand(ctx, { action: "console", clear: true }, refStore, SESSION)))
         .toEqual({ _tag: "ClearedResult", cleared: true });
       expect(assertOk(await executeCommand(ctx, { action: "errors", clear: true }, refStore, SESSION)))
         .toEqual({ _tag: "ClearedResult", cleared: true });
+      expect(assertOk(await executeCommand(ctx, { action: "console" }, refStore, SESSION)))
+        .toEqual({ _tag: "ConsoleResult", messages: [] });
+      expect(assertOk(await executeCommand(ctx, { action: "errors" }, refStore, SESSION)))
+        .toEqual({ _tag: "PageErrorsResult", errors: [] });
+      clearSessionRuntimeState(SESSION);
+      expect(detach).toHaveBeenCalledTimes(1);
     });
 
     it("network requests returns observed request metadata", async () => {

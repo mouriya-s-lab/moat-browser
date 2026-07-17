@@ -7,6 +7,8 @@ import { join, resolve } from "node:path";
 type Availability = "controller" | "local" | "orchestrated" | "stable_unsupported";
 type Case = { action: string; argv: string[]; availability: Availability; verify?: string[]; contains?: string; notContains?: string; artifacts?: string[] };
 type Run = { exit: number; stdout: string; stderr: string; value?: Record<string, unknown>; jsonValues: number };
+type TopLevelKind = "local_output" | "local_session" | "controller_session" | "stable_unsupported";
+type TopLevelResult = { name: string; kind: TopLevelKind; argv: string[]; exit: number; passed: boolean; jsonValues: number; diagnostic: string };
 
 const root = resolve(import.meta.dir, "../..");
 const moat = resolve(process.env.MOAT ?? join(root, "cli/target/release/moat"));
@@ -49,7 +51,7 @@ const cases: Case[] = [
   C("drag",["drag","#source","#target"],["eval","window.matrixEvents.includes('drop')"],"true"), C("upload",["upload","#file",upload],["eval","document.querySelector('#file').files[0].name"],"upload.txt"), C("download",["download","#download",join(artifacts,"download.txt")],undefined,undefined,undefined,[join(artifacts,"download.txt")]),
   C("press",["press","Tab"],["eval","document.activeElement !== document.body"],"true"), C("keydown",["keydown","Shift"],["eval","window.matrixEvents.includes('keydown')"],"true"), C("keyup",["keyup","Shift"],["eval","window.matrixEvents.includes('keyup')"],"true"), C("keyboard",["keyboard","type","keyboard"],["get","value","#input"],"keyboard"),
   C("scroll",["scroll","down","100"],["eval","window.scrollY > 0"],"true"), C("scrollintoview",["scrollintoview","#target"],["eval","document.querySelector('#target').getBoundingClientRect().top < innerHeight"],"true"), C("wait",["wait","10"]),
-  C("waitforurl",["wait","--url",`${new URL(fixture).origin}/*`]), C("waitforloadstate",["wait","--load","domcontentloaded"]), C("waitforfunction",["wait","--fn","window.matrixReady === true"]),
+  C("waitforurl",["wait","--url",`${new URL(fixture).origin}/*`]), C("waitforloadstate",["wait","--load","domcontentloaded"]), C("waitforfunction",["wait","--fn","document.querySelector('h1')?.textContent === 'Moat CLI Matrix'"]),
   C("waitfordownload",["wait","--download",join(artifacts,"wait-download.txt"),"--timeout","10000"],undefined,undefined,undefined,[join(artifacts,"wait-download.txt")]),
   C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
   C("gettext",["get","text","h1"],undefined,"Moat CLI Matrix"), C("innerhtml",["get","html","h1"]), C("inputvalue",["get","value","#input"]),
@@ -64,7 +66,7 @@ const cases: Case[] = [
   C("cookies_set",["cookies","set","matrix","cookie"],["cookies","get"],"matrix"), C("cookies_get",["cookies","get"],undefined,"matrix"),
   C("route",["network","route","**/matrix-route","--body",'{"ok":true}'],["eval","fetch('https://moat.invalid/matrix-route').then(r => r.text())"],"ok"), C("requests",["network","requests"]),
   C("request_detail",["network","request","missing-request-id"],undefined,"x-moat-matrix"), C("unroute",["network","unroute","**/matrix-route"],["eval","fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"],"unrouted"), C("har_start",["network","har","start"]), C("har_stop",["network","har","stop",join(artifacts,"network.har")],undefined,undefined,undefined,[join(artifacts,"network.har")]),
-  C("console",["console"],undefined,"matrix-console"), C("errors",["errors"]), C("highlight",["highlight","h1"]), C("clipboard",["clipboard","write","matrix-clipboard"],["clipboard","read"],"matrix-clipboard"),
+  C("console",["console"],undefined,"matrix-console"), C("errors",["errors"],undefined,"matrix-page-error"), C("highlight",["highlight","h1"]), C("clipboard",["clipboard","write","matrix-clipboard"],["clipboard","read"],"matrix-clipboard"),
   C("tab_new",["tab","new",fixture],["get","url"],fixture), C("tab_list",["tab","list"],undefined,fixture), C("tab_switch",["tab","switch","0"],["get","url"],fixture), C("tab_close",["tab","close"]),
   C("window_new",["window","new"], ["get","url"], "about:blank"), C("frame",["frame","#frame"],["get","text","#inside"],"frame"), C("mainframe",["frame","main"],["get","text","h1"],"Moat CLI Matrix"), C("dialog",["dialog","accept","matrix"]),
   C("tap",["tap","#button"],["eval","window.matrixEvents.includes('touchstart') && window.matrixEvents.includes('touchend')"],"true"), C("swipe",["swipe","up","100"],["eval","window.matrixEvents.filter(x => x === 'touchstart' || x === 'touchend').length >= 4"],"true"),
@@ -79,9 +81,9 @@ const cases: Case[] = [
   C("close",["close"]),
 ];
 
-async function run(argv: string[]): Promise<Run> {
+async function runRaw(argv: string[], json: boolean): Promise<Run> {
   const batch = argv[0] === "batch";
-  const proc = Bun.spawn([moat, "--json", ...argv], { env: { ...process.env, HOME: home, MOAT_CONTROLLER: controller }, stdin: batch ? "pipe" : undefined, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([moat, ...(json ? ["--json"] : []), ...argv], { env: { ...process.env, HOME: home, MOAT_CONTROLLER: controller }, stdin: batch ? "pipe" : undefined, stdout: "pipe", stderr: "pipe" });
   if (batch) { proc.stdin!.write(JSON.stringify([["get","title"],["get","url"]])); proc.stdin!.end(); }
   const stdoutPromise = new Response(proc.stdout).text();
   const stderrPromise = new Response(proc.stderr).text();
@@ -99,11 +101,51 @@ async function run(argv: string[]): Promise<Run> {
   try { return { exit, stdout, stderr, value: JSON.parse(trimmed), jsonValues: 1 }; }
   catch { return { exit, stdout, stderr, jsonValues: 0 }; }
 }
+async function run(argv: string[]): Promise<Run> { return runRaw(argv, true); }
+
+const topLevelResults: TopLevelResult[] = [];
+const recordText = async (name: string, argv: string[], expected: RegExp, forbidden?: RegExp) => {
+  const r = await runRaw(argv, false);
+  const passed = r.exit === 0 && r.stdout.trim().length > 0 && r.stderr.trim().length === 0 && expected.test(r.stdout) && !(forbidden?.test(r.stdout));
+  topLevelResults.push({ name, kind:"local_output", argv, exit:r.exit, passed, jsonValues:r.jsonValues, diagnostic:passed ? "" : `expected one stdout text response: stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}` });
+};
+const recordJson = (name: string, kind: TopLevelKind, argv: string[], r: Run, predicate: (run: Run) => boolean) => {
+  const passed = r.jsonValues === 1 && predicate(r);
+  topLevelResults.push({ name, kind, argv, exit:r.exit, passed, jsonValues:r.jsonValues, diagnostic:passed ? "" : `JSON contract failed: stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}` });
+};
+
+// Local output must neither need nor create a session. Exercise every spelling
+// because these are separate public top-level parser entries.
+await recordText("--help", ["--help"], /moat - remote Chromium/, /agent-browser/);
+await recordText("-h", ["-h"], /moat - remote Chromium/, /agent-browser/);
+await recordText("help", ["help"], /moat - remote Chromium/, /agent-browser/);
+await recordText("--version", ["--version"], /^moat\s+\S+\s*$/);
+await recordText("-V", ["-V"], /^moat\s+\S+\s*$/);
+
+for (const name of ["dashboard", "install", "profiles", "session", "upgrade"]) {
+  const r = await run([name]);
+  recordJson(name, "stable_unsupported", [name], r, value => value.exit !== 0 && value.value?.success === false && value.value?.errorType === "unsupported_in_moat");
+}
+
+// Prove all lifecycle aliases against real Controller state without leaking a
+// session: init -> status -> disconnect -> absent -> connect -> command matrix.
 const init = await run(["init"]);
-if (init.exit !== 0 || init.jsonValues !== 1 || init.value?.success !== true) throw new Error(`init failed: ${init.stdout}${init.stderr}`);
+recordJson("init", "controller_session", ["init"], init, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+if (!topLevelResults.at(-1)?.passed) throw new Error(`init failed: ${init.stdout}${init.stderr}`);
+const activeStatus = await run(["status"]);
+recordJson("status", "local_session", ["status"], activeStatus, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+const disconnect = await run(["disconnect"]);
+recordJson("disconnect", "controller_session", ["disconnect"], disconnect, r => r.exit === 0 && r.value?.success === true);
+const absentAfterDisconnect = await run(["status"]);
+if (absentAfterDisconnect.exit !== 77 || absentAfterDisconnect.jsonValues !== 1 || absentAfterDisconnect.value?.success !== false) {
+  throw new Error(`disconnect left an active session: ${absentAfterDisconnect.stdout}${absentAfterDisconnect.stderr}`);
+}
+const connect = await run(["connect"]);
+recordJson("connect", "controller_session", ["connect"], connect, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+if (!topLevelResults.at(-1)?.passed) throw new Error(`connect failed: ${connect.stdout}${connect.stderr}`);
 
 const contractProc = Bun.spawnSync(["python3",join(root,"scripts/cli-command-contract.py")],{stdout:"pipe",stderr:"pipe"});
-const contract = JSON.parse(new TextDecoder().decode(contractProc.stdout)) as { actions: Record<Availability,string[]> };
+const contract = JSON.parse(new TextDecoder().decode(contractProc.stdout)) as { actions: Record<Availability,string[]>; topLevel: Record<string,TopLevelKind> };
 const expected = Object.values(contract.actions).flat().sort();
 const results = [] as Record<string, unknown>[];
 for (const c of cases) {
@@ -138,6 +180,16 @@ for (const c of cases) {
   }
   if (c.action === "har_stop") {
     await run(["eval","fetch('data:text/plain,har-activity').then(r => r.text())"]);
+  }
+  if (c.action === "console") {
+    await run(["eval","console.log('matrix-console-live'); true"]);
+    // Console events arrive on the CDP event channel independently from the
+    // evaluate response; allow that channel to flush before reading the log.
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (c.action === "errors") {
+    await run(["eval","setTimeout(() => { throw new Error('matrix-page-error'); }, 0); true"]);
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   if (c.action === "state_save") {
     await run(["storage","local","set","matrix-state-proof","saved"]);
@@ -230,10 +282,23 @@ const covered = [...new Set(cases.map(c=>c.action))].sort();
 const missing = expected.filter(a=>!covered.includes(a));
 const failed = results.filter(r=>r.jsonValues !== 1 || (r.availability !== "stable_unsupported" && !r.success) || (r.availability === "stable_unsupported" && (r.exit === 0 || r.errorType !== "unsupported_in_moat")));
 const noOp = results.filter(r=>r.effectPassed !== true);
+// `close` is a wire action and remains part of the 121-action matrix;
+// `close-session` is the top-level lifecycle alias that must destroy the
+// Controller container and clear ~/.moat/session.
+const reconnectForCloseSession = await run(["connect"]);
+if (reconnectForCloseSession.exit !== 0 || reconnectForCloseSession.value?.success !== true) {
+  throw new Error(`could not create close-session verification session: ${reconnectForCloseSession.stdout}${reconnectForCloseSession.stderr}`);
+}
+const closeSession = await run(["close-session"]);
+recordJson("close-session", "controller_session", ["close-session"], closeSession, r => r.exit === 0 && r.value?.success === true);
 const status = await run(["status"]);
-const isolationPassed = status.exit === 77 && status.value?.success === false;
-const report = { generatedAt:new Date().toISOString(), controller, moat, expectedActions:expected.length, coveredActions:covered.length, cases:results.length, missing, failed:failed.map(r=>r.name), noOp:noOp.map(r=>r.name), internalDiagnostics:results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic})), isolationPassed, results };
+const isolationPassed = status.exit === 77 && status.jsonValues === 1 && status.value?.success === false;
+const expectedTopLevel = Object.keys(contract.topLevel).sort();
+const coveredTopLevel = [...new Set(topLevelResults.map(result => result.name))].sort();
+const topLevelMissing = expectedTopLevel.filter(name => !coveredTopLevel.includes(name));
+const topLevelFailed = topLevelResults.filter(result => !result.passed).map(result => result.name);
+const report = { generatedAt:new Date().toISOString(), controller, moat, expectedActions:expected.length, coveredActions:covered.length, cases:results.length, missing, failed:failed.map(r=>r.name), noOp:noOp.map(r=>r.name), internalDiagnostics:results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic})), expectedTopLevel:expectedTopLevel.length, coveredTopLevel:coveredTopLevel.length, topLevelMissing, topLevelFailed, topLevelResults, isolationPassed, results };
 await writeFile(resultPath, JSON.stringify(report,null,2)+"\n");
 console.log(JSON.stringify(report));
 if (ownHome) await rm(home,{recursive:true,force:true});
-if (missing.length || failed.length || noOp.length || report.internalDiagnostics.length || !isolationPassed) process.exit(1);
+if (missing.length || failed.length || noOp.length || report.internalDiagnostics.length || topLevelMissing.length || topLevelFailed.length || !isolationPassed) process.exit(1);

@@ -168,6 +168,11 @@ const sessionTabIndex = new Map<string, number>();
 
 type SessionRuntimeState = {
   readonly observedPages: WeakSet<Page>;
+  readonly cdpObservedPages: WeakSet<Page>;
+  readonly pageObservers: WeakMap<Page, Promise<void>>;
+  readonly observerSessions: Set<CDPSession>;
+  readonly pendingConsoleKeys: Set<string>;
+  readonly pendingErrorMessages: Set<string>;
   readonly consoleMessages: Array<{ readonly type: string; readonly text: string }>;
   readonly pageErrors: Array<{ readonly message: string }>;
   readonly requestIds: WeakMap<Request, string>;
@@ -192,6 +197,11 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
   if (existing) return existing;
   const created: SessionRuntimeState = {
     observedPages: new WeakSet<Page>(),
+    cdpObservedPages: new WeakSet<Page>(),
+    pageObservers: new WeakMap<Page, Promise<void>>(),
+    observerSessions: new Set<CDPSession>(),
+    pendingConsoleKeys: new Set<string>(),
+    pendingErrorMessages: new Set<string>(),
     consoleMessages: [],
     pageErrors: [],
     requestIds: new WeakMap<Request, string>(),
@@ -204,16 +214,34 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
   return created;
 }
 
+function recordConsole(
+  state: SessionRuntimeState,
+  type: string,
+  text: string,
+): void {
+  const key = `${type}\0${text}`;
+  if (state.pendingConsoleKeys.has(key)) return;
+  state.pendingConsoleKeys.add(key);
+  queueMicrotask(() => state.pendingConsoleKeys.delete(key));
+  state.consoleMessages.push({ type, text });
+}
+
+function recordPageError(state: SessionRuntimeState, message: string): void {
+  if (state.pendingErrorMessages.has(message)) return;
+  state.pendingErrorMessages.add(message);
+  queueMicrotask(() => state.pendingErrorMessages.delete(message));
+  state.pageErrors.push({ message });
+}
+
 function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState {
   const state = getSessionRuntimeState(sessionId);
   if (state.observedPages.has(page)) return state;
   state.observedPages.add(page);
-
   page.on("console", (message) => {
-    state.consoleMessages.push({ type: message.type(), text: message.text() });
+    if (!state.cdpObservedPages.has(page)) recordConsole(state, message.type(), message.text());
   });
   page.on("pageerror", (error) => {
-    state.pageErrors.push({ message: error.message });
+    if (!state.cdpObservedPages.has(page)) recordPageError(state, error.message);
   });
   page.on("dialog", (dialog) => {
     state.pendingDialog = dialog;
@@ -254,7 +282,48 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
   return state;
 }
 
+async function ensureCdpRuntimeObserver(
+  sessionId: string,
+  context: BrowserContext,
+  page: Page,
+): Promise<void> {
+  const state = getSessionRuntimeState(sessionId);
+  const existingObserver = state.pageObservers.get(page);
+  if (existingObserver) {
+    await existingObserver;
+    return;
+  }
+  const observer = (async () => {
+    const cdp = await context.newCDPSession(page);
+    state.observerSessions.add(cdp);
+    state.cdpObservedPages.add(page);
+    cdp.on("Runtime.consoleAPICalled", (event) => {
+      const text = event.args.map((arg) => {
+        if (arg.value !== undefined) return String(arg.value);
+        return arg.description ?? arg.type;
+      }).join(" ");
+      recordConsole(state, event.type, text);
+    });
+    cdp.on("Runtime.exceptionThrown", (event) => {
+      recordPageError(state, event.exceptionDetails.exception?.description
+        ?? event.exceptionDetails.text);
+    });
+    await cdp.send("Runtime.enable");
+  })();
+  state.pageObservers.set(page, observer);
+  try {
+    await observer;
+  } catch (error) {
+    state.pageObservers.delete(page);
+    throw error;
+  }
+}
+
 export function clearSessionRuntimeState(sessionId: string): void {
+  const state = sessionRuntimeState.get(sessionId);
+  if (state) {
+    for (const cdp of state.observerSessions) void cdp.detach().catch(() => {});
+  }
   sessionRuntimeState.delete(sessionId);
   sessionTabIndex.delete(sessionId);
 }
@@ -562,6 +631,7 @@ export async function executeCommand(
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
   const runtimeState = observePageRuntime(sessionId, page);
+  if (command.action === "eval") await ensureCdpRuntimeObserver(sessionId, context, page);
   const scope = runtimeState.activeFrame ?? page;
 
   try {
