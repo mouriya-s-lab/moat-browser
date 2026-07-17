@@ -115,6 +115,16 @@ function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): Browse
     setOffline: mock(() => Promise.resolve()),
     setHTTPCredentials: mock(() => Promise.resolve()),
     storageState: mock(() => Promise.resolve({ cookies: [], origins: [] })),
+    tracing: {
+      start: mock(() => Promise.resolve()),
+      stop: mock(async ({ path }: { path?: string } = {}) => {
+        if (path) await Bun.write(path, "trace-data");
+      }),
+      startChunk: mock(() => Promise.resolve()),
+      stopChunk: mock(() => Promise.resolve()),
+      group: mock(() => Promise.resolve()),
+      groupEnd: mock(() => Promise.resolve()),
+    },
     newCDPSession: mock(() => Promise.resolve({
       send: mock(() => Promise.resolve()),
       detach: mock(() => Promise.resolve()),
@@ -902,6 +912,94 @@ describe("cdp-bridge", () => {
         value: "session-value",
       });
       expect(detach).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("trace, profiler, and HAR artifacts", () => {
+    it("trace start and stop return a transferable trace archive", async () => {
+      expect(assertOk(await executeCommand(ctx, { action: "trace_start" }, refStore, SESSION)))
+        .toEqual({ _tag: "StartedResult", started: true });
+
+      const data = assertOk(await executeCommand(ctx, { action: "trace_stop" }, refStore, SESSION));
+
+      expect(ctx.tracing.start).toHaveBeenCalledWith({ screenshots: true, snapshots: true, sources: true });
+      expect(data).toEqual({
+        _tag: "BinaryFileResult",
+        base64: Buffer.from("trace-data").toString("base64"),
+        suggestedFilename: "trace.zip",
+      });
+    });
+
+    it("profiler returns the CDP trace stream and event count", async () => {
+      let complete: ((event: { stream?: string }) => void) | undefined;
+      const send = mock((method: string) => {
+        if (method === "Tracing.end") queueMicrotask(() => complete?.({ stream: "profile-stream" }));
+        if (method === "IO.read") {
+          return Promise.resolve({
+            data: JSON.stringify({ traceEvents: [{ name: "one" }, { name: "two" }] }),
+            eof: true,
+          });
+        }
+        return Promise.resolve({});
+      });
+      const detach = mock(() => Promise.resolve());
+      const cdp = {
+        send,
+        detach,
+        once: mock((_event: string, handler: (event: { stream?: string }) => void) => {
+          complete = handler;
+          return cdp;
+        }),
+      };
+      ctx = mockContext([page], {
+        newCDPSession: mock(() => Promise.resolve(cdp)) as BrowserContext["newCDPSession"],
+      });
+
+      expect(assertOk(await executeCommand(ctx, {
+        action: "profiler_start",
+        categories: ["devtools.timeline"],
+      }, refStore, SESSION))).toEqual({ _tag: "StartedResult", started: true });
+      const data = assertOk(await executeCommand(ctx, { action: "profiler_stop" }, refStore, SESSION));
+
+      expect(send).toHaveBeenCalledWith("Tracing.start", {
+        traceConfig: { includedCategories: ["devtools.timeline"], enableSampling: true },
+        transferMode: "ReturnAsStream",
+      });
+      expect(data._tag).toBe("BinaryFileResult");
+      if (data._tag === "BinaryFileResult") {
+        expect(JSON.parse(Buffer.from(data.base64, "base64").toString()).traceEvents).toHaveLength(2);
+        expect(data.eventCount).toBe(2);
+      }
+      expect(detach).toHaveBeenCalledTimes(1);
+    });
+
+    it("HAR start clears prior requests and stop exports captured requests", async () => {
+      const handlers = new Map<string, (value: unknown) => void>();
+      page = mockPage({
+        on: mock((event: string, handler: (value: unknown) => void) => {
+          handlers.set(event, handler);
+          return page;
+        }) as Page["on"],
+      });
+      ctx = mockContext([page]);
+      await executeCommand(ctx, { action: "har_start" }, refStore, SESSION);
+      handlers.get("request")?.({
+        url: () => "https://example.com/api",
+        method: () => "POST",
+        resourceType: () => "fetch",
+        headers: () => ({ "content-type": "application/json" }),
+        postData: () => "{}",
+      });
+
+      const data = assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION));
+
+      expect(data._tag).toBe("BinaryFileResult");
+      if (data._tag === "BinaryFileResult") {
+        const har = JSON.parse(Buffer.from(data.base64, "base64").toString());
+        expect(data.requestCount).toBe(1);
+        expect(har.log.version).toBe("1.2");
+        expect(har.log.entries[0].request.url).toBe("https://example.com/api");
+      }
     });
   });
 

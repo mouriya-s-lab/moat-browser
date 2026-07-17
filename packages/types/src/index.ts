@@ -202,6 +202,13 @@ export type BinaryFileResult = {
   readonly _tag: "BinaryFileResult";
   readonly base64: string;
   readonly suggestedFilename?: string;
+  readonly eventCount?: number;
+  readonly requestCount?: number;
+};
+
+export type StartedResult = {
+  readonly _tag: "StartedResult";
+  readonly started: true;
 };
 
 export type ClipboardResult = {
@@ -312,6 +319,7 @@ export type CommandResultData =
   | CdpUrlResult
   | TouchResult
   | StateLoadResult
+  | StartedResult
   | BooleanResult
   | BatchResult;
 
@@ -521,6 +529,12 @@ export type BrowserCommand =
   | { readonly action: "device_list" }
   | { readonly action: "state_save" }
   | { readonly action: "state_load"; readonly state: BrowserStorageState }
+  | { readonly action: "trace_start" }
+  | { readonly action: "trace_stop" }
+  | { readonly action: "profiler_start"; readonly categories?: ReadonlyArray<string> }
+  | { readonly action: "profiler_stop" }
+  | { readonly action: "har_start" }
+  | { readonly action: "har_stop" }
   | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{
       readonly name: string;
       readonly value: string;
@@ -601,6 +615,12 @@ const browserCommandSchema = type({
     "value?": "string",
     "nth?": "number",
   })
+  .or({ action: "'trace_start'" })
+  .or({ action: "'trace_stop'" })
+  .or({ action: "'profiler_start'", "categories?": "string[]" })
+  .or({ action: "'profiler_stop'" })
+  .or({ action: "'har_start'" })
+  .or({ action: "'har_stop'" })
   .or({
     action: "'getbylabel'",
     label: "string",

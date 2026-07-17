@@ -1,5 +1,8 @@
 import { chromium, devices } from "patchright";
-import type { Browser, BrowserContext, Dialog, Frame, Locator, Page, Request } from "patchright";
+import type { Browser, BrowserContext, CDPSession, Dialog, Frame, Locator, Page, Request } from "patchright";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   BrowserCommand,
   CommandResultData,
@@ -37,6 +40,7 @@ import type {
   CdpUrlResult,
   TouchResult,
   StateLoadResult,
+  StartedResult,
   BooleanResult,
   BatchResult,
   BatchResultEntry,
@@ -91,6 +95,9 @@ type SessionRuntimeState = {
     readonly message: string;
     readonly defaultPrompt: string;
   };
+  traceActive: boolean;
+  profilerSession?: CDPSession;
+  harActive: boolean;
   nextRequestId: number;
 };
 
@@ -105,6 +112,8 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     pageErrors: [],
     requestIds: new WeakMap<Request, string>(),
     requests: new Map<string, NetworkRequestEntry>(),
+    traceActive: false,
+    harActive: false,
     nextRequestId: 1,
   };
   sessionRuntimeState.set(sessionId, created);
@@ -172,6 +181,18 @@ function statusMatches(actual: number | undefined, expected: string): boolean {
   const range = /^(\d{3})-(\d{3})$/.exec(expected);
   if (range) return actual >= Number(range[1]) && actual <= Number(range[2]);
   return actual === Number(expected);
+}
+
+async function readCdpStream(cdp: CDPSession, handle: string): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let eof = false;
+  while (!eof) {
+    const chunk = await cdp.send("IO.read", { handle });
+    chunks.push(Buffer.from(chunk.data, chunk.base64Encoded ? "base64" : "utf8"));
+    eof = chunk.eof === true;
+  }
+  await cdp.send("IO.close", { handle });
+  return Buffer.concat(chunks);
 }
 
 // ─── Locator subaction type ───
@@ -1182,6 +1203,154 @@ export async function executeCommand(
           loaded: true,
           cookies: command.state.cookies.length,
           origins: command.state.origins.length,
+        };
+        return ok(r);
+      }
+
+      case "trace_start": {
+        if (runtimeState.traceActive) {
+          return err({ _tag: "CommandFailed", message: "Tracing already active" });
+        }
+        await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+        runtimeState.traceActive = true;
+        const r: StartedResult = { _tag: "StartedResult", started: true };
+        return ok(r);
+      }
+
+      case "trace_stop": {
+        if (!runtimeState.traceActive) {
+          return err({ _tag: "CommandFailed", message: "No tracing in progress" });
+        }
+        const directory = await mkdtemp(join(tmpdir(), "moat-trace-"));
+        const path = join(directory, "trace.zip");
+        try {
+          await context.tracing.stop({ path });
+          const bytes = await readFile(path);
+          runtimeState.traceActive = false;
+          const r: BinaryFileResult = {
+            _tag: "BinaryFileResult",
+            base64: bytes.toString("base64"),
+            suggestedFilename: "trace.zip",
+          };
+          return ok(r);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }
+
+      case "profiler_start": {
+        if (runtimeState.profilerSession) {
+          return err({ _tag: "CommandFailed", message: "Profiling already active" });
+        }
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Tracing.start", {
+          traceConfig: {
+            includedCategories: command.categories ? [...command.categories] : [
+              "devtools.timeline",
+              "v8.execute",
+              "blink.user_timing",
+              "disabled-by-default-v8.cpu_profiler",
+            ],
+            enableSampling: true,
+          },
+          transferMode: "ReturnAsStream",
+        });
+        runtimeState.profilerSession = cdp;
+        const r: StartedResult = { _tag: "StartedResult", started: true };
+        return ok(r);
+      }
+
+      case "profiler_stop": {
+        const cdp = runtimeState.profilerSession;
+        if (!cdp) return err({ _tag: "CommandFailed", message: "No profiling in progress" });
+        const completed = new Promise<{ stream?: string }>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Profiler stop timed out after 30s")), 30_000);
+          cdp.once("Tracing.tracingComplete", (event) => {
+            clearTimeout(timeout);
+            resolve(event);
+          });
+        });
+        await cdp.send("Tracing.end");
+        const { stream } = await completed;
+        if (!stream) throw new Error("Profiler completed without a trace stream");
+        const bytes = await readCdpStream(cdp, stream);
+        await cdp.detach();
+        runtimeState.profilerSession = undefined;
+        let eventCount = 0;
+        try {
+          const parsed = JSON.parse(bytes.toString());
+          eventCount = Array.isArray(parsed.traceEvents) ? parsed.traceEvents.length : 0;
+        } catch {
+          eventCount = 0;
+        }
+        const r: BinaryFileResult = {
+          _tag: "BinaryFileResult",
+          base64: bytes.toString("base64"),
+          suggestedFilename: "profile.json",
+          eventCount,
+        };
+        return ok(r);
+      }
+
+      case "har_start": {
+        if (runtimeState.harActive) {
+          return err({ _tag: "CommandFailed", message: "HAR recording already active" });
+        }
+        runtimeState.requests.clear();
+        runtimeState.harActive = true;
+        const r: StartedResult = { _tag: "StartedResult", started: true };
+        return ok(r);
+      }
+
+      case "har_stop": {
+        if (!runtimeState.harActive) {
+          return err({ _tag: "CommandFailed", message: "No HAR recording in progress" });
+        }
+        runtimeState.harActive = false;
+        const entries = [...runtimeState.requests.values()].map((request) => ({
+          startedDateTime: new Date().toISOString(),
+          time: 0,
+          request: {
+            method: request.method,
+            url: request.url,
+            httpVersion: "HTTP/1.1",
+            headers: Object.entries(request.requestHeaders).map(([name, value]) => ({ name, value })),
+            queryString: [],
+            cookies: [],
+            headersSize: -1,
+            bodySize: request.postData?.length ?? 0,
+            ...(request.postData === undefined ? {} : { postData: { mimeType: "", text: request.postData } }),
+          },
+          response: {
+            status: request.status ?? 0,
+            statusText: "",
+            httpVersion: "HTTP/1.1",
+            headers: Object.entries(request.responseHeaders ?? {}).map(([name, value]) => ({ name, value })),
+            cookies: [],
+            content: {
+              size: request.responseBody?.length ?? 0,
+              mimeType: request.responseHeaders?.["content-type"] ?? "",
+              ...(request.responseBody === undefined ? {} : { text: request.responseBody }),
+            },
+            redirectURL: "",
+            headersSize: -1,
+            bodySize: request.responseBody?.length ?? 0,
+          },
+          cache: {},
+          timings: { send: 0, wait: 0, receive: 0 },
+        }));
+        const bytes = Buffer.from(JSON.stringify({
+          log: {
+            version: "1.2",
+            creator: { name: "moat-browser", version: "0.1.0" },
+            entries,
+          },
+        }, null, 2));
+        const r: BinaryFileResult = {
+          _tag: "BinaryFileResult",
+          base64: bytes.toString("base64"),
+          suggestedFilename: "network.har",
+          requestCount: entries.length,
         };
         return ok(r);
       }

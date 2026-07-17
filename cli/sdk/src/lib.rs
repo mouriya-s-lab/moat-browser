@@ -320,6 +320,30 @@ fn prepare_command(
             });
             obj.remove("path");
         }
+        Some("trace_stop") => {
+            binary_output = Some(BinaryOutput {
+                requested_path: obj.get("path").and_then(|value| value.as_str()).map(String::from),
+                default_directory: "moat-traces".into(),
+                default_filename: "trace.zip".into(),
+            });
+            obj.remove("path");
+        }
+        Some("profiler_stop") => {
+            binary_output = Some(BinaryOutput {
+                requested_path: obj.get("path").and_then(|value| value.as_str()).map(String::from),
+                default_directory: "moat-profiles".into(),
+                default_filename: "profile.json".into(),
+            });
+            obj.remove("path");
+        }
+        Some("har_stop") => {
+            binary_output = Some(BinaryOutput {
+                requested_path: obj.get("path").and_then(|value| value.as_str()).map(String::from),
+                default_directory: "moat-har".into(),
+                default_filename: "network.har".into(),
+            });
+            obj.remove("path");
+        }
         _ => {}
     }
 
