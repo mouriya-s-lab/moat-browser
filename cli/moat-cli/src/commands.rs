@@ -2174,7 +2174,11 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             let abort = rest.contains(&"--abort");
             let body_idx = rest.iter().position(|&s| s == "--body");
             let body = body_idx.and_then(|i| rest.get(i + 1).copied());
-            Ok(json!({ "id": id, "action": "route", "url": url, "abort": abort, "body": body }))
+            let mut cmd = json!({ "id": id, "action": "route", "url": url, "abort": abort });
+            if let Some(body) = body {
+                cmd["body"] = json!(body);
+            }
+            Ok(cmd)
         }
         Some("unroute") => {
             let mut cmd = json!({ "id": id, "action": "unroute" });

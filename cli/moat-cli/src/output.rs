@@ -471,6 +471,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 let label = match action {
                     Some("cookies_clear") => "Cookies cleared",
                     Some("console") => "Console log cleared",
+                    Some("errors") => "Page error log cleared",
                     _ => "Request log cleared",
                 };
                 println!("{} {}", color::success_indicator(), label);

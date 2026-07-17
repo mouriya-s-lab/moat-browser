@@ -1,5 +1,5 @@
-import { chromium } from "patchright";
-import type { Browser, BrowserContext, Locator, Page } from "patchright";
+import { chromium, devices } from "patchright";
+import type { Browser, BrowserContext, Locator, Page, Request } from "patchright";
 import type {
   BrowserCommand,
   CommandResultData,
@@ -24,6 +24,13 @@ import type {
   BoundingBoxResult,
   ElementStylesResult,
   StorageResult,
+  ConsoleResult,
+  PageErrorsResult,
+  ClearedResult,
+  NetworkRequestEntry,
+  NetworkRequestsResult,
+  NetworkRequestDetailResult,
+  BinaryFileResult,
   BooleanResult,
   BatchResult,
   BatchResultEntry,
@@ -61,6 +68,87 @@ export async function connectCDP(cdpUrl: string): Promise<CdpConnection> {
 // ─── Tab tracking (per-session) ───
 
 const sessionTabIndex = new Map<string, number>();
+
+type SessionRuntimeState = {
+  readonly observedPages: WeakSet<Page>;
+  readonly consoleMessages: Array<{ readonly type: string; readonly text: string }>;
+  readonly pageErrors: Array<{ readonly message: string }>;
+  readonly requestIds: WeakMap<Request, string>;
+  readonly requests: Map<string, NetworkRequestEntry>;
+  nextRequestId: number;
+};
+
+const sessionRuntimeState = new Map<string, SessionRuntimeState>();
+
+function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
+  const existing = sessionRuntimeState.get(sessionId);
+  if (existing) return existing;
+  const created: SessionRuntimeState = {
+    observedPages: new WeakSet<Page>(),
+    consoleMessages: [],
+    pageErrors: [],
+    requestIds: new WeakMap<Request, string>(),
+    requests: new Map<string, NetworkRequestEntry>(),
+    nextRequestId: 1,
+  };
+  sessionRuntimeState.set(sessionId, created);
+  return created;
+}
+
+function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState {
+  const state = getSessionRuntimeState(sessionId);
+  if (state.observedPages.has(page)) return state;
+  state.observedPages.add(page);
+
+  page.on("console", (message) => {
+    state.consoleMessages.push({ type: message.type(), text: message.text() });
+  });
+  page.on("pageerror", (error) => {
+    state.pageErrors.push({ message: error.message });
+  });
+  page.on("request", (request) => {
+    const requestId = String(state.nextRequestId++);
+    state.requestIds.set(request, requestId);
+    const postData = request.postData();
+    state.requests.set(requestId, {
+      requestId,
+      url: request.url(),
+      method: request.method(),
+      resourceType: request.resourceType(),
+      requestHeaders: request.headers(),
+      ...(postData !== null ? { postData } : {}),
+    });
+  });
+  page.on("response", (response) => {
+    const requestId = state.requestIds.get(response.request());
+    if (!requestId) return;
+    const current = state.requests.get(requestId);
+    if (!current) return;
+    state.requests.set(requestId, {
+      ...current,
+      status: response.status(),
+      responseHeaders: response.headers(),
+    });
+    response.text().then((responseBody) => {
+      const latest = state.requests.get(requestId);
+      if (latest) state.requests.set(requestId, { ...latest, responseBody });
+    }).catch(() => {});
+  });
+  return state;
+}
+
+export function clearSessionRuntimeState(sessionId: string): void {
+  sessionRuntimeState.delete(sessionId);
+  sessionTabIndex.delete(sessionId);
+}
+
+function statusMatches(actual: number | undefined, expected: string): boolean {
+  if (actual === undefined) return false;
+  if (/^\dxx$/.test(expected)) return Math.floor(actual / 100) === Number(expected[0]);
+  const range = /^(\d{3})-(\d{3})$/.exec(expected);
+  if (range) return actual >= Number(range[1]) && actual <= Number(range[2]);
+  return actual === Number(expected);
+}
 
 // ─── Locator subaction type ───
 
@@ -256,6 +344,7 @@ export async function executeCommand(
 ): Promise<Result<CommandResultData, ControllerError>> {
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
+  const runtimeState = observePageRuntime(sessionId, page);
 
   try {
     switch (command.action) {
@@ -699,6 +788,29 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
       }
 
+      case "device": {
+        const descriptor = devices[command.device];
+        if (!descriptor) {
+          return err({ _tag: "CommandFailed", message: `Unknown device: ${command.device}` });
+        }
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Emulation.setDeviceMetricsOverride", {
+          width: descriptor.viewport.width,
+          height: descriptor.viewport.height,
+          deviceScaleFactor: descriptor.deviceScaleFactor,
+          mobile: descriptor.isMobile,
+        });
+        await cdp.send("Emulation.setTouchEmulationEnabled", {
+          enabled: descriptor.hasTouch,
+        });
+        await cdp.send("Network.setUserAgentOverride", {
+          userAgent: descriptor.userAgent,
+        });
+        await cdp.detach();
+        await page.setViewportSize(descriptor.viewport);
+        return ok({ _tag: "VoidResult" } as const);
+      }
+
       case "geolocation":
         await context.setGeolocation({ latitude: command.latitude, longitude: command.longitude });
         return ok({ _tag: "VoidResult" } as const);
@@ -759,6 +871,68 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
       }
 
+      case "route":
+        await page.route(command.url, async (route) => {
+          if (command.abort) {
+            await route.abort();
+          } else if (command.body !== undefined) {
+            await route.fulfill({ body: command.body, contentType: "application/json" });
+          } else {
+            await route.continue();
+          }
+        });
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "unroute":
+        if (command.url !== undefined) {
+          await page.unroute(command.url);
+        } else {
+          await page.unrouteAll({ behavior: "wait" });
+        }
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "requests": {
+        if (command.clear) {
+          runtimeState.requests.clear();
+          const r: ClearedResult = { _tag: "ClearedResult", cleared: true };
+          return ok(r);
+        }
+        const types = command.type?.split(",").map((value) => value.trim());
+        const requests = [...runtimeState.requests.values()].filter((request) =>
+          (command.filter === undefined || request.url.includes(command.filter))
+          && (types === undefined || types.includes(request.resourceType))
+          && (command.method === undefined || request.method === command.method.toUpperCase())
+          && (command.status === undefined || statusMatches(request.status, command.status)),
+        );
+        const r: NetworkRequestsResult = { _tag: "NetworkRequestsResult", requests };
+        return ok(r);
+      }
+
+      case "request_detail": {
+        const request = runtimeState.requests.get(command.requestId);
+        if (!request) {
+          return err({ _tag: "CommandFailed", message: `Unknown request ID: ${command.requestId}` });
+        }
+        const r: NetworkRequestDetailResult = { _tag: "NetworkRequestDetailResult", request };
+        return ok(r);
+      }
+
+      case "highlight":
+        await page.locator(command.selector).highlight();
+        return ok({ _tag: "VoidResult" } as const);
+
+      case "window_new": {
+        const newPage = await context.newPage();
+        activeTabIndex = context.pages().indexOf(newPage);
+        sessionTabIndex.set(sessionId, activeTabIndex);
+        observePageRuntime(sessionId, newPage);
+        const r: TabResult = {
+          _tag: "TabResult",
+          tabs: await buildTabList(context, activeTabIndex),
+        };
+        return ok(r);
+      }
+
       case "nth": {
         const loc = page.locator(command.selector).nth(command.index);
         if (command.subaction === "click") {
@@ -774,8 +948,53 @@ export async function executeCommand(
       }
 
       case "upload":
-        await page.locator(command.selector).setInputFiles(command.files as string[]);
+        await page.locator(command.selector).setInputFiles(command.files.map((file) => ({
+          name: file.name,
+          mimeType: file.mimeType,
+          buffer: Buffer.from(file.base64, "base64"),
+        })));
         return ok({ _tag: "VoidResult" } as const);
+
+      case "download": {
+        const locator = resolveLocator(page, refStore, sessionId, command.ref, command.selector);
+        if (!locator) return err({ _tag: "ElementNotFound", selector: command.ref ?? command.selector });
+        const [download] = await Promise.all([
+          page.waitForEvent("download"),
+          locator.click(),
+        ]);
+        const stream = await download.createReadStream();
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        const r: BinaryFileResult = {
+          _tag: "BinaryFileResult",
+          base64: Buffer.concat(chunks).toString("base64"),
+          suggestedFilename: download.suggestedFilename(),
+        };
+        return ok(r);
+      }
+
+      case "waitfordownload": {
+        const download = await page.waitForEvent("download", { timeout: command.timeout });
+        const stream = await download.createReadStream();
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        const r: BinaryFileResult = {
+          _tag: "BinaryFileResult",
+          base64: Buffer.concat(chunks).toString("base64"),
+          suggestedFilename: download.suggestedFilename(),
+        };
+        return ok(r);
+      }
+
+      case "pdf": {
+        const bytes = await page.pdf();
+        const r: BinaryFileResult = {
+          _tag: "BinaryFileResult",
+          base64: bytes.toString("base64"),
+          suggestedFilename: "page.pdf",
+        };
+        return ok(r);
+      }
 
       case "cookies_set":
         await context.addCookies(command.cookies.map((cookie) => ({
@@ -805,13 +1024,31 @@ export async function executeCommand(
       case "mainframe":
         return ok({ _tag: "VoidResult" } as const);
 
-      case "console":
-        // Console log collection requires listener setup — follow-up
-        return ok({ _tag: "VoidResult" } as const);
+      case "console": {
+        if (command.clear) {
+          runtimeState.consoleMessages.splice(0);
+          const r: ClearedResult = { _tag: "ClearedResult", cleared: true };
+          return ok(r);
+        }
+        const r: ConsoleResult = {
+          _tag: "ConsoleResult",
+          messages: [...runtimeState.consoleMessages],
+        };
+        return ok(r);
+      }
 
-      case "errors":
-        // Error collection requires listener setup — follow-up
-        return ok({ _tag: "VoidResult" } as const);
+      case "errors": {
+        if (command.clear) {
+          runtimeState.pageErrors.splice(0);
+          const r: ClearedResult = { _tag: "ClearedResult", cleared: true };
+          return ok(r);
+        }
+        const r: PageErrorsResult = {
+          _tag: "PageErrorsResult",
+          errors: [...runtimeState.pageErrors],
+        };
+        return ok(r);
+      }
 
       default:
         return exhaustive(command);

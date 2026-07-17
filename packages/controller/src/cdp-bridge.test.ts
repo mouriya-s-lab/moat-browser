@@ -1,7 +1,8 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { Readable } from "node:stream";
 import type { BrowserContext, Locator, Page, Response } from "patchright";
 import type { BrowserCommand, CookieEntry } from "@moat-browser/types";
-import { executeCommand, type Result } from "./cdp-bridge.js";
+import { clearSessionRuntimeState, executeCommand, type Result } from "./cdp-bridge.js";
 import type { RefStore } from "./ref-store.js";
 import type { ControllerError, CommandResultData } from "@moat-browser/types";
 
@@ -15,6 +16,8 @@ function mockLocator(overrides?: Partial<Locator>): Locator {
     check: mock(() => Promise.resolve()),
     uncheck: mock(() => Promise.resolve()),
     hover: mock(() => Promise.resolve()),
+    highlight: mock(() => Promise.resolve()),
+    setInputFiles: mock(() => Promise.resolve()),
     dragTo: mock(() => Promise.resolve()),
     count: mock(() => Promise.resolve(1)),
     boundingBox: mock(() => Promise.resolve({ x: 1, y: 2, width: 3, height: 4 })),
@@ -54,6 +57,7 @@ function mockPage(overrides?: Partial<Page>): Page {
     getByTestId: mock(() => loc),
     locator: mock(() => loc),
     screenshot: mock(() => Promise.resolve(Buffer.from("png-data"))),
+    pdf: mock(() => Promise.resolve(Buffer.from("pdf-data"))),
     evaluate: mock((_code: unknown) => Promise.resolve({ answer: 42 })),
     keyboard: {
       press: mock(() => Promise.resolve()),
@@ -71,13 +75,17 @@ function mockPage(overrides?: Partial<Page>): Page {
     setViewportSize: mock(() => Promise.resolve()),
     setExtraHTTPHeaders: mock(() => Promise.resolve()),
     emulateMedia: mock(() => Promise.resolve()),
+    route: mock(() => Promise.resolve()),
+    unroute: mock(() => Promise.resolve()),
+    unrouteAll: mock(() => Promise.resolve()),
+    on: mock(function (this: Page) { return this; }),
     ariaSnapshot: mock(() => Promise.resolve('- heading "Test"\n- button "Click me"')),
     close: mock(() => Promise.resolve()),
     ...overrides,
   } as unknown as Page;
 }
 
-function mockContext(pages: Page[]): BrowserContext {
+function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): BrowserContext {
   return {
     pages: () => pages,
     newPage: mock(async () => {
@@ -108,6 +116,7 @@ function mockContext(pages: Page[]): BrowserContext {
       send: mock(() => Promise.resolve()),
       detach: mock(() => Promise.resolve()),
     })),
+    ...overrides,
   } as unknown as BrowserContext;
 }
 
@@ -145,6 +154,7 @@ describe("cdp-bridge", () => {
   let refStore: RefStore;
 
   beforeEach(() => {
+    clearSessionRuntimeState(SESSION);
     page = mockPage();
     ctx = mockContext([page]);
     refStore = mockRefStore();
@@ -424,6 +434,41 @@ describe("cdp-bridge", () => {
       expect(ctx.newCDPSession).toHaveBeenCalledWith(page);
     });
 
+    it("device applies metrics, touch, user agent, and viewport", async () => {
+      const send = mock(() => Promise.resolve());
+      const detach = mock(() => Promise.resolve());
+      ctx = mockContext([page], {
+        newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
+      });
+
+      const data = assertOk(await executeCommand(ctx, {
+        action: "device",
+        device: "iPhone 13",
+      }, refStore, SESSION));
+
+      expect(data._tag).toBe("VoidResult");
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(send.mock.calls[0][0]).toBe("Emulation.setDeviceMetricsOverride");
+      expect(send.mock.calls[1]).toEqual(["Emulation.setTouchEmulationEnabled", { enabled: true }]);
+      expect(send.mock.calls[2][0]).toBe("Network.setUserAgentOverride");
+      expect(page.setViewportSize).toHaveBeenCalledWith({ width: 390, height: 664 });
+      expect(detach).toHaveBeenCalledTimes(1);
+    });
+
+    it("device rejects an unknown descriptor without changing the page", async () => {
+      const error = assertErr(await executeCommand(ctx, {
+        action: "device",
+        device: "Definitely Not A Device",
+      }, refStore, SESSION));
+
+      expect(error).toEqual({
+        _tag: "CommandFailed",
+        message: "Unknown device: Definitely Not A Device",
+      });
+      expect(ctx.newCDPSession).not.toHaveBeenCalled();
+      expect(page.setViewportSize).not.toHaveBeenCalled();
+    });
+
     it("geolocation, offline, headers, credentials, and media update the browser", async () => {
       await executeCommand(ctx, { action: "geolocation", latitude: 35, longitude: 139 }, refStore, SESSION);
       await executeCommand(ctx, { action: "offline", offline: true }, refStore, SESSION);
@@ -476,6 +521,171 @@ describe("cdp-bridge", () => {
     });
   });
 
+  describe("network and runtime logs", () => {
+    it("route and unroute install and remove matching handlers", async () => {
+      await executeCommand(ctx, {
+        action: "route",
+        url: "**/api/*",
+        abort: true,
+      }, refStore, SESSION);
+      await executeCommand(ctx, { action: "unroute", url: "**/api/*" }, refStore, SESSION);
+      await executeCommand(ctx, { action: "unroute" }, refStore, SESSION);
+      expect(page.route).toHaveBeenCalledTimes(1);
+      expect(page.unroute).toHaveBeenCalledWith("**/api/*");
+      expect(page.unrouteAll).toHaveBeenCalledWith({ behavior: "wait" });
+    });
+
+    it("console and page error commands return observed events and clear them", async () => {
+      const handlers = new Map<string, (value: unknown) => void>();
+      page = mockPage({
+        on: mock((event: string, handler: (value: unknown) => void) => {
+          handlers.set(event, handler);
+          return page;
+        }) as Page["on"],
+      });
+      ctx = mockContext([page]);
+      await executeCommand(ctx, { action: "reload" }, refStore, SESSION);
+      handlers.get("console")?.({ type: () => "log", text: () => "hello" });
+      handlers.get("pageerror")?.(new Error("broken"));
+
+      const consoleData = assertOk(await executeCommand(ctx, { action: "console" }, refStore, SESSION));
+      const errorData = assertOk(await executeCommand(ctx, { action: "errors" }, refStore, SESSION));
+      expect(consoleData).toEqual({ _tag: "ConsoleResult", messages: [{ type: "log", text: "hello" }] });
+      expect(errorData).toEqual({ _tag: "PageErrorsResult", errors: [{ message: "broken" }] });
+
+      expect(assertOk(await executeCommand(ctx, { action: "console", clear: true }, refStore, SESSION)))
+        .toEqual({ _tag: "ClearedResult", cleared: true });
+      expect(assertOk(await executeCommand(ctx, { action: "errors", clear: true }, refStore, SESSION)))
+        .toEqual({ _tag: "ClearedResult", cleared: true });
+    });
+
+    it("network requests returns observed request metadata", async () => {
+      const handlers = new Map<string, (value: unknown) => void>();
+      page = mockPage({
+        on: mock((event: string, handler: (value: unknown) => void) => {
+          handlers.set(event, handler);
+          return page;
+        }) as Page["on"],
+      });
+      ctx = mockContext([page]);
+      await executeCommand(ctx, { action: "reload" }, refStore, SESSION);
+      const request = {
+        url: () => "https://example.com/api/items",
+        method: () => "GET",
+        resourceType: () => "fetch",
+        headers: () => ({ accept: "application/json" }),
+        postData: () => null,
+      };
+      handlers.get("request")?.(request);
+      const data = assertOk(await executeCommand(ctx, {
+        action: "requests",
+        clear: false,
+        filter: "/api/",
+        type: "fetch",
+        method: "GET",
+      }, refStore, SESSION));
+      expect(data._tag).toBe("NetworkRequestsResult");
+      if (data._tag === "NetworkRequestsResult") {
+        expect(data.requests).toHaveLength(1);
+        expect(data.requests[0].url).toBe("https://example.com/api/items");
+      }
+    });
+
+    it("highlight invokes the locator highlight effect", async () => {
+      const locator = page.locator("#button");
+      const data = assertOk(await executeCommand(ctx, {
+        action: "highlight",
+        selector: "#button",
+      }, refStore, SESSION));
+      expect(data._tag).toBe("VoidResult");
+      expect(locator.highlight).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("file transfer", () => {
+    it("upload decodes file content and preserves name and MIME type", async () => {
+      const setInputFiles = mock(() => Promise.resolve());
+      page = mockPage({ locator: mock(() => mockLocator({ setInputFiles })) });
+      ctx = mockContext([page]);
+
+      const data = assertOk(await executeCommand(ctx, {
+        action: "upload",
+        selector: "input[type=file]",
+        files: [{
+          name: "audit.txt",
+          mimeType: "text/plain",
+          base64: Buffer.from("uploaded bytes").toString("base64"),
+        }],
+      }, refStore, SESSION));
+
+      expect(data._tag).toBe("VoidResult");
+      expect(setInputFiles).toHaveBeenCalledTimes(1);
+      const [files] = setInputFiles.mock.calls[0];
+      expect(files).toHaveLength(1);
+      expect(files[0].name).toBe("audit.txt");
+      expect(files[0].mimeType).toBe("text/plain");
+      expect(Buffer.from(files[0].buffer).toString()).toBe("uploaded bytes");
+    });
+
+    it("download clicks the target and returns streamed bytes", async () => {
+      const click = mock(() => Promise.resolve());
+      const locator = mockLocator({ click });
+      const download = {
+        createReadStream: mock(() => Promise.resolve(Readable.from([Buffer.from("downloaded bytes")]))),
+        suggestedFilename: mock(() => "report.txt"),
+      };
+      page = mockPage({
+        locator: mock(() => locator),
+        waitForEvent: mock(() => Promise.resolve(download)) as Page["waitForEvent"],
+      });
+      ctx = mockContext([page]);
+
+      const data = assertOk(await executeCommand(ctx, {
+        action: "download",
+        selector: "#download",
+      }, refStore, SESSION));
+
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(data).toEqual({
+        _tag: "BinaryFileResult",
+        base64: Buffer.from("downloaded bytes").toString("base64"),
+        suggestedFilename: "report.txt",
+      });
+    });
+
+    it("wait for download forwards timeout and returns streamed bytes", async () => {
+      const download = {
+        createReadStream: mock(() => Promise.resolve(Readable.from([Buffer.from("event bytes")]))),
+        suggestedFilename: mock(() => "event.bin"),
+      };
+      const waitForEvent = mock(() => Promise.resolve(download));
+      page = mockPage({ waitForEvent: waitForEvent as Page["waitForEvent"] });
+      ctx = mockContext([page]);
+
+      const data = assertOk(await executeCommand(ctx, {
+        action: "waitfordownload",
+        timeout: 1234,
+      }, refStore, SESSION));
+
+      expect(waitForEvent).toHaveBeenCalledWith("download", { timeout: 1234 });
+      expect(data).toEqual({
+        _tag: "BinaryFileResult",
+        base64: Buffer.from("event bytes").toString("base64"),
+        suggestedFilename: "event.bin",
+      });
+    });
+
+    it("pdf returns the generated document bytes", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "pdf" }, refStore, SESSION));
+      expect(page.pdf).toHaveBeenCalledTimes(1);
+      expect(data).toEqual({
+        _tag: "BinaryFileResult",
+        base64: Buffer.from("pdf-data").toString("base64"),
+        suggestedFilename: "page.pdf",
+      });
+    });
+  });
+
   // ─── Tab actions → TabResult ───
 
   describe("tab management", () => {
@@ -491,6 +701,32 @@ describe("cdp-bridge", () => {
     it("tab_new returns TabResult", async () => {
       const r = await executeCommand(ctx, { action: "tab_new" }, refStore, SESSION);
       expect(assertOk(r)._tag).toBe("TabResult");
+    });
+
+    it("window_new creates and activates the new page", async () => {
+      const pages = [mockPage({ url: mock(() => "https://first.example") })];
+      const newPage = mockPage({
+        url: mock(() => "about:blank"),
+        title: mock(() => Promise.resolve("")),
+      });
+      const multiCtx = mockContext(pages, {
+        newPage: mock(async () => {
+          pages.push(newPage);
+          return newPage;
+        }),
+      });
+
+      const data = assertOk(await executeCommand(multiCtx, { action: "window_new" }, refStore, SESSION));
+
+      expect(data._tag).toBe("TabResult");
+      if (data._tag === "TabResult") {
+        expect(data.tabs).toHaveLength(2);
+        expect(data.tabs[0].active).toBe(false);
+        expect(data.tabs[1]).toMatchObject({ index: 1, url: "about:blank", active: true });
+      }
+      const next = assertOk(await executeCommand(multiCtx, { action: "tab_list" }, refStore, SESSION));
+      expect(next._tag).toBe("TabResult");
+      if (next._tag === "TabResult") expect(next.tabs[1].active).toBe(true);
     });
 
     it("tab_switch returns TabResult", async () => {

@@ -28,6 +28,13 @@ struct ScreenshotOutput {
     inline_base64: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BinaryOutput {
+    requested_path: Option<String>,
+    default_directory: String,
+    default_filename: String,
+}
+
 impl MoatClient {
     /// Init: register a new session (creates container + CDP).
     /// Opens ws, sends Register, receives session ID, closes ws.
@@ -80,58 +87,7 @@ impl MoatClient {
 
     /// Send a command — opens a fresh ws, sends Command, receives response, closes ws.
     pub async fn command(&self, mut request: Value) -> Result<Response, SdkError> {
-        let mut screenshot_output: Option<ScreenshotOutput> = None;
-
-        // Strip "id" field (CLI artifact, not needed for WebSocket)
-        if let Some(obj) = request.as_object_mut() {
-            obj.remove("id");
-
-            // evaluate → eval name mapping
-            if obj.get("action").and_then(|v| v.as_str()) == Some("evaluate") {
-                obj.insert("action".into(), Value::String("eval".into()));
-                // script → code field mapping
-                if let Some(script) = obj.remove("script") {
-                    obj.insert("code".into(), script);
-                }
-            }
-
-            // @eN in selector → move to ref field (CLI puts @refs in selector,
-            // but Controller expects them in ref for refStore lookup)
-            if let Some(sel) = obj.get("selector").and_then(|v| v.as_str()).map(String::from) {
-                if sel.starts_with("@e") || sel.starts_with("@") {
-                    obj.remove("selector");
-                    obj.insert("ref".into(), Value::String(sel));
-                }
-            }
-
-            if obj.get("action").and_then(|v| v.as_str()) == Some("screenshot") {
-                screenshot_output = Some(ScreenshotOutput {
-                    requested_path: obj
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                    screenshot_dir: obj
-                        .get("screenshotDir")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                    format: obj
-                        .get("format")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("png")
-                        .to_string(),
-                    inline_base64: obj
-                        .get("inlineBase64")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                });
-
-                // These are local CLI/SDK output controls. The remote Controller only
-                // needs to capture pixels and return bytes over the wire.
-                obj.remove("path");
-                obj.remove("screenshotDir");
-                obj.remove("inlineBase64");
-            }
-        }
+        let (screenshot_output, binary_output) = prepare_command(&mut request)?;
 
         // close → deregister
         if request
@@ -175,6 +131,9 @@ impl MoatClient {
                 }
                 if let (Some(ref output), Some(ref mut d)) = (&screenshot_output, &mut data) {
                     materialize_screenshot_response(d, output)?;
+                }
+                if let (Some(ref output), Some(ref mut d)) = (&binary_output, &mut data) {
+                    materialize_binary_response(d, output)?;
                 }
                 Ok(Response {
                     success: true,
@@ -231,6 +190,184 @@ impl MoatClient {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+}
+
+fn prepare_command(
+    request: &mut Value,
+) -> Result<(Option<ScreenshotOutput>, Option<BinaryOutput>), SdkError> {
+    let mut screenshot_output = None;
+    let mut binary_output = None;
+    let Some(obj) = request.as_object_mut() else {
+        return Ok((screenshot_output, binary_output));
+    };
+
+    obj.remove("id");
+    if obj.get("action").and_then(|v| v.as_str()) == Some("evaluate") {
+        obj.insert("action".into(), Value::String("eval".into()));
+        if let Some(script) = obj.remove("script") {
+            obj.insert("code".into(), script);
+        }
+    }
+
+    if let Some(sel) = obj.get("selector").and_then(|v| v.as_str()).map(String::from) {
+        if sel.starts_with('@') {
+            obj.remove("selector");
+            obj.insert("ref".into(), Value::String(sel));
+        }
+    }
+
+    if obj.get("action").and_then(|v| v.as_str()) == Some("screenshot") {
+        screenshot_output = Some(ScreenshotOutput {
+            requested_path: obj.get("path").and_then(|v| v.as_str()).map(String::from),
+            screenshot_dir: obj
+                .get("screenshotDir")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            format: obj
+                .get("format")
+                .and_then(|v| v.as_str())
+                .unwrap_or("png")
+                .to_string(),
+            inline_base64: obj
+                .get("inlineBase64")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        });
+        obj.remove("path");
+        obj.remove("screenshotDir");
+        obj.remove("inlineBase64");
+    }
+
+    if obj.get("action").and_then(|v| v.as_str()) == Some("upload") {
+        let files = obj
+            .get("files")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| SdkError::CommandFailed {
+                error: "upload files must be an array".into(),
+                code: 1,
+            })?;
+        let payloads = files
+            .iter()
+            .map(|value| {
+                let path = value.as_str().ok_or_else(|| SdkError::CommandFailed {
+                    error: "upload file path must be a string".into(),
+                    code: 1,
+                })?;
+                let bytes = std::fs::read(path).map_err(|e| SdkError::CommandFailed {
+                    error: format!("read upload file {}: {}", path, e),
+                    code: 1,
+                })?;
+                let name = PathBuf::from(path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| SdkError::CommandFailed {
+                        error: format!("upload path has no file name: {}", path),
+                        code: 1,
+                    })?
+                    .to_string();
+                Ok(serde_json::json!({
+                    "name": name,
+                    "mimeType": mime_type_for_path(path),
+                    "base64": STANDARD.encode(bytes),
+                }))
+            })
+            .collect::<Result<Vec<Value>, SdkError>>()?;
+        obj.insert("files".into(), Value::Array(payloads));
+    }
+
+    match obj.get("action").and_then(|value| value.as_str()) {
+        Some("download") | Some("waitfordownload") => {
+            binary_output = Some(BinaryOutput {
+                requested_path: obj.get("path").and_then(|value| value.as_str()).map(String::from),
+                default_directory: "moat-downloads".into(),
+                default_filename: "download.bin".into(),
+            });
+            obj.remove("path");
+        }
+        Some("pdf") => {
+            binary_output = Some(BinaryOutput {
+                requested_path: obj.get("path").and_then(|value| value.as_str()).map(String::from),
+                default_directory: "moat-pdfs".into(),
+                default_filename: "page.pdf".into(),
+            });
+            obj.remove("path");
+        }
+        _ => {}
+    }
+
+    Ok((screenshot_output, binary_output))
+}
+
+fn mime_type_for_path(path: &str) -> &'static str {
+    match PathBuf::from(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("txt") => "text/plain",
+        Some("html") | Some("htm") => "text/html",
+        Some("json") => "application/json",
+        Some("csv") => "text/csv",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("pdf") => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+fn materialize_binary_response(
+    data: &mut Value,
+    output: &BinaryOutput,
+) -> Result<(), SdkError> {
+    let Some(obj) = data.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(base64_value) = obj.get("base64").and_then(|value| value.as_str()) else {
+        return Ok(());
+    };
+    let bytes = STANDARD
+        .decode(base64_value)
+        .map_err(|e| SdkError::CommandFailed {
+            error: format!("invalid file base64: {}", e),
+            code: 1,
+        })?;
+    let suggested = obj
+        .get("suggestedFilename")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&output.default_filename);
+    let path = match output.requested_path.as_deref() {
+        Some(requested) => {
+            let requested_path = PathBuf::from(requested);
+            if requested.ends_with(std::path::MAIN_SEPARATOR) || requested_path.is_dir() {
+                requested_path.join(suggested)
+            } else {
+                requested_path
+            }
+        }
+        None => std::env::temp_dir()
+            .join(&output.default_directory)
+            .join(suggested),
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| SdkError::CommandFailed {
+                error: format!("create output directory {}: {}", parent.display(), e),
+                code: 1,
+            })?;
+        }
+    }
+    std::fs::write(&path, &bytes).map_err(|e| SdkError::CommandFailed {
+        error: format!("write output {}: {}", path.display(), e),
+        code: 1,
+    })?;
+    obj.insert(
+        "path".into(),
+        Value::String(path.to_string_lossy().to_string()),
+    );
+    obj.insert("size".into(), Value::Number(bytes.len().into()));
+    obj.remove("base64");
+    Ok(())
 }
 
 fn materialize_screenshot_response(
@@ -330,6 +467,109 @@ async fn send_json<T: serde::Serialize>(ws: &mut WsStream, msg: &T) -> Result<()
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "moat-sdk-test-{}-{}",
+            name,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn prepare_upload_embeds_bytes_filename_and_mime_type() {
+        let dir = test_dir("upload");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.json");
+        std::fs::write(&path, br#"{"ok":true}"#).unwrap();
+        let mut request = json!({
+            "id": "cli-id",
+            "action": "upload",
+            "selector": "input[type=file]",
+            "files": [path.to_string_lossy()]
+        });
+
+        let outputs = prepare_command(&mut request).unwrap();
+
+        assert_eq!(outputs, (None, None));
+        assert!(request.get("id").is_none());
+        assert_eq!(request["files"][0]["name"], "audit.json");
+        assert_eq!(request["files"][0]["mimeType"], "application/json");
+        assert_eq!(
+            request["files"][0]["base64"],
+            STANDARD.encode(br#"{"ok":true}"#)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepare_download_keeps_local_path_out_of_wire_request() {
+        let mut request = json!({
+            "action": "download",
+            "selector": "#download",
+            "path": "artifacts/report.txt"
+        });
+
+        let (_, output) = prepare_command(&mut request).unwrap();
+
+        assert!(request.get("path").is_none());
+        assert_eq!(
+            output,
+            Some(BinaryOutput {
+                requested_path: Some("artifacts/report.txt".into()),
+                default_directory: "moat-downloads".into(),
+                default_filename: "download.bin".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn materialize_binary_writes_download_to_requested_path() {
+        let dir = test_dir("download");
+        let path = dir.join("report.txt");
+        let mut data = json!({
+            "base64": STANDARD.encode(b"downloaded bytes"),
+            "suggestedFilename": "server-name.txt"
+        });
+        let output = BinaryOutput {
+            requested_path: Some(path.to_string_lossy().to_string()),
+            default_directory: "moat-downloads".into(),
+            default_filename: "download.bin".into(),
+        };
+
+        materialize_binary_response(&mut data, &output).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"downloaded bytes");
+        assert_eq!(data["path"], path.to_string_lossy().to_string());
+        assert_eq!(data["size"], 16);
+        assert!(data.get("base64").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn materialize_binary_uses_suggested_filename_for_requested_directory() {
+        let dir = test_dir("pdf-directory");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut data = json!({
+            "base64": STANDARD.encode(b"pdf bytes"),
+            "suggestedFilename": "page.pdf"
+        });
+        let output = BinaryOutput {
+            requested_path: Some(format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR)),
+            default_directory: "moat-pdfs".into(),
+            default_filename: "page.pdf".into(),
+        };
+
+        materialize_binary_response(&mut data, &output).unwrap();
+
+        let path = dir.join("page.pdf");
+        assert_eq!(std::fs::read(&path).unwrap(), b"pdf bytes");
+        assert_eq!(data["path"], path.to_string_lossy().to_string());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn materialize_screenshot_writes_requested_path_and_removes_base64_by_default() {
