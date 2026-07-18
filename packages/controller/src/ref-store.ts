@@ -7,6 +7,8 @@ export type RefStore = {
   update(sessionId: string, refs: Map<string, Locator>): void;
   /** 命令执行时调用，根据 @eN 返回 Locator */
   resolve(sessionId: string, ref: string): Locator | undefined;
+  /** screenshot annotation 时枚举当前 session 的引用 */
+  entries(sessionId: string): ReadonlyArray<readonly [string, Locator]>;
 };
 
 export function createRefStore(): RefStore {
@@ -19,6 +21,10 @@ export function createRefStore(): RefStore {
 
     resolve(sessionId, ref) {
       return store.get(sessionId)?.get(ref);
+    },
+
+    entries(sessionId) {
+      return Array.from(store.get(sessionId)?.entries() ?? []);
     },
   };
 }

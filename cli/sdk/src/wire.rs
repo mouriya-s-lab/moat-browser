@@ -53,10 +53,7 @@ pub enum WireResponse {
         success: bool,
     },
     #[serde(rename = "error")]
-    Error {
-        error: String,
-        code: u32,
-    },
+    Error { error: String, code: u32 },
 }
 
 // ─── Response (agent-browser compatible format returned to CLI) ───

@@ -64,6 +64,12 @@ export type ScreenshotResult = {
   readonly path?: string;
   readonly size?: number;
   readonly format: "png" | "jpeg";
+  readonly annotations?: ReadonlyArray<{
+    readonly number: number;
+    readonly ref: string;
+    readonly role: string;
+    readonly name: string;
+  }>;
 };
 
 export type EvalResult = {
@@ -104,6 +110,172 @@ export type GetHtmlResult = {
   readonly html: string;
 };
 
+export type PageUrlResult = {
+  readonly _tag: "PageUrlResult";
+  readonly url: string;
+};
+
+export type PageTitleResult = {
+  readonly _tag: "PageTitleResult";
+  readonly title: string;
+};
+
+export type CountResult = {
+  readonly _tag: "CountResult";
+  readonly count: number;
+};
+
+export type BoundingBoxResult = {
+  readonly _tag: "BoundingBoxResult";
+  readonly box: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  } | null;
+};
+
+export type ElementStylesResult = {
+  readonly _tag: "ElementStylesResult";
+  readonly elements: ReadonlyArray<{
+    readonly tag: string;
+    readonly text: string;
+    readonly box: {
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+    } | null;
+    readonly styles: {
+      readonly fontSize: string;
+      readonly fontWeight: string;
+      readonly fontFamily: string;
+      readonly color: string;
+      readonly backgroundColor: string;
+      readonly borderRadius: string;
+    };
+  }>;
+};
+
+export type StorageResult = {
+  readonly _tag: "StorageResult";
+  readonly data?: Readonly<Record<string, string>>;
+  readonly key?: string;
+  readonly value?: string | null;
+};
+
+export type ConsoleResult = {
+  readonly _tag: "ConsoleResult";
+  readonly messages: ReadonlyArray<{
+    readonly type: string;
+    readonly text: string;
+  }>;
+};
+
+export type PageErrorsResult = {
+  readonly _tag: "PageErrorsResult";
+  readonly errors: ReadonlyArray<{ readonly message: string }>;
+};
+
+export type ClearedResult = {
+  readonly _tag: "ClearedResult";
+  readonly cleared: true;
+};
+
+export type NetworkRequestEntry = {
+  readonly requestId: string;
+  readonly url: string;
+  readonly method: string;
+  readonly resourceType: string;
+  readonly requestHeaders: Readonly<Record<string, string>>;
+  readonly postData?: string;
+  readonly status?: number;
+  readonly responseHeaders?: Readonly<Record<string, string>>;
+  readonly responseBody?: string;
+};
+
+export type NetworkRequestsResult = {
+  readonly _tag: "NetworkRequestsResult";
+  readonly requests: ReadonlyArray<NetworkRequestEntry>;
+};
+
+export type NetworkRequestDetailResult = {
+  readonly _tag: "NetworkRequestDetailResult";
+  readonly request: NetworkRequestEntry;
+};
+
+export type BinaryFileResult = {
+  readonly _tag: "BinaryFileResult";
+  readonly base64: string;
+  readonly suggestedFilename?: string;
+  readonly eventCount?: number;
+  readonly requestCount?: number;
+};
+
+export type StartedResult = {
+  readonly _tag: "StartedResult";
+  readonly started: true;
+};
+
+export type ClipboardResult = {
+  readonly _tag: "ClipboardResult";
+  readonly text?: string;
+  readonly written?: string;
+  readonly copied?: true;
+  readonly pasted?: true;
+};
+
+export type DialogResult = {
+  readonly _tag: "DialogResult";
+  readonly hasDialog?: boolean;
+  readonly type?: string;
+  readonly message?: string;
+  readonly defaultPrompt?: string;
+  readonly handled?: true;
+  readonly accepted?: boolean;
+};
+
+export type FrameResult = {
+  readonly _tag: "FrameResult";
+  readonly frame: string;
+};
+
+export type CdpUrlResult = {
+  readonly _tag: "CdpUrlResult";
+  readonly cdpUrl: string;
+};
+
+export type TouchResult = {
+  readonly _tag: "TouchResult";
+  readonly tapped?: string;
+  readonly swiped?: "up" | "down" | "left" | "right";
+};
+
+export type BrowserStorageState = {
+  readonly cookies: ReadonlyArray<{
+    readonly name: string;
+    readonly value: string;
+    readonly domain: string;
+    readonly path: string;
+    readonly expires: number;
+    readonly httpOnly: boolean;
+    readonly secure: boolean;
+    readonly sameSite: "Strict" | "Lax" | "None";
+  }>;
+  readonly origins: ReadonlyArray<{
+    readonly origin: string;
+    readonly localStorage: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+    readonly sessionStorage: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  }>;
+};
+
+export type StateLoadResult = {
+  readonly _tag: "StateLoadResult";
+  readonly loaded: true;
+  readonly cookies: number;
+  readonly origins: number;
+};
+
 export type BooleanResult = {
   readonly _tag: "BooleanResult";
   readonly visible?: boolean;
@@ -135,6 +307,25 @@ export type CommandResultData =
   | GetTextResult
   | GetValueResult
   | GetHtmlResult
+  | PageUrlResult
+  | PageTitleResult
+  | CountResult
+  | BoundingBoxResult
+  | ElementStylesResult
+  | StorageResult
+  | ConsoleResult
+  | PageErrorsResult
+  | ClearedResult
+  | NetworkRequestsResult
+  | NetworkRequestDetailResult
+  | BinaryFileResult
+  | ClipboardResult
+  | DialogResult
+  | FrameResult
+  | CdpUrlResult
+  | TouchResult
+  | StateLoadResult
+  | StartedResult
   | BooleanResult
   | BatchResult;
 
@@ -189,7 +380,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
 
 export type BrowserCommand =
   // 导航
-  | { readonly action: "navigate"; readonly url: string }
+  | { readonly action: "navigate"; readonly url: string; readonly waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" | "none"; readonly headers?: Readonly<Record<string, string>> }
   | { readonly action: "back" }
   | { readonly action: "forward" }
   | { readonly action: "reload" }
@@ -254,8 +445,8 @@ export type BrowserCommand =
   | { readonly action: "hover"; readonly ref?: string; readonly selector?: string }
 
   // 页面信息
-  | { readonly action: "snapshot" }
-  | { readonly action: "screenshot"; readonly format?: "png" | "jpeg"; readonly quality?: number }
+  | { readonly action: "snapshot"; readonly selector?: string; readonly ref?: string; readonly interactive?: boolean; readonly compact?: boolean; readonly maxDepth?: number }
+  | { readonly action: "screenshot"; readonly format?: "png" | "jpeg"; readonly quality?: number; readonly selector?: string; readonly ref?: string; readonly fullPage?: boolean; readonly annotate?: boolean }
   | { readonly action: "eval"; readonly code: string }
 
   // 键盘
@@ -280,6 +471,11 @@ export type BrowserCommand =
   | { readonly action: "innerhtml"; readonly selector: string }
   | { readonly action: "inputvalue"; readonly selector: string }
   | { readonly action: "getattribute"; readonly selector: string; readonly attribute: string }
+  | { readonly action: "url" }
+  | { readonly action: "title" }
+  | { readonly action: "count"; readonly selector: string }
+  | { readonly action: "boundingbox"; readonly selector: string }
+  | { readonly action: "styles"; readonly selector: string }
 
   // 元素状态查询 (is)
   | { readonly action: "isvisible"; readonly selector: string }
@@ -301,10 +497,62 @@ export type BrowserCommand =
   | { readonly action: "keydown"; readonly key: string }
   | { readonly action: "keyup"; readonly key: string }
   | { readonly action: "scrollintoview"; readonly selector: string }
+  | { readonly action: "drag"; readonly source: string; readonly target: string }
+  | { readonly action: "mousemove"; readonly x: number; readonly y: number }
+  | { readonly action: "mousedown"; readonly button: "left" | "right" | "middle" }
+  | { readonly action: "mouseup"; readonly button: "left" | "right" | "middle" }
+  | { readonly action: "wheel"; readonly deltaX: number; readonly deltaY: number }
+  | { readonly action: "viewport"; readonly width: number; readonly height: number; readonly deviceScaleFactor?: number }
+  | { readonly action: "device"; readonly device: string }
+  | { readonly action: "geolocation"; readonly latitude: number; readonly longitude: number }
+  | { readonly action: "offline"; readonly offline: boolean }
+  | { readonly action: "headers"; readonly headers: Readonly<Record<string, string>> }
+  | { readonly action: "credentials"; readonly username: string; readonly password: string }
+  | { readonly action: "emulatemedia"; readonly colorScheme: "dark" | "light" | "no-preference"; readonly reducedMotion: "reduce" | "no-preference" }
+  | { readonly action: "storage_get"; readonly type: "local" | "session"; readonly key?: string }
+  | { readonly action: "storage_set"; readonly type: "local" | "session"; readonly key: string; readonly value: string }
+  | { readonly action: "storage_clear"; readonly type: "local" | "session" }
+  | { readonly action: "route"; readonly url: string; readonly abort: boolean; readonly body?: string }
+  | { readonly action: "unroute"; readonly url?: string }
+  | { readonly action: "requests"; readonly clear: boolean; readonly filter?: string; readonly type?: string; readonly method?: string; readonly status?: string }
+  | { readonly action: "request_detail"; readonly requestId: string }
+  | { readonly action: "highlight"; readonly selector: string }
+  | { readonly action: "window_new" }
   | { readonly action: "nth"; readonly selector: string; readonly index: number; readonly subaction?: string; readonly value?: string }
-  | { readonly action: "upload"; readonly selector: string; readonly files: ReadonlyArray<string> }
-  | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{ readonly name: string; readonly value: string; readonly url?: string; readonly domain?: string; readonly path?: string }> }
-  | { readonly action: "dialog"; readonly response: "accept" | "dismiss" | "status"; readonly text?: string }
+  | { readonly action: "upload"; readonly selector: string; readonly files: ReadonlyArray<{
+      readonly name: string;
+      readonly mimeType: string;
+      readonly base64: string;
+    }> }
+  | { readonly action: "download"; readonly ref?: string; readonly selector?: string }
+  | { readonly action: "waitfordownload"; readonly timeout?: number }
+  | { readonly action: "pdf" }
+  | { readonly action: "clipboard"; readonly operation: "read" | "write" | "copy" | "paste"; readonly text?: string }
+  | { readonly action: "tap"; readonly selector: string }
+  | { readonly action: "swipe"; readonly direction: "up" | "down" | "left" | "right"; readonly distance?: number }
+  | { readonly action: "cdp_url" }
+  | { readonly action: "inspect" }
+  | { readonly action: "device_list" }
+  | { readonly action: "state_save" }
+  | { readonly action: "state_load"; readonly state: BrowserStorageState }
+  | { readonly action: "trace_start" }
+  | { readonly action: "trace_stop" }
+  | { readonly action: "profiler_start"; readonly categories?: ReadonlyArray<string> }
+  | { readonly action: "profiler_stop" }
+  | { readonly action: "har_start" }
+  | { readonly action: "har_stop" }
+  | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{
+      readonly name: string;
+      readonly value: string;
+      readonly url?: string;
+      readonly domain?: string;
+      readonly path?: string;
+      readonly httpOnly?: boolean;
+      readonly secure?: boolean;
+      readonly sameSite?: "Strict" | "Lax" | "None";
+      readonly expires?: number;
+    }> }
+  | { readonly action: "dialog"; readonly response: "accept" | "dismiss" | "status"; readonly promptText?: string }
   | { readonly action: "frame"; readonly selector: string }
   | { readonly action: "mainframe" }
   | { readonly action: "console"; readonly clear?: boolean }
@@ -356,6 +604,8 @@ export type WireResponse =
 const browserCommandSchema = type({
   action: "'navigate'",
   url: "string",
+  "waitUntil?": "'load' | 'domcontentloaded' | 'networkidle' | 'commit' | 'none'",
+  "headers?": type("Record<string, string>"),
 })
   .or({ action: "'back'" })
   .or({ action: "'forward'" })
@@ -373,6 +623,12 @@ const browserCommandSchema = type({
     "value?": "string",
     "nth?": "number",
   })
+  .or({ action: "'trace_start'" })
+  .or({ action: "'trace_stop'" })
+  .or({ action: "'profiler_start'", "categories?": "string[]" })
+  .or({ action: "'profiler_stop'" })
+  .or({ action: "'har_start'" })
+  .or({ action: "'har_stop'" })
   .or({
     action: "'getbylabel'",
     label: "string",
@@ -415,11 +671,15 @@ const browserCommandSchema = type({
   .or({ action: "'fill'", "ref?": "string", "selector?": "string", value: "string" })
   .or({ action: "'type'", "ref?": "string", "selector?": "string", text: "string" })
   .or({ action: "'hover'", "ref?": "string", "selector?": "string" })
-  .or({ action: "'snapshot'" })
+  .or({ action: "'snapshot'", "selector?": "string", "ref?": "string", "interactive?": "boolean", "compact?": "boolean", "maxDepth?": "number.integer >= 0" })
   .or({
     action: "'screenshot'",
     "format?": "'png' | 'jpeg'",
     "quality?": "number",
+    "selector?": "string",
+    "ref?": "string",
+    "fullPage?": "boolean",
+    "annotate?": "boolean",
   })
   .or({ action: "'eval'", code: "string" })
   .or({ action: "'press'", key: "string" })
@@ -439,6 +699,11 @@ const browserCommandSchema = type({
   .or({ action: "'innerhtml'", selector: "string" })
   .or({ action: "'inputvalue'", selector: "string" })
   .or({ action: "'getattribute'", selector: "string", attribute: "string" })
+  .or({ action: "'url'" })
+  .or({ action: "'title'" })
+  .or({ action: "'count'", selector: "string" })
+  .or({ action: "'boundingbox'", selector: "string" })
+  .or({ action: "'styles'", selector: "string" })
   .or({ action: "'isvisible'", selector: "string" })
   .or({ action: "'isenabled'", selector: "string" })
   .or({ action: "'ischecked'", selector: "string" })
@@ -454,10 +719,71 @@ const browserCommandSchema = type({
   .or({ action: "'keydown'", key: "string" })
   .or({ action: "'keyup'", key: "string" })
   .or({ action: "'scrollintoview'", selector: "string" })
+  .or({ action: "'drag'", source: "string", target: "string" })
+  .or({ action: "'mousemove'", x: "number", y: "number" })
+  .or({ action: "'mousedown'", button: "'left' | 'right' | 'middle'" })
+  .or({ action: "'mouseup'", button: "'left' | 'right' | 'middle'" })
+  .or({ action: "'wheel'", deltaX: "number", deltaY: "number" })
+  .or({ action: "'viewport'", width: "number", height: "number", "deviceScaleFactor?": "number" })
+  .or({ action: "'device'", device: "string" })
+  .or({ action: "'geolocation'", latitude: "number", longitude: "number" })
+  .or({ action: "'offline'", offline: "boolean" })
+  .or({ action: "'headers'", headers: type("Record<string, string>") })
+  .or({ action: "'credentials'", username: "string", password: "string" })
+  .or({ action: "'emulatemedia'", colorScheme: "'dark' | 'light' | 'no-preference'", reducedMotion: "'reduce' | 'no-preference'" })
+  .or({ action: "'storage_get'", type: "'local' | 'session'", "key?": "string" })
+  .or({ action: "'storage_set'", type: "'local' | 'session'", key: "string", value: "string" })
+  .or({ action: "'storage_clear'", type: "'local' | 'session'" })
+  .or({ action: "'route'", url: "string", abort: "boolean", "body?": "string" })
+  .or({ action: "'unroute'", "url?": "string" })
+  .or({ action: "'requests'", clear: "boolean", "filter?": "string", "type?": "string", "method?": "string", "status?": "string" })
+  .or({ action: "'request_detail'", requestId: "string" })
+  .or({ action: "'highlight'", selector: "string" })
+  .or({ action: "'window_new'" })
   .or({ action: "'nth'", selector: "string", index: "number", "subaction?": "string", "value?": "string" })
-  .or({ action: "'upload'", selector: "string", files: "string[]" })
-  .or({ action: "'cookies_set'", cookies: type({ name: "string", value: "string", "url?": "string", "domain?": "string", "path?": "string" }).array() })
-  .or({ action: "'dialog'", response: "'accept' | 'dismiss' | 'status'", "text?": "string" })
+  .or({ action: "'upload'", selector: "string", files: type({ name: "string", mimeType: "string", base64: "string" }).array() })
+  .or({ action: "'download'", "ref?": "string", "selector?": "string" })
+  .or({ action: "'waitfordownload'", "timeout?": "number" })
+  .or({ action: "'pdf'" })
+  .or({ action: "'clipboard'", operation: "'read' | 'write' | 'copy' | 'paste'", "text?": "string" })
+  .or({ action: "'tap'", selector: "string" })
+  .or({ action: "'swipe'", direction: "'up' | 'down' | 'left' | 'right'", "distance?": "number" })
+  .or({ action: "'cdp_url'" })
+  .or({ action: "'inspect'" })
+  .or({ action: "'device_list'" })
+  .or({ action: "'state_save'" })
+  .or({
+    action: "'state_load'",
+    state: {
+      cookies: type({
+        name: "string",
+        value: "string",
+        domain: "string",
+        path: "string",
+        expires: "number",
+        httpOnly: "boolean",
+        secure: "boolean",
+        sameSite: "'Strict' | 'Lax' | 'None'",
+      }).array(),
+      origins: type({
+        origin: "string",
+        localStorage: type({ name: "string", value: "string" }).array(),
+        sessionStorage: type({ name: "string", value: "string" }).array(),
+      }).array(),
+    },
+  })
+  .or({ action: "'cookies_set'", cookies: type({
+    name: "string",
+    value: "string",
+    "url?": "string",
+    "domain?": "string",
+    "path?": "string",
+    "httpOnly?": "boolean",
+    "secure?": "boolean",
+    "sameSite?": "'Strict' | 'Lax' | 'None'",
+    "expires?": "number",
+  }).array() })
+  .or({ action: "'dialog'", response: "'accept' | 'dismiss' | 'status'", "promptText?": "string" })
   .or({ action: "'frame'", selector: "string" })
   .or({ action: "'mainframe'" })
   .or({ action: "'console'", "clear?": "boolean" })

@@ -15,7 +15,7 @@ import { type } from "arktype";
 import type { SessionRegistry } from "./session-registry.js";
 import type { ContainerManager } from "./container-manager.js";
 import type { RefStore } from "./ref-store.js";
-import { connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js";
+import { clearSessionRuntimeState, connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js";
 import type { ControllerConfig } from "./index.js";
 import path from "node:path";
 
@@ -346,6 +346,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     // Cleanup
     cdpCache.delete(sessionId);
+    clearSessionRuntimeState(sessionId);
     logSessionActivity({ _tag: "Deregister", sessionId });
 
     return { type: "deregister_result", sessionId, success: true };
@@ -368,6 +369,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
       // Cleanup CDP cache
       cdpCache.delete(sessionId);
+      clearSessionRuntimeState(sessionId);
     });
   }
 
@@ -382,5 +384,6 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
     containerManager.destroy(sessionId).catch(() => {});
     cdpCache.delete(sessionId);
+    clearSessionRuntimeState(sessionId);
   }
 }

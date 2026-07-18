@@ -132,8 +132,30 @@ fn format_stream_status_text(action: Option<&str>, data: &serde_json::Value) -> 
 
 pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &OutputOptions) {
     if opts.json {
+        let response_json = || {
+            let mut value = serde_json::to_value(resp).unwrap_or_default();
+            if !resp.success {
+                if let Some(obj) = value.as_object_mut() {
+                    let error = resp.error.as_deref().unwrap_or_default();
+                    let error_type = if error.contains("unsupported_in_moat") {
+                        "unsupported_in_moat"
+                    } else if error.contains("Session") {
+                        "session_error"
+                    } else if error.contains("Validation") || error.contains("discriminant") {
+                        "wire_validation_error"
+                    } else {
+                        "command_failed"
+                    };
+                    obj.insert(
+                        "errorType".into(),
+                        serde_json::Value::String(error_type.into()),
+                    );
+                }
+            }
+            value
+        };
         if opts.content_boundaries {
-            let mut json_val = serde_json::to_value(resp).unwrap_or_default();
+            let mut json_val = response_json();
             if let Some(obj) = json_val.as_object_mut() {
                 let nonce = get_boundary_nonce();
                 let origin = obj
@@ -151,7 +173,10 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             }
             println!("{}", serde_json::to_string(&json_val).unwrap_or_default());
         } else {
-            println!("{}", serde_json::to_string(resp).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string(&response_json()).unwrap_or_default()
+            );
         }
         // JSON mode includes the warning field in the JSON payload already
         return;
@@ -471,6 +496,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 let label = match action {
                     Some("cookies_clear") => "Cookies cleared",
                     Some("console") => "Console log cleared",
+                    Some("errors") => "Page error log cleared",
                     _ => "Request log cleared",
                 };
                 println!("{} {}", color::success_indicator(), label);
@@ -601,7 +627,9 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             return;
         }
         // Download response (has "suggestedFilename" or "filename" field)
-        if data.get("suggestedFilename").is_some() || data.get("filename").is_some() {
+        if matches!(action, Some("download" | "waitfordownload"))
+            && (data.get("suggestedFilename").is_some() || data.get("filename").is_some())
+        {
             if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
                 let filename = data
                     .get("suggestedFilename")
@@ -631,102 +659,106 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             return;
         }
         // Path-based operations (screenshot/pdf/trace/har/download/state/video)
-        if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
-            match action.unwrap_or("") {
-                "screenshot" => {
-                    println!(
-                        "{} Screenshot saved to {}",
-                        color::success_indicator(),
-                        color::green(path)
-                    );
-                    if let Some(annotations) = data.get("annotations").and_then(|v| v.as_array()) {
-                        for ann in annotations {
-                            let num = ann.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-                            let ref_id = ann.get("ref").and_then(|r| r.as_str()).unwrap_or("");
-                            let role = ann.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                            let name = ann.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                            if name.is_empty() {
-                                println!(
-                                    "   {} @{} {}",
-                                    color::dim(&format!("[{}]", num)),
-                                    ref_id,
-                                    role,
-                                );
-                            } else {
-                                println!(
-                                    "   {} @{} {} {:?}",
-                                    color::dim(&format!("[{}]", num)),
-                                    ref_id,
-                                    role,
-                                    name,
-                                );
+        if !matches!(action, Some("state_show" | "state_rename")) {
+            if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
+                match action.unwrap_or("") {
+                    "screenshot" => {
+                        println!(
+                            "{} Screenshot saved to {}",
+                            color::success_indicator(),
+                            color::green(path)
+                        );
+                        if let Some(annotations) =
+                            data.get("annotations").and_then(|v| v.as_array())
+                        {
+                            for ann in annotations {
+                                let num = ann.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+                                let ref_id = ann.get("ref").and_then(|r| r.as_str()).unwrap_or("");
+                                let role = ann.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                                let name = ann.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                if name.is_empty() {
+                                    println!(
+                                        "   {} @{} {}",
+                                        color::dim(&format!("[{}]", num)),
+                                        ref_id,
+                                        role,
+                                    );
+                                } else {
+                                    println!(
+                                        "   {} @{} {} {:?}",
+                                        color::dim(&format!("[{}]", num)),
+                                        ref_id,
+                                        role,
+                                        name,
+                                    );
+                                }
                             }
                         }
                     }
-                }
-                "pdf" => println!(
-                    "{} PDF saved to {}",
-                    color::success_indicator(),
-                    color::green(path)
-                ),
-                "trace_stop" => println!(
-                    "{} Trace saved to {}",
-                    color::success_indicator(),
-                    color::green(path)
-                ),
-                "profiler_stop" => println!(
-                    "{} Profile saved to {} ({} events)",
-                    color::success_indicator(),
-                    color::green(path),
-                    data.get("eventCount").and_then(|c| c.as_u64()).unwrap_or(0)
-                ),
-                "har_stop" => println!(
-                    "{} HAR saved to {} ({} requests)",
-                    color::success_indicator(),
-                    color::green(path),
-                    data.get("requestCount")
-                        .and_then(|c| c.as_u64())
-                        .unwrap_or(0)
-                ),
-                "download" | "waitfordownload" => println!(
-                    "{} Download saved to {}",
-                    color::success_indicator(),
-                    color::green(path)
-                ),
-                "video_stop" => println!(
-                    "{} Video saved to {}",
-                    color::success_indicator(),
-                    color::green(path)
-                ),
-                "state_save" => println!(
-                    "{} State saved to {}",
-                    color::success_indicator(),
-                    color::green(path)
-                ),
-                "state_load" => {
-                    if let Some(note) = data.get("note").and_then(|v| v.as_str()) {
-                        println!("{}", note);
-                    }
-                    println!(
-                        "{} State path set to {}",
+                    "pdf" => println!(
+                        "{} PDF saved to {}",
                         color::success_indicator(),
                         color::green(path)
-                    );
-                }
-                // video_start and other commands that provide a path with a note
-                "video_start" => {
-                    if let Some(note) = data.get("note").and_then(|v| v.as_str()) {
-                        println!("{}", note);
+                    ),
+                    "trace_stop" => println!(
+                        "{} Trace saved to {}",
+                        color::success_indicator(),
+                        color::green(path)
+                    ),
+                    "profiler_stop" => println!(
+                        "{} Profile saved to {} ({} events)",
+                        color::success_indicator(),
+                        color::green(path),
+                        data.get("eventCount").and_then(|c| c.as_u64()).unwrap_or(0)
+                    ),
+                    "har_stop" => println!(
+                        "{} HAR saved to {} ({} requests)",
+                        color::success_indicator(),
+                        color::green(path),
+                        data.get("requestCount")
+                            .and_then(|c| c.as_u64())
+                            .unwrap_or(0)
+                    ),
+                    "download" | "waitfordownload" => println!(
+                        "{} Download saved to {}",
+                        color::success_indicator(),
+                        color::green(path)
+                    ),
+                    "video_stop" => println!(
+                        "{} Video saved to {}",
+                        color::success_indicator(),
+                        color::green(path)
+                    ),
+                    "state_save" => println!(
+                        "{} State saved to {}",
+                        color::success_indicator(),
+                        color::green(path)
+                    ),
+                    "state_load" => {
+                        if let Some(note) = data.get("note").and_then(|v| v.as_str()) {
+                            println!("{}", note);
+                        }
+                        println!(
+                            "{} State path set to {}",
+                            color::success_indicator(),
+                            color::green(path)
+                        );
                     }
-                    println!("Path: {}", path);
+                    // video_start and other commands that provide a path with a note
+                    "video_start" => {
+                        if let Some(note) = data.get("note").and_then(|v| v.as_str()) {
+                            println!("{}", note);
+                        }
+                        println!("Path: {}", path);
+                    }
+                    _ => println!(
+                        "{} Saved to {}",
+                        color::success_indicator(),
+                        color::green(path)
+                    ),
                 }
-                _ => println!(
-                    "{} Saved to {}",
-                    color::success_indicator(),
-                    color::green(path)
-                ),
+                return;
             }
-            return;
         }
 
         // State list
@@ -1621,19 +1653,13 @@ Examples:
         // === Inspect ===
         "inspect" => {
             r##"
-agent-browser inspect - Open Chrome DevTools for the active page
+moat inspect - unavailable for remote moat sessions
 
-Starts a local WebSocket proxy and opens Chrome's DevTools frontend in your
-default browser. The proxy routes DevTools traffic through the daemon's
-existing CDP connection, so both DevTools and agent-browser commands work
-simultaneously.
+Usage: moat inspect
 
-Usage: agent-browser inspect
-
-Examples:
-  agent-browser open example.com
-  agent-browser inspect          # opens DevTools in your browser
-  agent-browser click "Submit"   # commands still work while DevTools is open
+unsupported_in_moat: inspect requires a CLI-local DevTools proxy, while moat
+sessions expose only private Controller-managed CDP. Use the profile's neko
+browser view for interactive inspection.
 "##
         }
 
@@ -2014,62 +2040,27 @@ Examples:
         // === Auth ===
         "auth" => {
             r##"
-agent-browser auth - Manage authentication profiles
+moat auth - unavailable; authentication is profile-based
 
-Usage: agent-browser auth <subcommand> [args]
+Usage: moat auth <subcommand>
 
-Subcommands:
-  save <name>              Save credentials for a login profile
-  login <name>             Login using saved credentials (waits for form fields)
-  list                     List saved profiles (names and URLs only)
-  show <name>              Show profile metadata (no passwords)
-  delete <name>            Delete a saved profile
-
-Save Options:
-  --url <url>              Login page URL (required)
-  --username <user>        Username (required)
-  --password <pass>        Password (required unless --password-stdin)
-  --password-stdin          Read password from stdin (recommended)
-  --username-selector <s>  Custom CSS selector for username field
-  --password-selector <s>  Custom CSS selector for password field
-  --submit-selector <s>    Custom CSS selector for submit button
-
-Login behavior:
-  auth login waits for form selectors to appear before filling/clicking.
-  Selector wait timeout follows the default action timeout.
-
-Global Options:
-  --json                   Output as JSON
-  --session <name>         Use specific session
-
-Examples:
-  echo "pass" | agent-browser auth save github --url https://github.com/login --username user --password-stdin
-  agent-browser auth save github --url https://github.com/login --username user --password pass
-  agent-browser auth login github
-  agent-browser auth list
-  agent-browser auth show github
-  agent-browser auth delete github
+unsupported_in_moat: moat-browser does not accept or store login credentials
+through the CLI. Create or select a moat profile, then complete SaaS login in
+the profile's neko browser. The authenticated profile is reused by agent sessions.
 "##
         }
 
         // === Confirm/Deny ===
         "confirm" | "deny" => {
             r##"
-agent-browser confirm/deny - Approve or deny pending actions
+moat confirm/deny - unavailable
 
 Usage:
-  agent-browser confirm <confirmation-id>
-  agent-browser deny <confirmation-id>
+  moat confirm <confirmation-id>
+  moat deny <confirmation-id>
 
-When --confirm-actions is set, certain action categories return a
-confirmation_required response with a confirmation ID. Use confirm/deny
-to approve or reject the action.
-
-Pending confirmations auto-deny after 60 seconds.
-
-Examples:
-  agent-browser confirm c_8f3a1234
-  agent-browser deny c_8f3a1234
+unsupported_in_moat: moat-browser has no CLI action-policy confirmation layer.
+Controller authorization and session isolation are the security boundary.
 "##
         }
 
@@ -2167,38 +2158,12 @@ The output file can be viewed in:
         // === Record (video) ===
         "record" => {
             r##"
-agent-browser record - Record browser session to video
+moat record - unavailable
 
-Usage: agent-browser record start <path.webm> [url]
-       agent-browser record stop
-       agent-browser record restart <path.webm> [url]
+Usage: moat record <start|stop|restart> [path]
 
-Record the browser to a WebM video file.
-Creates a fresh browser context but preserves cookies and localStorage.
-If no URL is provided, automatically navigates to your current page.
-
-Operations:
-  start <path> [url]     Start recording (defaults to current URL if omitted)
-  stop                   Stop recording and save video
-  restart <path> [url]   Stop current recording (if any) and start a new one
-
-Global Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  # Record from current page (preserves login state)
-  agent-browser open https://app.example.com/dashboard
-  agent-browser snapshot -i            # Explore and plan
-  agent-browser record start ./demo.webm
-  agent-browser click @e3              # Execute planned actions
-  agent-browser record stop
-
-  # Or specify a different URL
-  agent-browser record start ./demo.webm https://example.com
-
-  # Restart recording with a new file (stops previous, starts new)
-  agent-browser record restart ./take2.webm
+unsupported_in_moat: browser video recording is not part of the moat Controller
+contract. Use the profile's neko WebRTC view when a live browser view is needed.
 "##
         }
 
@@ -2293,42 +2258,21 @@ Examples:
         // === State ===
         "state" => {
             r##"
-agent-browser state - Manage browser state
+moat state - Save and restore browser storage
 
-Usage: agent-browser state <operation> [args]
-
-Save, restore, list, and manage browser state (cookies, localStorage, sessionStorage).
+Usage: moat state <operation> [args]
 
 Operations:
-  save <path>                        Save current state to file
-  load <path>                        Load state from file
-  list                               List saved state files
-  show <filename>                    Show state summary
-  rename <old-name> <new-name>       Rename state file
-  clear [session-name] [--all]       Clear saved states
-  clean --older-than <days>          Delete expired state files
+  save <path>                        Save cookies and local/session storage
+  load <path>                        Restore state into the active session
+  list                               List managed files in ~/.moat/states
+  show <filename>                    Show a managed state summary
+  rename <old-name> <new-name>       Rename a managed state file
+  clear <name> | --all               Remove managed state files
+  clean --older-than <days>          Remove old managed state files
 
-Automatic State Persistence:
-  Use --session-name to auto-save/restore state across restarts:
-  agent-browser --session-name myapp open https://example.com
-  Or set AGENT_BROWSER_SESSION_NAME environment variable.
-
-State Encryption:
-  Set AGENT_BROWSER_ENCRYPTION_KEY (64-char hex) for AES-256-GCM encryption.
-  Generate a key: openssl rand -hex 32
-
-Global Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  agent-browser state save ./auth-state.json
-  agent-browser state load ./auth-state.json
-  agent-browser state list
-  agent-browser state show myapp-default.json
-  agent-browser state rename old-name new-name
-  agent-browser state clear --all
-  agent-browser state clean --older-than 7
+Save and load use local CLI paths and transfer state bytes over the moat wire
+protocol. Management operations are local and do not require a browser session.
 "##
         }
 
@@ -2431,73 +2375,25 @@ Examples:
         // === Connect ===
         "connect" => {
             r##"
-agent-browser connect - Connect to browser via CDP
+moat connect - create a Controller-managed browser session
 
-Usage: agent-browser connect <port|url>
+Usage: moat connect
+       moat init
 
-Connects to a running browser instance via Chrome DevTools Protocol (CDP).
-This allows controlling browsers, Electron apps, or remote browser services.
-
-Arguments:
-  <port>               Local port number (e.g., 9222)
-  <url>                Full WebSocket URL (ws://, wss://, http://, https://)
-
-Supported URL formats:
-  - Port number: 9222 (connects to http://localhost:9222)
-  - WebSocket URL: ws://localhost:9222/devtools/browser/...
-  - Remote service: wss://remote-browser.example.com/cdp?token=...
-
-Global Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  # Connect to local Chrome with remote debugging
-  # Start Chrome: google-chrome --remote-debugging-port=9222
-  agent-browser connect 9222
-
-  # Connect using WebSocket URL from /json/version endpoint
-  agent-browser connect "ws://localhost:9222/devtools/browser/abc123"
-
-  # Connect to remote browser service
-  agent-browser connect "wss://browser-service.example.com/cdp?token=xyz"
-
-  # After connecting, run commands normally
-  agent-browser snapshot
-  agent-browser click @e1
+Registers a new moat session. The Controller creates the browser container and
+CDP target. Direct CDP ports and URLs are intentionally rejected.
 "##
         }
 
         // === Runtime streaming ===
         "stream" => {
             r##"
-agent-browser stream - Manage live WebSocket browser streaming
+moat stream - unavailable
 
-Usage:
-  agent-browser stream enable [--port <port>]
-  agent-browser stream disable
-  agent-browser stream status
+Usage: moat stream <enable|disable|status>
 
-Enables or disables the session-scoped WebSocket stream server without restarting
-an already-running daemon. If --port is omitted, agent-browser binds an
-available localhost port automatically and reports it back.
-
-Notes:
-  - 'stream enable' creates the WebSocket server.
-  - WebSocket clients trigger frame streaming automatically.
-  - 'screencast_start' and 'screencast_stop' still control explicit CDP screencasts.
-  - Streaming is always enabled. Set AGENT_BROWSER_STREAM_PORT to bind to a
-    specific port instead of the default OS-assigned port.
-
-Global Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  agent-browser stream status
-  agent-browser stream enable
-  agent-browser stream enable --port 9223
-  agent-browser stream disable
+unsupported_in_moat: moat-browser uses the profile's neko WebRTC endpoint for
+live browser viewing and does not run a CLI-local WebSocket stream server.
 "##
         }
 
@@ -2546,20 +2442,12 @@ Examples:
         }
         "device" => {
             r##"
-agent-browser device - Manage iOS simulators
+moat device - unavailable
 
-Usage: agent-browser device <subcommand>
+Usage: moat device list
 
-Subcommands:
-  list    List available iOS simulators
-
-Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  agent-browser device list
-  agent-browser -p ios device list
+unsupported_in_moat: device discovery requires local Xcode/Appium. moat-browser
+controls remote Chromium containers and does not provide an iOS device backend.
 "##
         }
 
@@ -2997,8 +2885,7 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
     let is_match = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
     let dim_mismatch = data
         .get("dimensionMismatch")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false));
     if dim_mismatch {
         println!(
             "{} Images have different dimensions",

@@ -1015,6 +1015,16 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 }
                 Ok(cmd)
             }
+            Some("switch") => {
+                let index = rest
+                    .get(1)
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .ok_or_else(|| ParseError::MissingArguments {
+                        context: "tab switch".to_string(),
+                        usage: "tab switch <index>",
+                    })?;
+                Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
+            }
             Some(n) if n.parse::<i32>().is_ok() => {
                 let index = n.parse::<i32>().expect("already checked parse succeeds");
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
@@ -1857,7 +1867,12 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                             i += 1;
                         }
                         token => {
-                            if subaction.is_none() && matches!(token, "click" | "fill" | "type" | "check" | "uncheck" | "hover") {
+                            if subaction.is_none()
+                                && matches!(
+                                    token,
+                                    "click" | "fill" | "type" | "check" | "uncheck" | "hover"
+                                )
+                            {
                                 subaction = Some(token);
                             } else {
                                 fill_parts.push(token);
@@ -1876,55 +1891,93 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
 
             match *locator {
                 "role" => {
-                    let mut cmd = json!({ "id": id, "action": "getbyrole", "role": value, "exact": exact });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
-                    if let Some(n) = name { cmd["name"] = json!(n); }
-                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
+                    let mut cmd =
+                        json!({ "id": id, "action": "getbyrole", "role": value, "exact": exact });
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
+                    if let Some(n) = name {
+                        cmd["name"] = json!(n);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 "text" => {
-                    let mut cmd = json!({ "id": id, "action": "getbytext", "text": value, "exact": exact });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    let mut cmd =
+                        json!({ "id": id, "action": "getbytext", "text": value, "exact": exact });
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
                     Ok(cmd)
                 }
                 "label" => {
-                    let mut cmd = json!({ "id": id, "action": "getbylabel", "label": value, "exact": exact });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
-                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
+                    let mut cmd =
+                        json!({ "id": id, "action": "getbylabel", "label": value, "exact": exact });
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 "placeholder" => {
                     let mut cmd = json!({ "id": id, "action": "getbyplaceholder", "placeholder": value, "exact": exact });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
-                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 "alt" => {
                     let mut cmd = json!({ "id": id, "action": "getbyalttext", "text": value, "exact": exact });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
                     Ok(cmd)
                 }
                 "title" => {
-                    let mut cmd = json!({ "id": id, "action": "getbytitle", "text": value, "exact": exact });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
+                    let mut cmd =
+                        json!({ "id": id, "action": "getbytitle", "text": value, "exact": exact });
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
                     Ok(cmd)
                 }
                 "testid" => {
                     let mut cmd = json!({ "id": id, "action": "getbytestid", "testId": value });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
-                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 "first" => {
-                    let mut cmd = json!({ "id": id, "action": "nth", "selector": value, "index": 0 });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
-                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
+                    let mut cmd =
+                        json!({ "id": id, "action": "nth", "selector": value, "index": 0 });
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 "last" => {
-                    let mut cmd = json!({ "id": id, "action": "nth", "selector": value, "index": -1 });
-                    if let Some(s) = subaction { cmd["subaction"] = json!(s); }
-                    if let Some(v) = fill_value { cmd["value"] = json!(v); }
+                    let mut cmd =
+                        json!({ "id": id, "action": "nth", "selector": value, "index": -1 });
+                    if let Some(s) = subaction {
+                        cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 _ => unreachable!(),
@@ -1952,8 +2005,12 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                 None
             };
             let mut cmd = json!({ "id": id, "action": "nth", "selector": sel, "index": idx });
-            if let Some(s) = sub { cmd["subaction"] = json!(s); }
-            if let Some(v) = fv { cmd["value"] = json!(v); }
+            if let Some(s) = sub {
+                cmd["subaction"] = json!(s);
+            }
+            if let Some(v) = fv {
+                cmd["value"] = json!(v);
+            }
             Ok(cmd)
         }
         _ => Err(ParseError::UnknownSubcommand {
@@ -2164,7 +2221,11 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             let abort = rest.contains(&"--abort");
             let body_idx = rest.iter().position(|&s| s == "--body");
             let body = body_idx.and_then(|i| rest.get(i + 1).copied());
-            Ok(json!({ "id": id, "action": "route", "url": url, "abort": abort, "body": body }))
+            let mut cmd = json!({ "id": id, "action": "route", "url": url, "abort": abort });
+            if let Some(body) = body {
+                cmd["body"] = json!(body);
+            }
+            Ok(cmd)
         }
         Some("unroute") => {
             let mut cmd = json!({ "id": id, "action": "unroute" });
@@ -2804,6 +2865,20 @@ mod tests {
         let cmd = parse_command(&args("tab 2"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "tab_switch");
         assert_eq!(cmd["index"], 2);
+    }
+
+    #[test]
+    fn test_tab_switch_word_alias() {
+        let cmd = parse_command(&args("tab switch 2"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "tab_switch");
+        assert_eq!(cmd["index"], 2);
+    }
+
+    #[test]
+    fn test_tab_switch_word_requires_index() {
+        let args = vec!["tab".to_string(), "switch".to_string()];
+        let err = parse_command(&args, &default_flags()).unwrap_err();
+        assert!(matches!(err, ParseError::MissingArguments { .. }));
     }
 
     #[test]
@@ -3535,11 +3610,7 @@ mod tests {
 
     #[test]
     fn test_find_role_with_name_flag_no_subaction() {
-        let cmd = parse_command(
-            &args("find role link --name Submit"),
-            &default_flags(),
-        )
-        .unwrap();
+        let cmd = parse_command(&args("find role link --name Submit"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "getbyrole");
         assert_eq!(cmd["role"], "link");
         assert_eq!(cmd["name"], "Submit");

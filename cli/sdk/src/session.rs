@@ -33,16 +33,14 @@ pub fn read_session_id() -> Result<Option<String>, SdkError> {
 /// Write a session ID to ~/.moat/session.
 pub fn write_session_id(session_id: &str) -> Result<(), SdkError> {
     let path = session_file()?;
-    fs::write(&path, session_id)
-        .map_err(|e| SdkError::SessionFileError(format!("write: {}", e)))
+    fs::write(&path, session_id).map_err(|e| SdkError::SessionFileError(format!("write: {}", e)))
 }
 
 /// Clear the stored session ID.
 pub fn clear_session_id() -> Result<(), SdkError> {
     let path = session_file()?;
     if path.exists() {
-        fs::remove_file(&path)
-            .map_err(|e| SdkError::SessionFileError(format!("remove: {}", e)))?;
+        fs::remove_file(&path).map_err(|e| SdkError::SessionFileError(format!("remove: {}", e)))?;
     }
     Ok(())
 }
