@@ -39,19 +39,27 @@ const config: ControllerConfig = {
 };
 
 let originalLog: typeof console.log;
+let originalWarn: typeof console.warn;
 let logs: string[];
+let warns: string[];
 let registry: SessionRegistry | undefined;
 
 beforeEach(() => {
   logs = [];
+  warns = [];
   originalLog = console.log;
+  originalWarn = console.warn;
   console.log = (...args: unknown[]) => {
     logs.push(args.map(String).join(" "));
+  };
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map(String).join(" "));
   };
 });
 
 afterEach(() => {
   console.log = originalLog;
+  console.warn = originalWarn;
   registry?.dispose();
   registry = undefined;
 });
@@ -115,17 +123,27 @@ function createFakeBrowser(): FakeBrowser {
   };
 }
 
-function createContainerManager(destroyed: string[]): ContainerManager {
+type DestroyOutcome =
+  | { readonly _tag: "Ok"; readonly value: undefined }
+  | { readonly _tag: "Err"; readonly error: { readonly _tag: "ContainerCreateFailed"; readonly message: string } };
+
+function createContainerManager(
+  destroyed: string[],
+  destroyResult: (sessionId: string) => DestroyOutcome = () => ok(undefined) as DestroyOutcome,
+): ContainerManager {
   return {
     async create(_sessionId, _profilePath) {
       return ok({ containerId: "ctr-1", ip: "127.0.0.1", cdpPort: 9222 });
     },
     async destroy(sessionId) {
       destroyed.push(sessionId);
-      return ok(undefined);
+      return destroyResult(sessionId);
     },
     async inspect(containerId) {
       return ok({ containerId, ip: "127.0.0.1", cdpPort: 9222 });
+    },
+    async reap() {
+      return ok({ reaped: 0 });
     },
   };
 }
@@ -202,6 +220,33 @@ describe("ws-server activity logging", () => {
     handler.onSessionExpired("session-1", "idle timeout");
 
     expectSessionLog("expired", "session-1", " reason=idle timeout");
+  });
+
+  it("warns when idle-expired destroy fails so orphan reasons are observable", async () => {
+    registry = createSessionRegistry();
+    const handler = createWsHandler({
+      registry,
+      containerManager: createContainerManager([], (sid) => ({
+        _tag: "Err",
+        error: { _tag: "ContainerCreateFailed", message: `No container for session ${sid}` },
+      })),
+      refStore: createRefStore(),
+      config,
+    });
+
+    handler.onSessionExpired("session-orphan", "idle timeout");
+
+    // let the fire-and-forget destroy chain settle
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const hit = warns.find(
+      (line) =>
+        line.includes("[destroy-failed]") &&
+        line.includes("session=session-orphan") &&
+        line.includes("trigger=idle-expired") &&
+        line.includes("No container for session session-orphan"),
+    );
+    expect(hit).toBeDefined();
   });
 
   it("does not emit activity logs for invalid requests", async () => {

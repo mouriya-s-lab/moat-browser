@@ -365,7 +365,14 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       });
 
       // Trigger container cleanup
-      await containerManager.destroy(sessionId);
+      const destroyResult = await containerManager.destroy(sessionId);
+      if (destroyResult._tag === "Err") {
+        console.warn(
+          `[destroy-failed] session=${sessionId} trigger=cdp-disconnect ${destroyResult.error._tag}: ${
+            "message" in destroyResult.error ? destroyResult.error.message : ""
+          }`,
+        );
+      }
 
       // Cleanup CDP cache
       cdpCache.delete(sessionId);
@@ -382,7 +389,24 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     if (cdp) {
       cdp.browser.close().catch(() => {});
     }
-    containerManager.destroy(sessionId).catch(() => {});
+    containerManager
+      .destroy(sessionId)
+      .then((r) => {
+        if (r._tag === "Err") {
+          console.warn(
+            `[destroy-failed] session=${sessionId} trigger=idle-expired ${r.error._tag}: ${
+              "message" in r.error ? r.error.message : ""
+            }`,
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          `[destroy-failed] session=${sessionId} trigger=idle-expired threw: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
     cdpCache.delete(sessionId);
     clearSessionRuntimeState(sessionId);
   }
