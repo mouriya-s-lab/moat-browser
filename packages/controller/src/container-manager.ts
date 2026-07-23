@@ -29,6 +29,8 @@ export type ContainerInfo = {
 
 // ─── Config ───
 
+export type DockerFetch = (path: string, init?: RequestInit) => Promise<Response>;
+
 export type ContainerManagerConfig = {
   readonly profileSource: string;
   readonly profilesWork: string;
@@ -36,11 +38,38 @@ export type ContainerManagerConfig = {
   readonly dockerNetwork: string;
   readonly agentChromeImage: string;
   readonly cdpReadyTimeout: number;
+  readonly dockerFetch?: DockerFetch;
 };
+
+// ─── Labels ───
+
+export const LABEL_ROLE = "moat-browser.role";
+export const LABEL_ROLE_AGENT_CHROME = "agent-chrome";
+export const LABEL_SESSION_ID = "moat-browser.session-id";
+
+// ─── Create body ───
+
+export function buildCreateBody(
+  sessionId: string,
+  cfg: Pick<ContainerManagerConfig, "agentChromeImage" | "profilesHostPath" | "dockerNetwork">,
+): Record<string, unknown> {
+  return {
+    Image: cfg.agentChromeImage,
+    Labels: {
+      [LABEL_ROLE]: LABEL_ROLE_AGENT_CHROME,
+      [LABEL_SESSION_ID]: sessionId,
+    },
+    HostConfig: {
+      Binds: [`${cfg.profilesHostPath}/agent-${sessionId}:/data/profile`],
+      NetworkMode: cfg.dockerNetwork,
+      ShmSize: 2147483648,
+    },
+  };
+}
 
 // ─── Docker Engine API ───
 
-async function dockerFetch(path: string, init?: RequestInit): Promise<Response> {
+const defaultDockerFetch: DockerFetch = async (path, init) => {
   return new Promise((resolve, reject) => {
     const req = httpRequest(
       {
@@ -67,7 +96,7 @@ async function dockerFetch(path: string, init?: RequestInit): Promise<Response> 
     }
     req.end();
   });
-}
+};
 
 // ─── Container Manager ───
 
@@ -75,12 +104,14 @@ export type ContainerManager = {
   create(sessionId: string, profilePath: string): Promise<Result<ContainerInfo, ControllerError>>;
   destroy(sessionId: string): Promise<Result<void, ControllerError>>;
   inspect(containerId: string): Promise<Result<ContainerInfo, ControllerError>>;
+  reap(): Promise<Result<{ readonly reaped: number }, ControllerError>>;
 };
 
 export function createContainerManager(config: ContainerManagerConfig): ContainerManager {
+  const dockerFetch = config.dockerFetch ?? defaultDockerFetch;
   const containers = new Map<string, string>(); // sessionId → containerId
 
-  return { create, destroy, inspect };
+  return { create, destroy, inspect, reap };
 
   async function create(
     sessionId: string,
@@ -140,14 +171,7 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       const createRes = await dockerFetch("/containers/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          Image: config.agentChromeImage,
-          HostConfig: {
-            Binds: [`${config.profilesHostPath}/agent-${sessionId}:/data/profile`],
-            NetworkMode: config.dockerNetwork,
-            ShmSize: 2147483648,
-          },
-        }),
+        body: JSON.stringify(buildCreateBody(sessionId, config)),
       });
       if (!createRes.ok) {
         const text = await createRes.text();
@@ -222,49 +246,26 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
   }
 
   async function destroy(sessionId: string): Promise<Result<void, ControllerError>> {
-    const containerId = containers.get(sessionId);
+    let containerId = containers.get(sessionId);
     if (!containerId) {
-      return Err({ _tag: "ContainerCreateFailed", message: `No container for session ${sessionId}` });
-    }
-
-    // Step 1: POST /containers/<id>/stop?t=5
-    try {
-      const stopRes = await dockerFetch(`/containers/${containerId}/stop?t=5`, {
-        method: "POST",
-      });
-      if (!stopRes.ok && stopRes.status !== 304 && stopRes.status !== 404) {
-        const text = await stopRes.text();
-        return Err({ _tag: "ContainerCreateFailed", message: `Docker stop failed (${stopRes.status}): ${text}` });
+      // Fallback: label reverse-lookup — covers the create-succeeded-but-map-not-set
+      // window (process crash between docker create and containers.set) and cross-restart
+      // survivors that idle scanner rediscovers.
+      const found = await findContainerIdBySession(sessionId);
+      if (found._tag === "Err") return found;
+      if (found.value === undefined) {
+        return Err({ _tag: "ContainerCreateFailed", message: `No container for session ${sessionId}` });
       }
-    } catch (err) {
-      return Err({
-        _tag: "ContainerCreateFailed",
-        message: `Docker stop error: ${err instanceof Error ? err.message : String(err)}`,
-      });
+      containerId = found.value;
     }
 
-    // Step 2: DELETE /containers/<id>
-    try {
-      const deleteRes = await dockerFetch(`/containers/${containerId}`, {
-        method: "DELETE",
-      });
-      if (!deleteRes.ok && deleteRes.status !== 404) {
-        const text = await deleteRes.text();
-        return Err({ _tag: "ContainerCreateFailed", message: `Docker delete failed (${deleteRes.status}): ${text}` });
-      }
-    } catch (err) {
-      return Err({
-        _tag: "ContainerCreateFailed",
-        message: `Docker delete error: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
+    const stopDelete = await stopAndDelete(containerId);
+    if (stopDelete._tag === "Err") return stopDelete;
 
-    // Step 3: rm -rf profile copy
-    const profileDest = `${config.profilesWork}/agent-${sessionId}`;
     try {
-      await execFile("rm", ["-rf", profileDest]);
+      await execFile("rm", ["-rf", `${config.profilesWork}/agent-${sessionId}`]);
     } catch {
-      // best-effort cleanup
+      // best-effort
     }
 
     containers.delete(sessionId);
@@ -290,5 +291,104 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
         message: `Docker inspect error: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+  }
+
+  async function reap(): Promise<Result<{ readonly reaped: number }, ControllerError>> {
+    const found = await listAgentChromeContainers();
+    if (found._tag === "Err") return found;
+
+    let reaped = 0;
+    for (const c of found.value) {
+      const stopDelete = await stopAndDelete(c.id);
+      if (stopDelete._tag === "Err") {
+        console.warn(
+          `[reap-failed] container=${c.id} session=${c.sessionId ?? "unknown"} ${stopDelete.error._tag}: ${
+            "message" in stopDelete.error ? stopDelete.error.message : ""
+          }`,
+        );
+        continue;
+      }
+      if (c.sessionId) {
+        try {
+          await execFile("rm", ["-rf", `${config.profilesWork}/agent-${c.sessionId}`]);
+        } catch {
+          // best-effort
+        }
+        containers.delete(c.sessionId);
+      }
+      reaped++;
+    }
+    return Ok({ reaped });
+  }
+
+  async function findContainerIdBySession(sessionId: string): Promise<Result<string | undefined, ControllerError>> {
+    const filters = JSON.stringify({
+      label: [`${LABEL_ROLE}=${LABEL_ROLE_AGENT_CHROME}`, `${LABEL_SESSION_ID}=${sessionId}`],
+    });
+    try {
+      const res = await dockerFetch(`/containers/json?all=true&filters=${encodeURIComponent(filters)}`);
+      if (!res.ok) {
+        const text = await res.text();
+        return Err({ _tag: "ContainerCreateFailed", message: `Docker list failed (${res.status}): ${text}` });
+      }
+      const body = (await res.json()) as ReadonlyArray<{ readonly Id: string }>;
+      return Ok(body[0]?.Id);
+    } catch (err) {
+      return Err({
+        _tag: "ContainerCreateFailed",
+        message: `Docker list error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  async function listAgentChromeContainers(): Promise<
+    Result<ReadonlyArray<{ readonly id: string; readonly sessionId: string | undefined }>, ControllerError>
+  > {
+    const filters = JSON.stringify({ label: [`${LABEL_ROLE}=${LABEL_ROLE_AGENT_CHROME}`] });
+    try {
+      const res = await dockerFetch(`/containers/json?all=true&filters=${encodeURIComponent(filters)}`);
+      if (!res.ok) {
+        const text = await res.text();
+        return Err({ _tag: "ContainerCreateFailed", message: `Docker list failed (${res.status}): ${text}` });
+      }
+      const body = (await res.json()) as ReadonlyArray<{
+        readonly Id: string;
+        readonly Labels?: Readonly<Record<string, string>>;
+      }>;
+      return Ok(body.map((c) => ({ id: c.Id, sessionId: c.Labels?.[LABEL_SESSION_ID] })));
+    } catch (err) {
+      return Err({
+        _tag: "ContainerCreateFailed",
+        message: `Docker list error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  async function stopAndDelete(containerId: string): Promise<Result<void, ControllerError>> {
+    try {
+      const stopRes = await dockerFetch(`/containers/${containerId}/stop?t=5`, { method: "POST" });
+      if (!stopRes.ok && stopRes.status !== 304 && stopRes.status !== 404) {
+        const text = await stopRes.text();
+        return Err({ _tag: "ContainerCreateFailed", message: `Docker stop failed (${stopRes.status}): ${text}` });
+      }
+    } catch (err) {
+      return Err({
+        _tag: "ContainerCreateFailed",
+        message: `Docker stop error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    try {
+      const deleteRes = await dockerFetch(`/containers/${containerId}`, { method: "DELETE" });
+      if (!deleteRes.ok && deleteRes.status !== 404) {
+        const text = await deleteRes.text();
+        return Err({ _tag: "ContainerCreateFailed", message: `Docker delete failed (${deleteRes.status}): ${text}` });
+      }
+    } catch (err) {
+      return Err({
+        _tag: "ContainerCreateFailed",
+        message: `Docker delete error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    return Ok(undefined);
   }
 }

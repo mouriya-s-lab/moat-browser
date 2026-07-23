@@ -63,6 +63,20 @@ const handler = createWsHandler({
   config,
 });
 
+// Startup reap: prior process spawned agent-chrome containers whose sessionId
+// mapping died with it. Label reverse-lookup + destroy them before accepting
+// new sessions so operators never see cross-restart orphans.
+const reapResult = await containerManager.reap();
+if (reapResult._tag === "Ok") {
+  console.log(`[startup-reap] reaped=${reapResult.value.reaped}`);
+} else {
+  console.warn(
+    `[startup-reap-failed] ${reapResult.error._tag}: ${
+      "message" in reapResult.error ? reapResult.error.message : ""
+    }`,
+  );
+}
+
 const wss = new WebSocketServer({ port: config.port });
 
 wss.on("connection", (ws) => {
