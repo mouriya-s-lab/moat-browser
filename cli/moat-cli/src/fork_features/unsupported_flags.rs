@@ -34,6 +34,11 @@ const UPSTREAM_LOCAL_FLAGS: &[&str] = &[
 
 pub fn unsupported_flag(args: &[String], command: &str) -> Option<String> {
     for arg in args {
+        if arg == "--controller" && command == "use" {
+            return Some(format!(
+                "unsupported_in_moat: --controller is not valid for the local `{command}` command"
+            ));
+        }
         if CONTROLLER_OWNED_FLAGS.contains(&arg.as_str()) {
             return Some(format!(
                 "unsupported_in_moat: {arg} is a local browser launch option; the Controller owns browser creation"
@@ -88,6 +93,15 @@ mod tests {
         );
         assert!(
             unsupported_flag(&args(&["snapshot", "--session", "x"]), "snapshot")
+                .unwrap()
+                .contains("unsupported_in_moat")
+        );
+    }
+
+    #[test]
+    fn rejects_controller_for_use_command() {
+        assert!(
+            unsupported_flag(&args(&["use", "session", "--controller", "ws://example"]), "use")
                 .unwrap()
                 .contains("unsupported_in_moat")
         );

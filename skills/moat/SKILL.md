@@ -28,6 +28,17 @@ Configure the Controller URL:
 export MOAT_CONTROLLER="ws://<controller-host>:3000"
 ```
 
+Use `--controller <url>` to override the destination for one invocation. The
+override takes precedence over `MOAT_CONTROLLER` and the config file, and is
+not written to either the config or session file:
+
+```bash
+moat --controller "ws://<other-controller>:3000" connect --profile default
+```
+
+Controller selection priority is `--controller` > non-empty
+`MOAT_CONTROLLER` > `~/.moat/config.json` `controller`.
+
 ## Session lifecycle
 
 Start a session before issuing browser commands:

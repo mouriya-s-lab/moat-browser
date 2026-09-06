@@ -41,6 +41,7 @@ Unavailable in moat architecture (stable unsupported_in_moat error):
 
 Global options:
   --json                       Emit exactly one JSON value per command
+  --controller <url>           Use this Controller for network commands in this invocation
   --annotate                   Number interactive elements in screenshots
   --screenshot-format <fmt>    png or jpeg
   --screenshot-quality <n>     JPEG quality 0-100
@@ -72,7 +73,7 @@ pub fn print_command_help(command: &str) -> bool {
     let usage = match command {
         "init" => "init [--profile <name>] [--controller <url>]",
         "connect" => "connect [--profile <name>] [--controller <url>]",
-        "use" => "use <session-id> [--controller <url>]",
+        "use" => "use <session-id>",
         "status" => "status",
         "disconnect" | "destroy" | "close-session" => "disconnect",
         "open" | "goto" | "navigate" => "open <url> [--headers <json>]",
