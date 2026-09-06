@@ -1,0 +1,8 @@
+# Trunk patches
+
+| File / lines | Missing API surface | Why this cannot be extracted |
+|---|---|---|
+| `cli/moat-cli/src/commands.rs:170-210` | `parse_command` has no `register_command`, parser hook, or fork-feature dispatch boundary. | `type` is a branch in the upstream command match. Extracting it would still require changing that match to invoke the feature, while a separate parser would duplicate the full command parser. The branch therefore remains a narrowly scoped direct patch that parses `--clear` and `--delay` before building the existing `type` request. |
+| `cli/moat-cli/src/commands.rs:567-604` | The upstream parser has no option registration hook for snapshot command-local flags. | `snapshot` is parsed inside the upstream command match and its output is consumed by the existing SDK adapter. A fork module cannot add `--urls` without changing this branch, so the option remains a narrow parser patch. |
+| `cli/moat-cli/src/commands.rs:2249-2380` | The upstream parser has no registration seam for network route or HAR subcommands. | `network` dispatches its subcommands directly in the upstream parser. Extracting route/HAR parsing would duplicate the existing network command grammar; the branch stays a narrow patch that emits the existing wire action names. |
+| `cli/moat-cli/src/commands.rs:1841-2102` | The upstream `find` parser has no action/value extension hook. | Semantic locator variants and their subactions are selected by one upstream match branch. A separate parser would duplicate locator grammar and could diverge from existing `first`/`last`/`nth` behavior, so the branch remains a direct patch with explicit per-locator action validation. |

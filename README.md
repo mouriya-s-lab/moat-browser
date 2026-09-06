@@ -628,19 +628,23 @@ locators that map directly to Playwright's getByRole/getByLabel/getByText/etc.
 
 ## Primary commands (semantic locators)
 
-moat find role <role> [--name <name>] [action]
+moat find role <role> [--name <name>] [action] [text]
+moat find text <text> [action] [text]
 moat find label <label> [action] [text]
 moat find placeholder <text> [action] [text]
-moat find text <text> [action]
+moat find alt <text> [action] [text]
+moat find title <text> [action] [text]
 moat find testid <id> [action] [text]
 
-Actions: click (default), fill <text>, type <text>, check, uncheck, hover
+Actions run only when supplied; omitting the action queries the locator without clicking:
+click, fill <text>, type <text>, check, uncheck, hover, text
 
 ## Fallback commands (exploration)
 
 moat snapshot                    — ARIA tree with @eN refs
 moat click @eN                   — click by ref
 moat fill @eN "text"             — fill by ref
+moat type <selector> "text" [--clear] [--delay <ms>] — append or clear-and-type with optional per-character delay
 
 ## Other
 

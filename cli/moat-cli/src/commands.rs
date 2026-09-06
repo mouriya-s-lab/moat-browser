@@ -170,9 +170,43 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         "type" => {
             let sel = rest.first().ok_or_else(|| ParseError::MissingArguments {
                 context: "type".to_string(),
-                usage: "type <selector> <text>",
+                usage: "type <selector> <text> [--clear] [--delay <ms>]",
             })?;
-            Ok(json!({ "id": id, "action": "type", "selector": sel, "text": rest[1..].join(" ") }))
+            // Keep command-local flags out of the text payload.  Sending them
+            // as text would report success while typing the literal option.
+            let mut clear = false;
+            let mut delay: Option<u64> = None;
+            let mut text_parts: Vec<&str> = Vec::new();
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i] {
+                    "--clear" => clear = true,
+                    "--delay" => {
+                        let raw = rest
+                            .get(i + 1)
+                            .ok_or_else(|| ParseError::MissingArguments {
+                                context: "type --delay".to_string(),
+                                usage: "type <selector> <text> [--clear] [--delay <ms>]",
+                            })?;
+                        delay = Some(raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("--delay expects a number in ms, got '{}'", raw),
+                            usage: "type <selector> <text> [--clear] [--delay <ms>]",
+                        })?);
+                        i += 1;
+                    }
+                    other => text_parts.push(other),
+                }
+                i += 1;
+            }
+            let mut cmd =
+                json!({ "id": id, "action": "type", "selector": sel, "text": text_parts.join(" ") });
+            if clear {
+                cmd["clear"] = json!(true);
+            }
+            if let Some(ms) = delay {
+                cmd["delay"] = json!(ms);
+            }
+            Ok(cmd)
         }
         "hover" => {
             let sel = rest.first().ok_or_else(|| ParseError::MissingArguments {
@@ -538,6 +572,9 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 match rest[i] {
                     "-i" | "--interactive" => {
                         obj.insert("interactive".to_string(), json!(true));
+                    }
+                    "-u" | "--urls" => {
+                        obj.insert("urls".to_string(), json!(true));
                     }
                     "-c" | "--compact" => {
                         obj.insert("compact".to_string(), json!(true));
@@ -1801,6 +1838,23 @@ fn parse_is(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     }
 }
 
+fn getby_subaction_allowed(locator: &str, action: &str) -> bool {
+    match locator {
+        "role" | "label" => matches!(
+            action,
+            "click" | "fill" | "type" | "check" | "uncheck" | "hover" | "text"
+        ),
+        "placeholder" | "testid" => matches!(
+            action,
+            "click" | "fill" | "type" | "check" | "hover" | "text"
+        ),
+        "text" | "alt" | "title" => {
+            matches!(action, "click" | "fill" | "check" | "hover" | "text")
+        }
+        _ => false,
+    }
+}
+
 fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     const VALID: &[&str] = &[
         "role",
@@ -1826,12 +1880,12 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             let value = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
                 context: format!("find {}", locator),
                 usage: match *locator {
-                    "role" => "find role <role> [action] [--name <name>] [--exact]",
-                    "text" => "find text <text> [action] [--exact]",
+                    "role" => "find role <role> [action] [text] [--name <name>] [--exact]",
+                    "text" => "find text <text> [action] [text] [--exact]",
                     "label" => "find label <label> [action] [text] [--exact]",
                     "placeholder" => "find placeholder <text> [action] [text] [--exact]",
-                    "alt" => "find alt <text> [action] [--exact]",
-                    "title" => "find title <text> [action] [--exact]",
+                    "alt" => "find alt <text> [action] [text] [--exact]",
+                    "title" => "find title <text> [action] [text] [--exact]",
                     "testid" => "find testid <id> [action] [text]",
                     "first" => "find first <selector> [action] [text]",
                     "last" => "find last <selector> [action] [text]",
@@ -1842,6 +1896,7 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             let mut name: Option<&str> = None;
             let mut exact = false;
             let mut fill_parts: Vec<&str> = Vec::new();
+            let supports_text_subaction = !matches!(*locator, "first" | "last");
 
             {
                 let mut i = 2;
@@ -1868,11 +1923,22 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                         }
                         token => {
                             if subaction.is_none()
-                                && matches!(
+                                && (matches!(
                                     token,
                                     "click" | "fill" | "type" | "check" | "uncheck" | "hover"
-                                )
+                                ) || (supports_text_subaction && token == "text"))
                             {
+                                if supports_text_subaction
+                                    && !getby_subaction_allowed(*locator, token)
+                                {
+                                    return Err(ParseError::InvalidValue {
+                                        message: format!(
+                                            "Unsupported action '{}' for find {}",
+                                            token, locator
+                                        ),
+                                        usage: "find <locator> <value> [action] [text]",
+                                    });
+                                }
                                 subaction = Some(token);
                             } else {
                                 fill_parts.push(token);
@@ -1888,6 +1954,12 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             } else {
                 Some(fill_parts.join(" "))
             };
+            if supports_text_subaction && matches!(subaction, Some("fill") | Some("type")) && fill_value.is_none() {
+                return Err(ParseError::MissingArguments {
+                    context: format!("find {} {}", locator, subaction.unwrap_or_default()),
+                    usage: "find <locator> <value> <action> [text]",
+                });
+            }
 
             match *locator {
                 "role" => {
@@ -1909,6 +1981,9 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                         json!({ "id": id, "action": "getbytext", "text": value, "exact": exact });
                     if let Some(s) = subaction {
                         cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
                     }
                     Ok(cmd)
                 }
@@ -1938,6 +2013,9 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                     if let Some(s) = subaction {
                         cmd["subaction"] = json!(s);
                     }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 "title" => {
@@ -1945,6 +2023,9 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                         json!({ "id": id, "action": "getbytitle", "text": value, "exact": exact });
                     if let Some(s) = subaction {
                         cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
                     }
                     Ok(cmd)
                 }
@@ -2216,14 +2297,41 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("route") => {
             let url = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
                 context: "network route".to_string(),
-                usage: "network route <url> [--abort|--body <json>]",
+                usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
             })?;
             let abort = rest.contains(&"--abort");
             let body_idx = rest.iter().position(|&s| s == "--body");
-            let body = body_idx.and_then(|i| rest.get(i + 1).copied());
+            let body = if let Some(index) = body_idx {
+                let body = rest.get(index + 1).copied().filter(|value| !value.starts_with("--")).ok_or_else(|| {
+                    ParseError::MissingArguments {
+                        context: "network route".to_string(),
+                        usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
+                    }
+                })?;
+                Some(body)
+            } else {
+                None
+            };
+            let rt_idx = rest
+                .iter()
+                .position(|&s| s == "--resource-type" || s == "--resource-types");
+            let resource_type = if let Some(index) = rt_idx {
+                let resource_type = rest.get(index + 1).copied().filter(|value| !value.starts_with("--")).ok_or_else(|| {
+                    ParseError::MissingArguments {
+                        context: "network route".to_string(),
+                        usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
+                    }
+                })?;
+                Some(resource_type)
+            } else {
+                None
+            };
             let mut cmd = json!({ "id": id, "action": "route", "url": url, "abort": abort });
             if let Some(body) = body {
-                cmd["body"] = json!(body);
+                cmd["response"] = json!({ "body": body });
+            }
+            if let Some(rt) = resource_type {
+                cmd["resourceType"] = json!(rt);
             }
             Ok(cmd)
         }
@@ -2269,7 +2377,25 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("har") => {
             const HAR_VALID: &[&str] = &["start", "stop"];
             match rest.get(1).copied() {
-                Some("start") => Ok(json!({ "id": id, "action": "har_start" })),
+                Some("start") => {
+                    let mut cmd = json!({ "id": id, "action": "har_start" });
+                    if let Some(content_idx) = rest.iter().position(|&s| s == "--content") {
+                        let mode = rest.get(content_idx + 1).ok_or_else(|| {
+                            ParseError::MissingArguments {
+                                context: "network har start --content".to_string(),
+                                usage: "network har start [--content <all|text|none>]",
+                            }
+                        })?;
+                        if !["all", "text", "none"].contains(mode) {
+                            return Err(ParseError::InvalidValue {
+                                message: format!("Invalid --content mode '{}'", mode),
+                                usage: "network har start [--content <all|text|none>]",
+                            });
+                        }
+                        cmd["content"] = json!(mode);
+                    }
+                    Ok(cmd)
+                }
                 Some("stop") => {
                     let mut cmd = json!({ "id": id, "action": "har_stop" });
                     if let Some(path) = rest.get(2) {
@@ -2813,6 +2939,42 @@ mod tests {
         assert_eq!(cmd["selector"], "#input");
         assert_eq!(cmd["text"], "some text");
     }
+    #[test]
+    fn test_type_clear_and_delay_are_command_options() {
+        let cmd = parse_command(
+            &args("type #input some text --clear --delay 300"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "type");
+        assert_eq!(cmd["selector"], "#input");
+        assert_eq!(cmd["text"], "some text");
+        assert_eq!(cmd["clear"], true);
+        assert_eq!(cmd["delay"], 300);
+    }
+
+    #[test]
+    fn test_type_delay_missing_value_is_an_error() {
+        let result = parse_command(&args("type #input text --delay"), &default_flags());
+        assert!(matches!(
+            result,
+            Err(ParseError::MissingArguments { context, .. }) if context == "type --delay"
+        ));
+    }
+
+    #[test]
+    fn test_type_delay_rejects_negative_value() {
+        let result = parse_command(&args("type #input text --delay -1"), &default_flags());
+        assert!(matches!(result, Err(ParseError::InvalidValue { .. })));
+    }
+
+    #[test]
+    fn test_type_keeps_unknown_options_in_text() {
+        let cmd = parse_command(&args("type #input text --literal"), &default_flags()).unwrap();
+        assert_eq!(cmd["text"], "text --literal");
+        assert!(cmd.get("clear").is_none());
+        assert!(cmd.get("delay").is_none());
+    }
 
     #[test]
     fn test_select() {
@@ -2891,9 +3053,94 @@ mod tests {
     // === Network ===
 
     #[test]
+    fn test_network_route_uses_upstream_response_body_and_resource_type() {
+        let input = vec![
+            "network".to_string(),
+            "route".to_string(),
+            "**/json".to_string(),
+            "--body".to_string(),
+            r#"{"mock":true}"#.to_string(),
+            "--resource-type".to_string(),
+            "XHR, Fetch".to_string(),
+        ];
+        let cmd = parse_command(&input, &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "route");
+        assert_eq!(cmd["url"], "**/json");
+        assert_eq!(cmd["abort"], false);
+        assert_eq!(cmd["response"]["body"], r#"{"mock":true}"#);
+        assert_eq!(cmd["resourceType"], "XHR, Fetch");
+        assert!(cmd.get("body").is_none());
+    }
+
+    #[test]
+    fn test_network_route_accepts_resource_type_alias() {
+        let input = vec![
+            "network".to_string(),
+            "route".to_string(),
+            "**/json".to_string(),
+            "--resource-types".to_string(),
+            "xhr,fetch".to_string(),
+        ];
+        let cmd = parse_command(&input, &default_flags()).unwrap();
+        assert_eq!(cmd["resourceType"], "xhr,fetch");
+    }
+
+    #[test]
+    fn test_network_route_requires_body_value() {
+        let result = parse_command(&args("network route **/json --body"), &default_flags());
+        assert!(matches!(result, Err(ParseError::MissingArguments { .. })));
+    }
+
+    #[test]
+    fn test_network_route_requires_resource_type_value() {
+        let result = parse_command(
+            &args("network route **/json --resource-type"),
+            &default_flags(),
+        );
+        assert!(matches!(result, Err(ParseError::MissingArguments { .. })));
+    }
+
+    #[test]
     fn test_network_har_start() {
         let cmd = parse_command(&args("network har start"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "har_start");
+    }
+
+    #[test]
+    fn test_network_har_start_content_modes() {
+        for mode in ["text", "all", "none"] {
+            let cmd = parse_command(
+                &args(&format!("network har start --content {mode}")),
+                &default_flags(),
+            ).unwrap();
+            assert_eq!(cmd["action"], "har_start");
+            assert_eq!(cmd["content"], mode);
+        }
+    }
+
+    #[test]
+    fn test_network_har_start_defaults_to_controller_mode() {
+        let cmd = parse_command(&args("network har start"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "har_start");
+        assert!(cmd.get("content").is_none());
+    }
+
+    #[test]
+    fn test_network_har_start_rejects_invalid_content_mode() {
+        let result = parse_command(
+            &args("network har start --content binary"),
+            &default_flags(),
+        );
+        assert!(matches!(result, Err(ParseError::InvalidValue { .. })));
+    }
+
+    #[test]
+    fn test_network_har_start_requires_content_mode_value() {
+        let result = parse_command(
+            &args("network har start --content"),
+            &default_flags(),
+        );
+        assert!(matches!(result, Err(ParseError::MissingArguments { .. })));
     }
 
     #[test]
@@ -3068,6 +3315,21 @@ mod tests {
         let cmd = parse_command(&args("snapshot -i"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "snapshot");
         assert_eq!(cmd["interactive"], true);
+    }
+
+    #[test]
+    fn test_snapshot_urls() {
+        let cmd = parse_command(&args("snapshot -i --urls"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "snapshot");
+        assert_eq!(cmd["interactive"], true);
+        assert_eq!(cmd["urls"], true);
+    }
+
+    #[test]
+    fn test_snapshot_urls_short() {
+        let cmd = parse_command(&args("snapshot -i -u"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "snapshot");
+        assert_eq!(cmd["urls"], true);
     }
 
     #[test]
@@ -3637,6 +3899,39 @@ mod tests {
         assert_eq!(cmd["action"], "getbytext");
         assert_eq!(cmd["text"], "Example");
         assert!(cmd.get("subaction").is_none());
+    }
+    #[test]
+    fn test_find_role_without_name_omits_optional_field() {
+        let cmd = parse_command(&args("find role heading"), &default_flags()).unwrap();
+        assert!(cmd.get("name").is_none());
+    }
+    #[test]
+    fn test_find_text_subaction_forwards_value() {
+        let cmd = parse_command(&args("find text Probe fill hello --exact"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "getbytext");
+        assert_eq!(cmd["text"], "Probe");
+        assert_eq!(cmd["subaction"], "fill");
+        assert_eq!(cmd["value"], "hello");
+        assert_eq!(cmd["exact"], true);
+    }
+
+    #[test]
+    fn test_find_alt_and_title_subactions_forward_values() {
+        let alt = parse_command(&args("find alt Alt fill alternate"), &default_flags()).unwrap();
+        assert_eq!(alt["action"], "getbyalttext");
+        assert_eq!(alt["subaction"], "fill");
+        assert_eq!(alt["value"], "alternate");
+
+        let title = parse_command(&args("find title Title fill titled"), &default_flags()).unwrap();
+        assert_eq!(title["action"], "getbytitle");
+        assert_eq!(title["subaction"], "fill");
+        assert_eq!(title["value"], "titled");
+    }
+
+    #[test]
+    fn test_find_fill_and_type_require_value() {
+        assert!(parse_command(&args("find title Title fill"), &default_flags()).is_err());
+        assert!(parse_command(&args("find text Probe type --exact"), &default_flags()).is_err());
     }
 
     // === Download Tests ===

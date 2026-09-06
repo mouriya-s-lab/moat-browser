@@ -26,7 +26,7 @@ const html = `<!doctype html><title>Moat CLI Matrix</title><style>body{min-heigh
 <h1 title="matrix-title">Moat CLI Matrix</h1><label>Name <input id="input" placeholder="Your name" data-testid="name"></label>
 <button id="button" onclick="this.dataset.clicked='yes'">Run</button><input id="check" type="checkbox"><select id="select"><option value="a">A</option><option value="b">B</option></select>
 <img alt="pixel" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="><div id="source" draggable="true">drag</div><div id="target">drop</div>
-<input id="file" type="file"><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button>
+<input id="file" type="file"><a href="/target">Target</a><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button>
 <iframe id="frame" srcdoc="<p id='inside'>frame</p>"></iframe>`;
 // A non-opaque origin is mandatory: cookies, local/session storage, permission
 // grants, state save/load, and request headers cannot be proven on a data URL.
@@ -53,7 +53,7 @@ const cases: Case[] = [
   C("scroll",["scroll","down","100"],["eval","window.scrollY > 0"],"true"), C("scrollintoview",["scrollintoview","#target"],["eval","document.querySelector('#target').getBoundingClientRect().top < innerHeight"],"true"), C("wait",["wait","10"]),
   C("waitforurl",["wait","--url",`${new URL(fixture).origin}/*`]), C("waitforloadstate",["wait","--load","domcontentloaded"]), C("waitforfunction",["wait","--fn","document.querySelector('h1')?.textContent === 'Moat CLI Matrix'"]),
   C("waitfordownload",["wait","--download",join(artifacts,"wait-download.txt"),"--timeout","10000"],undefined,undefined,undefined,[join(artifacts,"wait-download.txt")]),
-  C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
+  C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("snapshot_urls",["snapshot","-i","--urls","-s","body"],undefined,new URL("/target",fixture).toString()), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
   C("gettext",["get","text","h1"],undefined,"Moat CLI Matrix"), C("innerhtml",["get","html","h1"]), C("inputvalue",["get","value","#input"]),
   C("getattribute",["get","attr","h1","title"],undefined,"matrix-title"), C("count",["get","count","button"]), C("boundingbox",["get","box","h1"]), C("styles",["get","styles","h1"]), C("cdp_url",["get","cdp-url"]),
   C("isvisible",["is","visible","h1"],undefined,"true"), C("isenabled",["is","enabled","#button"],undefined,"true"), C("ischecked",["is","checked","#check"]),
