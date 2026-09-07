@@ -484,7 +484,8 @@ moat find role button --name "Edit" --nth 3
 |------|------|
 | `moat connect [--profile <name>]` / `moat init [--profile <name>]` | 创建 Controller 管理的浏览器 session，并把 ID 写入 `~/.moat/session` |
 | `moat status` | 查询当前 session；没有 session 时依赖 session 的命令返回 exit 77 |
-| `moat disconnect` / `close-session` / `close` | 销毁当前 session 并清理本地 session 状态 |
+| `moat disconnect` / `destroy` / `close-session` | 调用本地 session 销毁路径 |
+| `moat close` | 发送 wire `close` action，由 Controller 注销 active session；它不是本地 parser alias |
 
 **页面与运行时命令**：
 
@@ -503,14 +504,15 @@ session 清理时移除，跨 tab/session 的 identifier 会被拒绝。
 **Batch 与 timeout**：
 
 ```bash
-moat batch "get title" "get url"
-printf '%s\n' '[["get","title"],["get","url"]]' | moat batch
-moat batch --bail "open https://example.com" "get title"
+moat --json batch "get title" "get url"
+printf '%s\n' '[["get","title"],["get","url"]]' | moat --json batch
+moat --json batch --bail "open https://example.com" "get title"
 ```
 
-inline 命令和 stdin JSON argv 都返回 moat 的单一
+`--json` 模式下，inline 命令和 stdin JSON argv 都返回 moat 的单一
 `{ "success": true, "data": { "results": [...] } }` envelope。默认遇到失败
 仍执行后续 item，`--bail` 在首个失败处停止；任一 item 失败时进程返回非零。
+不带 `--json` 时，batch 逐项输出可读的成功结果或错误，不输出 JSON envelope。
 `AGENT_BROWSER_DEFAULT_TIMEOUT` 只在 wait-family 没有显式 `--timeout` 时提供
 默认毫秒值。
 
@@ -528,9 +530,10 @@ inline 命令和 stdin JSON argv 都返回 moat 的单一
   moat 返回 `unsupported_in_moat`。
 
 `--json` 每个命令只输出一个 JSON value；普通输出使用可读的成功/错误状态。
-常用 exit code 为 0（成功）、1（命令或 batch item 失败）、2（usage）、
-66（element not found）、69（Controller/session 创建失败）、75（timeout）、
-77（没有 active session）和 78（配置错误）。
+当前 moat CLI 对 usage、element not found 和 timeout 都返回 exit 1；上游约定的
+exit 2、66、75 不由 moat CLI 发出。其余常用 exit code 为 0（成功）、1（命令或
+batch item 失败）、69（Controller/session 创建失败）、77（没有 active session）
+和 78（配置错误）。
 
 与 agent-browser 的关键差异是：agent-browser 可自动启动本地 daemon 和
 Chrome，而 moat 必须先 `moat connect`，并始终通过 Controller 的远程
@@ -664,7 +667,9 @@ allowed-tools: Bash(moat:*), Bash(*/moat:*)
 # moat remote browser
 
 先执行 `moat connect [--profile <name>]`，结束后执行 `moat disconnect`。
-`init` 是 `connect` 别名；没有 active session 时依赖 session 的命令返回 77。
+`init` 是 `connect` 别名；`disconnect`、`destroy`、`close-session` 调用本地
+session 销毁路径；`close` 发送 wire action 并由 Controller 注销 active session。
+没有 active session 时依赖 session 的命令返回 77。
 
 优先使用 semantic locators：
 
@@ -692,14 +697,14 @@ moat network har start|stop
 
 ## Batch and output
 
-moat batch "get title" "get url"
-printf '%s\n' '[["get","title"],["get","url"]]' | moat batch
-moat batch --bail "open https://example.com" "get title"
+moat --json batch "get title" "get url"
+printf '%s\n' '[["get","title"],["get","url"]]' | moat --json batch
+moat --json batch --bail "open https://example.com" "get title"
 
-inline 和 stdin batch 都使用 `{success,data:{results}}` moat envelope。
-默认继续执行失败 item；`--bail` 遇到首个失败停止。`--json` 每命令只输出
-一个 JSON value。`AGENT_BROWSER_DEFAULT_TIMEOUT` 是 wait-family 的默认值，
-显式 `--timeout` 优先。
+`--json` 下 inline 和 stdin batch 都使用 `{success,data:{results}}` moat
+envelope；不带 `--json` 时逐项输出可读文本，不输出 JSON envelope。默认继续执行
+失败 item；`--bail` 遇到首个失败停止。`--json` 每命令只输出一个 JSON value。
+`AGENT_BROWSER_DEFAULT_TIMEOUT` 是 wait-family 的默认值，显式 `--timeout` 优先。
 
 ## Unsupported
 
@@ -711,9 +716,9 @@ numeric index；`--label` 和字符串 tab reference 不支持。上游 startup 
 
 ## Exit codes
 
-0=ok, 1=command or batch failure, 2=usage, 66=element not found,
-69=Controller/session creation failure, 75=timeout, 77=no session,
-78=configuration error.
+0=ok, 1=command, usage, unsupported-capability, element, timeout, or batch failure,
+69=Controller/session creation failure, 77=no session, 78=configuration error.
+The current moat CLI does not emit upstream sysexits values 2, 66, or 75.
 ```
 
 ## 10. ADT 类型系统

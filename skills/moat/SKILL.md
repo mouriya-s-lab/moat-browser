@@ -46,8 +46,9 @@ moat init --profile default
 moat status
 ```
 
-`init` and `connect` are aliases. `disconnect`, `close-session`, `destroy`, and
-`close` destroy the active session (where the command is accepted as an alias).
+`init` and `connect` are aliases. `disconnect`, `destroy`, and `close-session`
+invoke local session destruction. `close` is a wire command whose Controller
+handler deregisters the active session; it is not a local parser alias.
 Always disconnect when the workflow is complete:
 
 ```bash
@@ -153,12 +154,12 @@ unsupported upstream plugin/runtime-launcher setting.
 Batch commands can be passed inline or as JSON on stdin:
 
 ```bash
-moat batch "get title" "get url"
-printf '%s\n' '[["get","title"],["get","url"]]' | moat batch
-moat batch --bail "open https://example.com" "get title"
+moat --json batch "get title" "get url"
+printf '%s\n' '[["get","title"],["get","url"]]' | moat --json batch
+moat --json batch --bail "open https://example.com" "get title"
 ```
 
-The moat CLI emits one response envelope, including for batch:
+With `--json`, inline and stdin batch both emit one moat response envelope:
 
 ```json
 {"success":true,"data":{"results":[{"success":true}]}}
@@ -166,8 +167,9 @@ The moat CLI emits one response envelope, including for batch:
 
 Failures retain their result entry. By default execution continues and the
 process exits nonzero if any item failed; `--bail` stops after the first failed
-item. `--json` emits exactly one JSON value. Without `--json`, successful
-commands use readable status output and failures use an error indicator.
+item. Without `--json`, batch prints each successful response or error in
+human-readable text and does not emit the JSON envelope. `--json` emits exactly
+one JSON value.
 
 `AGENT_BROWSER_DEFAULT_TIMEOUT` supplies the default timeout in milliseconds
 for wait-family commands when no explicit `--timeout` is present. An explicit
@@ -178,13 +180,14 @@ Relevant exit codes are:
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Command, unsupported-capability, or batch-item failure |
-| 2 | Usage error |
-| 66 | Element not found |
+| 1 | Command, usage, unsupported-capability, element, timeout, or batch-item failure |
 | 69 | Controller/session creation failure |
-| 75 | Timeout |
 | 77 | No active session |
 | 78 | Controller configuration error |
+
+The current moat CLI uses exit code `1` for usage, missing-element, and timeout
+failures; upstream sysexits values `2`, `66`, and `75` are not emitted by this
+CLI.
 
 ## Unsupported upstream capabilities
 
