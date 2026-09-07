@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
-/** Exhaustive, black-box moat CLI contract runner for issue #220. */
+/** Exhaustive, black-box moat CLI contract runner for issue #228. */
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 type Availability = "controller" | "local" | "orchestrated" | "stable_unsupported";
+type EntryKind = "static" | "dynamic";
 type Case = { action: string; argv: string[]; availability: Availability; verify?: string[]; contains?: string; notContains?: string; artifacts?: string[] };
+type ContractEntry = { action: string; sourceKind: EntryKind; dynamicSources: string[]; availability: Availability };
+type Contract = { entries: ContractEntry[]; topLevel: Record<string, TopLevelKind>; gaps: Record<string, string[]>; counts: Record<string, number> };
 type Run = { exit: number; stdout: string; stderr: string; value?: Record<string, unknown>; jsonValues: number };
 type TopLevelKind = "local_output" | "local_session" | "controller_session" | "stable_unsupported";
 type TopLevelResult = { name: string; kind: TopLevelKind; argv: string[]; exit: number; passed: boolean; jsonValues: number; diagnostic: string };
@@ -26,14 +29,14 @@ const html = `<!doctype html><title>Moat CLI Matrix</title><style>body{min-heigh
 <h1 title="matrix-title">Moat CLI Matrix</h1><label>Name <input id="input" placeholder="Your name" data-testid="name"></label>
 <button id="button" onclick="this.dataset.clicked='yes'">Run</button><input id="check" type="checkbox"><select id="select"><option value="a">A</option><option value="b">B</option></select>
 <img alt="pixel" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="><div id="source" draggable="true">drag</div><div id="target">drop</div>
-<input id="file" type="file"><a href="/target">Target</a><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button>
+<input id="file" type="file"><a href="/target">Target</a><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button><output id="route">initial</output><script>if(location.pathname === '/router')window.next={router:{push(url){history.pushState(null,'',url);document.querySelector('#route').textContent='router:'+url}}}</script>
 <iframe id="frame" srcdoc="<p id='inside'>frame</p>"></iframe>`;
 // A non-opaque origin is mandatory: cookies, local/session storage, permission
 // grants, state save/load, and request headers cannot be proven on a data URL.
 // The runner installs the deterministic DOM after each navigation that would
 // otherwise replace it.
 const fixture = process.env.MOAT_FIXTURE_URL ?? "https://example.com/";
-const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop'])document.addEventListener(event,()=>window.matrixEvents.push(event));document.addEventListener('dragover',e=>e.preventDefault());true`];
+const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop','popstate','navigate'])document.addEventListener(event,()=>window.matrixEvents.push(event));document.addEventListener('dragover',e=>e.preventDefault());true`];
 
 const C = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string, artifacts?: string[]): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts });
 const L = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string): Case => ({ action, argv, availability: "local", verify, contains, notContains });
@@ -44,6 +47,8 @@ const statePath = join(home, ".moat", "states", `${state}.json`);
 const cases: Case[] = [
   C("cookies_clear", ["cookies", "clear"]), C("navigate", ["open", fixture]),
   C("url", ["get","url"]), C("title",["get","title"],undefined,"Moat CLI Matrix"), C("back",["back"]), C("forward",["forward"]), C("reload",["reload"]),
+  C("pushstate",["pushstate","/matrix-pushstate"],["eval","window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"],"popstate,navigate"),
+  C("addinitscript",["addinitscript","window.__moat_matrix_init = 'active'"]), C("removeinitscript",["removeinitscript","missing-matrix-init-script"]),
   C("click",["click","#button"],["eval","document.querySelector('#button').dataset.clicked"],"yes"), C("dblclick",["dblclick","#button"],["eval","window.matrixEvents.includes('dblclick')"],"true"),
   C("fill",["fill","#input","filled"],["get","value","#input"],"filled"), C("type",["type","#input","-typed"],["get","value","#input"],"typed"),
   C("hover",["hover","#button"],["eval","document.querySelector('#button').matches(':hover')"],"true"), C("focus",["focus","#input"],["eval","document.activeElement.id"],"input"), C("check",["check","#check"],["is","checked","#check"],"true"),
@@ -75,9 +80,13 @@ const cases: Case[] = [
   C("batch",["batch"]),
   L("state_list",["state","list"],undefined,state), L("state_show",["state","show",state],undefined,"origins"), L("state_rename",["state","rename",state,"matrix-renamed"],["state","list"],"matrix-renamed",state), L("state_clean",["state","clean","--older-than","30"]), L("state_clear",["state","clear","--all"],["state","list"],undefined,"matrix-renamed"),
   O("diff_snapshot",["diff","snapshot"]), O("diff_screenshot",["diff","screenshot","--baseline",shot,"--output",join(artifacts,"diff.png")],[join(artifacts,"diff.png")]), O("diff_url",["diff","url",`data:text/html,${encodeURIComponent("<title>First</title><h1>First</h1>")}`,`data:text/html,${encodeURIComponent("<title>Different</title><h1>Different</h1>")}`]),
-  ...[["auth_save",["auth","save","x"]],["auth_list",["auth","list"]],["auth_show",["auth","show","x"]],["auth_delete",["auth","delete","x"]],["auth_login",["auth","login","x"]],
-    ["confirm",["confirm"]],["deny",["deny"]],["inspect",["inspect"]],["launch",["launch"]],["stream_enable",["stream","enable"]],["stream_disable",["stream","disable"]],["stream_status",["stream","status"]],
-    ["recording_start",["record","start"]],["recording_stop",["record","stop"]],["recording_restart",["record","restart"]],["device_list",["device","list"]]] .map(([a,v])=>U(a as string,v as string[])),
+  ...[
+    ["a11y",["a11y"]],["auth_save",["auth","save","x"]],["auth_list",["auth","list"]],["auth_show",["auth","show","x"]],["auth_delete",["auth","delete","x"]],["auth_login",["auth","login","x"]],
+    ["confirm",["confirm"]],["deny",["deny"]],["device_list",["device","list"]],["inspect",["inspect"]],["launch",["launch"]],["read",["read",fixture]],
+    ["react_tree",["react","tree"]],["react_inspect",["react","inspect","1"]],["react_renders_start",["react","renders","start"]],["react_renders_stop",["react","renders","stop"]],["react_suspense",["react","suspense"]],
+    ["stream_enable",["stream","enable"]],["stream_disable",["stream","disable"]],["stream_status",["stream","status"]],["vitals",["vitals"]],["webmcp_list",["webmcp","list"]],["webmcp_invoke",["webmcp","invoke","matrix"]],["webmcp_result",["webmcp","result","matrix"]],["webmcp_cancel",["webmcp","cancel","matrix"]],
+    ["recording_start",["record","start"]],["recording_stop",["record","stop"]],["recording_restart",["record","restart"]]
+  ].map(([a,v])=>U(a as string,v as string[])),
   C("close",["close"]),
 ];
 
@@ -118,6 +127,25 @@ const recordJson = (name: string, kind: TopLevelKind, argv: string[], r: Run, pr
   topLevelResults.push({ name, kind, argv, exit:r.exit, passed, jsonValues:r.jsonValues, diagnostic:passed ? "" : `JSON contract failed: stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}` });
 };
 
+const contractProc = Bun.spawnSync(["python3",join(root,"scripts/cli-command-contract.py")],{stdout:"pipe",stderr:"pipe"});
+const contractStdout = new TextDecoder().decode(contractProc.stdout);
+let contract: Contract;
+try {
+  contract = JSON.parse(contractStdout) as Contract;
+} catch (error) {
+  throw new Error(`CLI contract inventory did not emit JSON: ${String(error)}\n${contractStdout}\n${new TextDecoder().decode(contractProc.stderr)}`);
+}
+const contractEntries = contract.entries;
+const expected = [...new Set(contractEntries.map(entry => entry.action))].sort();
+const expectedAvailability = new Map(contractEntries.map(entry => [entry.action, entry.availability]));
+const caseNames = cases.map(c => c.action);
+const duplicateCases = [...new Set(caseNames.filter((action, index) => caseNames.indexOf(action) !== index))].sort();
+const unknownCases = caseNames.filter(action => !expectedAvailability.has(action)).sort();
+const caseAvailabilityMismatches = cases
+  .filter(c => expectedAvailability.get(c.action) !== c.availability)
+  .map(c => ({ action: c.action, declared: c.availability, inventory: expectedAvailability.get(c.action) ?? "missing" }));
+const results = [] as Record<string, unknown>[];
+
 // Local output must neither need nor create a session. Exercise every spelling
 // because these are separate public top-level parser entries.
 await recordText("--help", ["--help"], /moat - remote Chromium/, /agent-browser/);
@@ -126,18 +154,50 @@ await recordText("help", ["help"], /moat - remote Chromium/, /agent-browser/);
 await recordText("--version", ["--version"], /^moat\s+\S+\s*$/);
 await recordText("-V", ["-V"], /^moat\s+\S+\s*$/);
 
-for (const name of ["dashboard", "install", "profiles", "session", "upgrade"]) {
-  const r = await run([name]);
-  recordJson(name, "stable_unsupported", [name], r, value => value.exit !== 0 && value.value?.success === false && value.value?.errorType === "unsupported_in_moat");
+const topLevelUnsupportedArgs: Record<string, string[]> = {
+  auth: ["auth"],
+  confirm: ["confirm"],
+  deny: ["deny"],
+  device: ["device"],
+  inspect: ["inspect"],
+  launch: ["launch"],
+  record: ["record"],
+  stream: ["stream"],
+  read: ["read"],
+  react: ["react"],
+  vitals: ["vitals"],
+  "web-vitals": ["web-vitals"],
+  a11y: ["a11y"],
+  webmcp: ["webmcp"],
+  mcp: ["mcp"],
+  doctor: ["doctor"],
+  skills: ["skills"],
+  plugin: ["plugin"],
+  plugins: ["plugins"],
+  chat: ["chat"],
+  dashboard: ["dashboard"],
+  install: ["install"],
+  profiles: ["profiles"],
+  session: ["session"],
+  upgrade: ["upgrade"],
+};
+for (const [name, argv] of Object.entries(topLevelUnsupportedArgs)) {
+  if (contract.topLevel[name] !== "stable_unsupported") continue;
+  const r = await run(argv);
+  recordJson(name, "stable_unsupported", argv, r, value => value.exit !== 0 && value.value?.success === false && value.value?.errorType === "unsupported_in_moat");
 }
 
 // Prove all lifecycle aliases against real Controller state without leaking a
-// session: init -> status -> disconnect -> absent -> connect -> command matrix.
+// session: init -> status -> use -> disconnect -> absent -> connect -> matrix.
 const init = await run(["init"]);
 recordJson("init", "controller_session", ["init"], init, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
 if (!topLevelResults.at(-1)?.passed) throw new Error(`init failed: ${init.stdout}${init.stderr}`);
+const activeSessionId = (init.value?.data as Record<string,unknown> | undefined)?.sessionId;
+if (typeof activeSessionId !== "string") throw new Error(`init did not return a session id: ${init.stdout}${init.stderr}`);
 const activeStatus = await run(["status"]);
 recordJson("status", "local_session", ["status"], activeStatus, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+const use = await run(["use", activeSessionId]);
+recordJson("use", "local_session", ["use", activeSessionId], use, r => r.exit === 0 && r.value?.success === true && (r.value?.data as Record<string,unknown> | undefined)?.sessionId === activeSessionId);
 const disconnect = await run(["disconnect"]);
 recordJson("disconnect", "controller_session", ["disconnect"], disconnect, r => r.exit === 0 && r.value?.success === true);
 const absentAfterDisconnect = await run(["status"]);
@@ -147,11 +207,11 @@ if (absentAfterDisconnect.exit !== 77 || absentAfterDisconnect.jsonValues !== 1 
 const connect = await run(["connect"]);
 recordJson("connect", "controller_session", ["connect"], connect, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
 if (!topLevelResults.at(-1)?.passed) throw new Error(`connect failed: ${connect.stdout}${connect.stderr}`);
-
-const contractProc = Bun.spawnSync(["python3",join(root,"scripts/cli-command-contract.py")],{stdout:"pipe",stderr:"pipe"});
-const contract = JSON.parse(new TextDecoder().decode(contractProc.stdout)) as { actions: Record<Availability,string[]>; topLevel: Record<string,TopLevelKind> };
-const expected = Object.values(contract.actions).flat().sort();
-const results = [] as Record<string, unknown>[];
+const destroy = await run(["destroy"]);
+recordJson("destroy", "controller_session", ["destroy"], destroy, r => r.exit === 0 && r.value?.success === true);
+const reconnectAfterDestroy = await run(["connect"]);
+recordJson("connect", "controller_session", ["connect"], reconnectAfterDestroy, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+let initScriptIdentifier: string | undefined;
 for (const c of cases) {
   process.stderr.write(`[cli-matrix] ${results.length + 1}/${cases.length} ${c.action}\n`);
   let argv = c.argv;
@@ -181,6 +241,9 @@ for (const c of cases) {
     };
     const requestId = findId(requestList.value);
     if (requestId) argv = ["network","request",requestId];
+  }
+  if (c.action === "removeinitscript") {
+    argv = ["removeinitscript", initScriptIdentifier ?? "missing-matrix-init-script"];
   }
   if (c.action === "har_stop") {
     await run(["eval","fetch('data:text/plain,har-activity').then(r => r.text())"]);
@@ -221,9 +284,50 @@ for (const c of cases) {
     const currentUrl = await run(["get","url"]);
     if (JSON.stringify(currentUrl.value).includes(fixture)) await run(installFixtureArgv);
   }
+  if (c.action === "addinitscript" && r.exit === 0) {
+    const data = r.value?.data;
+    if (data && typeof data === "object" && "identifier" in data && typeof data.identifier === "string") {
+      initScriptIdentifier = data.identifier;
+    }
+  }
   const unsupported = c.availability === "stable_unsupported";
   let effectPassed = unsupported ? r.exit !== 0 && r.value?.errorType === "unsupported_in_moat" : r.exit === 0 && r.value?.success === true;
   let diagnostic = "";
+  if (c.action === "pushstate" && effectPassed) {
+    const responseData = r.value?.data;
+    const responseUrl = responseData && typeof responseData === "object" && "url" in responseData && typeof responseData.url === "string" ? responseData.url : "";
+    const urlResult = await run(["get", "url"]);
+    const eventsResult = await run(["eval", "window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"]);
+    const sameUrl = await run(["pushstate", "/matrix-pushstate"]);
+    const sameEventsResult = await run(["eval", "window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"]);
+    const fallbackEvents = JSON.stringify(eventsResult.value);
+    const sameEvents = JSON.stringify(sameEventsResult.value);
+    const fallbackPassed = responseUrl.includes("/matrix-pushstate")
+      && urlResult.exit === 0
+      && eventsResult.exit === 0
+      && sameUrl.exit === 0
+      && sameEventsResult.exit === 0
+      && fallbackEvents.includes("popstate,navigate")
+      && sameEvents.includes("popstate,navigate")
+      && !sameEvents.includes("popstate,navigate,popstate");
+
+    const routerOpen = await run(["open", new URL("/router", fixture).toString()]);
+    const routerRestore = routerOpen.exit === 0 ? await run(installFixtureArgv) : routerOpen;
+    const routerPush = routerRestore.exit === 0 ? await run(["pushstate", "/routed"]) : routerRestore;
+    const routeResult = routerPush.exit === 0 ? await run(["get", "text", "#route"]) : routerPush;
+    const routerEvents = routerPush.exit === 0
+      ? await run(["eval", "window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"])
+      : routerPush;
+    const routerPassed = routerPush.exit === 0
+      && routeResult.exit === 0
+      && routerEvents.exit === 0
+      && JSON.stringify(routeResult.value).includes("router:/routed")
+      && !JSON.stringify(routerEvents.value).includes("popstate,navigate");
+    effectPassed = fallbackPassed && routerPassed;
+    if (!effectPassed) {
+      diagnostic = `pushstate effect failed: response=${JSON.stringify(responseData)} url=${urlResult.stdout} events=${eventsResult.stdout} same=${sameEventsResult.stdout} route=${routeResult.stdout} routerEvents=${JSON.stringify(routerEvents.value)}`;
+    }
+  }
   if (effectPassed && c.verify) {
     const check = await run(c.verify); const rendered = JSON.stringify(check.value);
     effectPassed = check.exit === 0 && check.value?.success === true && (!c.contains || rendered.includes(c.contains)) && (!c.notContains || !rendered.includes(c.notContains));
@@ -231,6 +335,25 @@ for (const c of cases) {
   } else if (effectPassed && c.contains) {
     effectPassed = JSON.stringify(r.value).includes(c.contains);
     if (!effectPassed) diagnostic = `response missing ${c.contains}`;
+  }
+  if (effectPassed && c.action === "addinitscript") {
+    const data = r.value?.data;
+    const responseValid = data && typeof data === "object" && "added" in data && data.added === true && "identifier" in data && typeof data.identifier === "string";
+    const before = await run(["eval", "typeof window.__moat_matrix_init"]);
+    const reload = await run(["reload"]);
+    const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
+    const after = restore.exit === 0 ? await run(["eval", "window.__moat_matrix_init"]) : restore;
+    effectPassed = responseValid && before.exit === 0 && JSON.stringify(before.value).includes("undefined") && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("active");
+    if (!effectPassed) diagnostic = `addinitscript lifecycle failed: response=${JSON.stringify(data)} before=${before.stdout} reload=${reload.stdout} after=${after.stdout}`;
+  }
+  if (effectPassed && c.action === "removeinitscript") {
+    const data = r.value?.data;
+    const responseValid = data && typeof data === "object" && "removed" in data && data.removed === true && "identifier" in data && data.identifier === initScriptIdentifier;
+    const reload = await run(["reload"]);
+    const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
+    const after = restore.exit === 0 ? await run(["eval", "typeof window.__moat_matrix_init"]) : restore;
+    effectPassed = responseValid && typeof initScriptIdentifier === "string" && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("undefined");
+    if (!effectPassed) diagnostic = `removeinitscript lifecycle failed: response=${JSON.stringify(data)} reload=${reload.stdout} after=${after.stdout}`;
   }
   if (effectPassed && c.artifacts) {
     for (const path of c.artifacts) {
@@ -286,9 +409,8 @@ const covered = [...new Set(cases.map(c=>c.action))].sort();
 const missing = expected.filter(a=>!covered.includes(a));
 const failed = results.filter(r=>r.jsonValues !== 1 || (r.availability !== "stable_unsupported" && !r.success) || (r.availability === "stable_unsupported" && (r.exit === 0 || r.errorType !== "unsupported_in_moat")));
 const noOp = results.filter(r=>r.effectPassed !== true);
-// `close` is a wire action and remains part of the 121-action matrix;
-// `close-session` is the top-level lifecycle alias that must destroy the
-// Controller container and clear ~/.moat/session.
+// `close` is a wire action; `close-session` is the top-level lifecycle alias
+// that must destroy the Controller container and clear ~/.moat/session.
 const reconnectForCloseSession = await run(["connect"]);
 if (reconnectForCloseSession.exit !== 0 || reconnectForCloseSession.value?.success !== true) {
   throw new Error(`could not create close-session verification session: ${reconnectForCloseSession.stdout}${reconnectForCloseSession.stderr}`);
@@ -301,8 +423,45 @@ const expectedTopLevel = Object.keys(contract.topLevel).sort();
 const coveredTopLevel = [...new Set(topLevelResults.map(result => result.name))].sort();
 const topLevelMissing = expectedTopLevel.filter(name => !coveredTopLevel.includes(name));
 const topLevelFailed = topLevelResults.filter(result => !result.passed).map(result => result.name);
-const report = { generatedAt:new Date().toISOString(), controller, moat, expectedActions:expected.length, coveredActions:covered.length, cases:results.length, missing, failed:failed.map(r=>r.name), noOp:noOp.map(r=>r.name), internalDiagnostics:results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic})), expectedTopLevel:expectedTopLevel.length, coveredTopLevel:coveredTopLevel.length, topLevelMissing, topLevelFailed, topLevelResults, isolationPassed, results };
+const inventoryGaps = Object.entries(contract.gaps).flatMap(([name, values]) => values.map(value => `${name}: ${value}`));
+const report = {
+  generatedAt:new Date().toISOString(),
+  controller,
+  moat,
+  contractCounts: contract.counts,
+  actionInventory: contractEntries,
+  expectedActions:expected.length,
+  coveredActions:covered.length,
+  cases:results.length,
+  missing,
+  unknownCases,
+  duplicateCases,
+  caseAvailabilityMismatches,
+  failed:failed.map(r=>r.name),
+  noOp:noOp.map(r=>r.name),
+  internalDiagnostics:results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic})),
+  inventoryGaps,
+  expectedTopLevel:expectedTopLevel.length,
+  coveredTopLevel:coveredTopLevel.length,
+  topLevelMissing,
+  topLevelFailed,
+  topLevelResults,
+  isolationPassed,
+  results,
+};
 await writeFile(resultPath, JSON.stringify(report,null,2)+"\n");
 console.log(JSON.stringify(report));
 if (ownHome) await rm(home,{recursive:true,force:true});
-if (missing.length || failed.length || noOp.length || report.internalDiagnostics.length || topLevelMissing.length || topLevelFailed.length || !isolationPassed) process.exit(1);
+if (
+  inventoryGaps.length
+  || missing.length
+  || unknownCases.length
+  || duplicateCases.length
+  || caseAvailabilityMismatches.length
+  || failed.length
+  || noOp.length
+  || report.internalDiagnostics.length
+  || topLevelMissing.length
+  || topLevelFailed.length
+  || !isolationPassed
+) process.exit(1);

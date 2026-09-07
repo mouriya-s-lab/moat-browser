@@ -6,56 +6,56 @@ allowed-tools: Bash(moat:*), Bash(*/moat:*)
 
 # moat remote browser
 
-moat is a remote-browser CLI. The Controller starts one agent Chrome container per session; the CLI registers the session, stores its ID in `~/.moat/session`, and sends later commands to that active session.
+`moat` is a remote-browser CLI. The Controller owns one Chromium session per
+active session; the CLI stores the session ID in `~/.moat/session` and sends
+subsequent commands over the Controller WebSocket.
 
-## Setup
+## Setup and Controller selection
 
-Install the CLI from a checkout of this repository:
+Install from a checkout:
 
 ```bash
 bash scripts/install.sh
 ```
 
-Or, without a local checkout, run the installer through authenticated `gh`:
-
-```bash
-gh api repos/moat-lab/moat-browser/contents/scripts/install.sh --jq .content | base64 -d | bash
-```
-
-Configure the Controller URL:
+Configure the Controller with an environment variable or config file:
 
 ```bash
 export MOAT_CONTROLLER="ws://<controller-host>:3000"
+# or ~/.moat/config.json
+# { "controller": "ws://<controller-host>:3000" }
 ```
 
-Use `--controller <url>` to override the destination for one invocation. The
-override takes precedence over `MOAT_CONTROLLER` and the config file, and is
-not written to either the config or session file:
+Use `--controller <url>` for a one-command override:
 
 ```bash
 moat --controller "ws://<other-controller>:3000" connect --profile default
 ```
 
-Controller selection priority is `--controller` > non-empty
-`MOAT_CONTROLLER` > `~/.moat/config.json` `controller`.
+The destination priority is `--controller` > non-empty `MOAT_CONTROLLER` >
+`~/.moat/config.json` `controller`. A profile is selected on `connect` or
+`init` with `--profile`; it is not a Controller destination setting.
 
 ## Session lifecycle
 
-Start a session before issuing browser commands:
+Create a session before issuing browser commands:
 
 ```bash
 moat connect
-moat connect --profile default
+moat init --profile default
 moat status
 ```
 
-Always disconnect when done:
+`init` and `connect` are aliases. `disconnect`, `close-session`, `destroy`, and
+`close` destroy the active session (where the command is accepted as an alias).
+Always disconnect when the workflow is complete:
 
 ```bash
 moat disconnect
 ```
 
-`moat init` is an alias for `moat connect`, and `moat destroy` is an alias for `moat disconnect`.
+Commands that need a session fail with exit code `77` when no active session is
+registered. `status` reports the active session and Controller information.
 
 ## Interaction model
 
@@ -67,7 +67,8 @@ moat find label "Email" fill "user@example.com"
 moat find text "Login" click
 ```
 
-Use snapshots only when exploring an unfamiliar page or when a semantic locator fails:
+Use `snapshot` only for an unfamiliar page or after a semantic locator reports
+that the element was not found:
 
 ```bash
 moat snapshot
@@ -75,7 +76,8 @@ moat click @e1
 moat fill @e2 "value"
 ```
 
-Refs such as `@e1` come from the latest snapshot. Re-run `moat snapshot` after navigation or major DOM changes before reusing refs.
+Snapshot references are page-state dependent. Re-run `moat snapshot` after
+navigation or a major DOM change before reusing a reference.
 
 ## Core commands
 
@@ -84,21 +86,22 @@ moat open https://example.com
 moat back
 moat forward
 moat reload
-moat snapshot [--interactive] [--urls] [--compact] [--depth <n>] [--selector <sel>]
-moat click @e1
-moat fill @e1 "text"
-moat type @e1 "text" --clear --delay 300
-moat hover @e1
+moat click <selector>
+moat fill <selector> "text"
+moat type <selector> "text" [--clear] [--delay <ms>]
 moat press Enter
+moat get url
+moat get title
+moat get text <selector>
 moat screenshot
 moat eval "document.title"
-moat batch
 ```
 
-`moat type <selector> <text>` appends text character by character. Add
-`--clear` to empty the target before typing, and `--delay <ms>` to wait that
-many milliseconds between characters. Both options work with CSS selectors and
-snapshot references.
+`get url` and `get title` are supported remote commands. Selector-based
+`get text`, `get html`, `get value`, `get attr`, `get count`, `get box`, and
+`get styles` are also available; the selector or attribute argument is required
+where the command form needs one. `--urls` on `snapshot` adds browser-resolved
+absolute links.
 
 Capture network traffic as a HAR artifact:
 
@@ -107,38 +110,111 @@ moat network har start --content text
 moat network har stop ./network.har
 ```
 
-`--content` accepts `text` (the default; embeds text MIME responses), `all`
-(embeds binary responses as base64), or `none` (metadata only).
+`--content` accepts `text` (the default), `all` (binary responses as base64),
+or `none` (metadata only).
 
-`--urls` adds each referenced link's browser-resolved absolute `href` to the snapshot.
-`moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector.
+## Same-document navigation
 
-## Neko login URL
+Use `pushstate` when the application router should receive a same-document
+navigation:
 
-The neko WebRTC UI (for humans to log in interactively) is served by the `user-chrome` container on the Controller host's HTTP port `8080`. Given `MOAT_CONTROLLER=ws://<host>:3000`, the neko URL is:
-
+```bash
+moat pushstate /settings
 ```
+
+The Controller evaluates the request in the page main world. If the page
+exposes `window.next.router.push`, that page-owned router is used. Otherwise it
+uses `history.pushState` and dispatches the page navigation events. The result
+is the page URL. A request for the current URL is a no-op.
+
+## Runtime initialization scripts
+
+Register a script for the current page and session:
+
+```bash
+moat addinitscript "window.__agentReady = true"
+# output contains an opaque identifier
+moat removeinitscript <identifier>
+```
+
+The registration is scoped to the current tab and session, is applied to future
+documents and reloads, and is not retroactively executed in the current
+document. Removal rejects an identifier owned by another tab or session and
+does not roll back an already-loaded document. The Controller removes the
+registration when its page, tab, session, or runtime state is closed.
+
+`--init-script` and `AGENT_BROWSER_INIT_SCRIPTS` are different features: they
+belong to the upstream local launcher startup path and are rejected by moat
+rather than silently discarded. `AGENT_BROWSER_ENABLE` is likewise an
+unsupported upstream plugin/runtime-launcher setting.
+
+## Batch, output, and errors
+
+Batch commands can be passed inline or as JSON on stdin:
+
+```bash
+moat batch "get title" "get url"
+printf '%s\n' '[["get","title"],["get","url"]]' | moat batch
+moat batch --bail "open https://example.com" "get title"
+```
+
+The moat CLI emits one response envelope, including for batch:
+
+```json
+{"success":true,"data":{"results":[{"success":true}]}}
+```
+
+Failures retain their result entry. By default execution continues and the
+process exits nonzero if any item failed; `--bail` stops after the first failed
+item. `--json` emits exactly one JSON value. Without `--json`, successful
+commands use readable status output and failures use an error indicator.
+
+`AGENT_BROWSER_DEFAULT_TIMEOUT` supplies the default timeout in milliseconds
+for wait-family commands when no explicit `--timeout` is present. An explicit
+`--timeout` wins.
+
+Relevant exit codes are:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Command, unsupported-capability, or batch-item failure |
+| 2 | Usage error |
+| 66 | Element not found |
+| 69 | Controller/session creation failure |
+| 75 | Timeout |
+| 77 | No active session |
+| 78 | Controller configuration error |
+
+## Unsupported upstream capabilities
+
+The moat Controller deliberately does not import the upstream local daemon,
+launcher, plugin, or native-device backends. These command families return the
+stable `unsupported_in_moat` error rather than fake success:
+
+- `read`, `react`, `vitals`, `web-vitals`, `a11y`, and `webmcp`
+- `auth`, `confirm`, `deny`, `inspect`, `record`, and `stream`
+- `launch`, `install`, `upgrade`, `dashboard`, `profiles`, and `session`
+- `device`, `mcp`, `doctor`, `skills`, `plugin`, `plugins`, and `chat`
+
+Tab references remain numeric indexes. `tab --label` and string tab references
+are unsupported and fail before creating a tab.
+
+## Neko login URL and logged-in flows
+
+The neko WebRTC UI for a human login is served by the `user-chrome` container
+on the Controller host's HTTP port `8080`. With
+`MOAT_CONTROLLER=ws://<host>:3000`, open:
+
+```text
 http://<host>:8080
 ```
 
-Open it in a normal browser, log in to the target SaaS. Cookies land in the shared profile at `/data/profile`. Close the neko session before starting an agent session that reads that profile.
-
-## Logged-in SaaS flows
-
-Humans log in through the neko WebRTC user browser (see above). Agent sessions then load that profile by name:
+Log in there, close the neko session, then start an agent session using the
+profile that contains the cookies:
 
 ```bash
 moat connect --profile default
 moat open https://app.example.com/dashboard
 moat snapshot
 ```
-
-## Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Command failed |
-| 69 | Session creation failed |
-| 77 | No active session |
-| 78 | `MOAT_CONTROLLER` missing |

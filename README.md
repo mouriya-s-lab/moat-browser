@@ -474,21 +474,67 @@ moat find role button --name "Edit" --nth 3
 
 ### 9.3 命令参考
 
-CLI 命令词汇完整继承自 agent-browser fork，详见上游文档：`github.com/vercel-labs/agent-browser`。本文档不重复列表，只列出 moat-browser **新增**或**行为有差异**的命令。
+`moat` 的命令在远程 Controller session 上执行。完整的当前语法以
+`moat --help` 为准；下面列出 session 生命周期、页面运行时能力，以及与
+上游 local daemon 不同的边界。
 
-**新增命令**（session 生命周期，因为远程容器需要显式管理）：
+**Session 生命周期**：
 
 | 命令 | 说明 |
 |------|------|
-| `moat connect [--profile <name>]` | 建立 session：Controller 拷贝 profile、创建 agent-chrome 容器、等待 CDP 就绪。session ID 写入 `~/.moat/session` |
-| `moat disconnect` | 销毁 session：Controller 停止并删除容器、清理 profile 拷贝。清除 `~/.moat/session` |
-| `moat status` | 查询当前 session：容器 IP、CDP 端口、profile 名称、存活时长 |
+| `moat connect [--profile <name>]` / `moat init [--profile <name>]` | 创建 Controller 管理的浏览器 session，并把 ID 写入 `~/.moat/session` |
+| `moat status` | 查询当前 session；没有 session 时依赖 session 的命令返回 exit 77 |
+| `moat disconnect` / `close-session` / `close` | 销毁当前 session 并清理本地 session 状态 |
 
-**与 agent-browser 的行为差异**：
+**页面与运行时命令**：
 
-| 命令 | agent-browser 行为 | moat 行为 |
-|------|---------|----------|
-| （所有命令） | 隐式自动启动本地 daemon + 本地 Chrome | 需要先 `moat connect`，返回 exit 77 如未连接 |
+| 命令 | 说明 |
+|------|------|
+| `moat get url` / `moat get title` | 读取当前页面 URL 或标题 |
+| `moat get text|html|value|attr|count|box|styles <selector>` | 读取 selector 对应的页面状态 |
+| `moat pushstate <url>` | 在 page main world 中调用页面 router；没有 router 时回退到 `history.pushState` 与导航事件 |
+| `moat addinitscript <script>` | 为当前 tab/session 注册仅作用于未来 document 的运行时脚本 |
+| `moat removeinitscript <identifier>` | 按 opaque identifier 删除当前 tab/session 的脚本注册 |
+
+`pushstate` 对当前 URL 是 no-op。运行时 init script 不会回溯执行到已加载
+document；删除注册也不会回滚已经加载的 document。脚本注册会在 page、tab 或
+session 清理时移除，跨 tab/session 的 identifier 会被拒绝。
+
+**Batch 与 timeout**：
+
+```bash
+moat batch "get title" "get url"
+printf '%s\n' '[["get","title"],["get","url"]]' | moat batch
+moat batch --bail "open https://example.com" "get title"
+```
+
+inline 命令和 stdin JSON argv 都返回 moat 的单一
+`{ "success": true, "data": { "results": [...] } }` envelope。默认遇到失败
+仍执行后续 item，`--bail` 在首个失败处停止；任一 item 失败时进程返回非零。
+`AGENT_BROWSER_DEFAULT_TIMEOUT` 只在 wait-family 没有显式 `--timeout` 时提供
+默认毫秒值。
+
+**兼容性边界**：
+
+- `tab` 使用 numeric index；`--label` 和字符串 tab reference 返回
+  `unsupported_in_moat`，不会创建 tab。
+- `read`、`react`、`vitals`、`web-vitals`、`a11y`、`webmcp`、`auth`、
+  `confirm`、`deny`、`inspect`、`record`、`stream`、`device`、`launch`、
+  `install`、`upgrade`、`dashboard`、`profiles`、`session`、`mcp`、
+  `doctor`、`skills`、`plugin`、`plugins`、`chat` 属于上游 local
+  runtime/plugin/device 能力，moat 明确拒绝而不是返回假成功。
+- `--init-script`、`AGENT_BROWSER_INIT_SCRIPTS` 和 `AGENT_BROWSER_ENABLE`
+  属于上游 launcher/plugin startup 配置，不是 `addinitscript` 的替代品；
+  moat 返回 `unsupported_in_moat`。
+
+`--json` 每个命令只输出一个 JSON value；普通输出使用可读的成功/错误状态。
+常用 exit code 为 0（成功）、1（命令或 batch item 失败）、2（usage）、
+66（element not found）、69（Controller/session 创建失败）、75（timeout）、
+77（没有 active session）和 78（配置错误）。
+
+与 agent-browser 的关键差异是：agent-browser 可自动启动本地 daemon 和
+Chrome，而 moat 必须先 `moat connect`，并始终通过 Controller 的远程
+session 执行。
 
 ### 9.4 Wire 协议
 
@@ -508,7 +554,9 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 }
 ```
 
-`command` 字段的结构就是 agent-browser daemon 的 JSON 格式（见 fork 中 `cli/src/commands.rs` 的 `parse_command`）。两个 SDK（TS + Rust）负责编码这个结构，Controller 实现服务端解码。
+`command` 字段的结构就是 agent-browser daemon 的 JSON 格式（见 fork 中
+`cli/src/commands.rs` 的 `parse_command`）。两个 SDK（TS + Rust）负责编码
+这个结构，Controller 实现服务端解码。
 
 响应也同样：
 
@@ -526,7 +574,9 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 
 ### 9.5 Session 管理（moat 新增）
 
-agent-browser 的 daemon 是本地进程，启动即绑定到本地 Chrome，不需要显式 session 管理。moat 因为容器在远程，必须显式管理 session 生命周期。Session 管理由 SDK 层实现，CLI 只是调用 SDK 的 session API：
+agent-browser 的 daemon 是本地进程，启动即绑定到本地 Chrome，不需要显式
+session 管理。moat 因为容器在远程，必须显式管理 session 生命周期。Session
+管理由 SDK 层实现，CLI 只是调用 SDK 的 session API：
 
 ```
 moat connect  (CLI 命令)
@@ -580,10 +630,12 @@ moat --controller "ws://browser.mouriya.lan:3000" init --profile default
 
 # 默认 Controller
 export MOAT_CONTROLLER="ws://browser.mouriya.lan:3000"
-export MOAT_PROFILE="default"
 
-# 或 ~/.moat/config.json
-{ "controller": "ws://browser.mouriya.lan:3000", "profile": "default" }
+# profile 在 init/connect 命令上选择，不是 Controller 配置字段
+moat init --profile default
+
+# 或 ~/.moat/config.json（只保存 Controller）
+{ "controller": "ws://browser.mouriya.lan:3000" }
 
 # 优先级：本次 --controller > 非空 MOAT_CONTROLLER > 配置文件 controller
 ```
@@ -595,7 +647,8 @@ opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借�
 - **opencli 的 exit code 约定**：借 sysexits.h 习惯补齐 session 相关错误码（如 `NO_SESSION = 77`）。
 - **CLI-Anything 的 SKILL.md 随包分发**：SKILL.md 文件打进包，装包即自动发现。
 
-因为 SDK 是通用的 RPC 抽象，第三方可以基于 TS SDK 构建任意风格的 CLI 包装（opencli 风格、CLI-Anything 风格等），不需要碰 moat CLI 或 Rust SDK。
+因为 SDK 是通用的 RPC 抽象，第三方可以基于 TS SDK 构建任意风格的 CLI 包装
+（opencli 风格、CLI-Anything 风格等），不需要碰 moat CLI 或 Rust SDK。
 
 ### 9.7 SKILL.md
 
@@ -604,64 +657,64 @@ opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借�
 ```markdown
 ---
 name: moat
-description: Control a remote Chromium browser via agent-browser CLI. Execute web automation using semantic locators (Playwright-style) first, snapshot as exploration fallback.
-allowed-tools: Bash(moat:*)
+description: Control a remote Chromium browser through moat-browser. Prefer semantic locators; use snapshot for exploration.
+allowed-tools: Bash(moat:*), Bash(*/moat:*)
 ---
 
-# Interaction Model
+# moat remote browser
 
-moat inherits agent-browser's interaction model. The primary path is semantic
-locators that map directly to Playwright's getByRole/getByLabel/getByText/etc.
+先执行 `moat connect [--profile <name>]`，结束后执行 `moat disconnect`。
+`init` 是 `connect` 别名；没有 active session 时依赖 session 的命令返回 77。
 
-## Rules
+优先使用 semantic locators：
 
-1. **Start any session with `moat connect`**. Without it, all commands fail with exit 77.
-2. **Prefer semantic locators over snapshot**. Use `find role button --name "Submit"`,
-   `find label "Email" fill "..."`, `find text "Login"` for 90% of interactions.
-   These are cheap (~40 tokens) and map to Playwright's semantic API.
-3. **Use `moat snapshot` only when**: the page is completely unfamiliar, or a
-   semantic locator returned "element not found". Snapshot dumps the full ARIA
-   tree (1000+ tokens), so it's an exploration tool, not a per-step observation.
-4. **After snapshot, use `@eN` refs** to act on specific elements, then return to
-   semantic locators for subsequent steps.
-5. **Always `moat disconnect` when done** to free the container and profile copy.
+moat find role button --name "Submit" click
+moat find label "Email" fill "user@example.com"
+moat find text "Login" click
 
-## Primary commands (semantic locators)
+只有页面陌生或 locator 报告 element not found 时才使用 `moat snapshot`；
+snapshot 得到的 `@eN` ref 随页面状态变化，导航后应重新 snapshot。
 
-moat find role <role> [--name <name>] [action] [text]
-moat find text <text> [action] [text]
-moat find label <label> [action] [text]
-moat find placeholder <text> [action] [text]
-moat find alt <text> [action] [text]
-moat find title <text> [action] [text]
-moat find testid <id> [action] [text]
+## Commands
 
-Actions run only when supplied; omitting the action queries the locator without clicking:
-click, fill <text>, type <text>, check, uncheck, hover, text
-
-## Fallback commands (exploration)
-
-moat snapshot                    — ARIA tree with @eN refs
-moat click @eN                   — click by ref
-moat fill @eN "text"             — fill by ref
-moat type <selector> "text" [--clear] [--delay <ms>] — append or clear-and-type with optional per-character delay
-
-## Other
-
-moat connect / disconnect / status
 moat open <url> / back / forward / reload
-moat press <key>
-moat screenshot [--output file]
-moat eval "<js>"
-moat batch                       — stdin: [[cmd, args...], ...]
+moat click|fill|type|hover|press <...>
+moat get url|title
+moat get text|html|value|attr|count|box|styles <selector>
+moat pushstate <url>
+moat addinitscript <script>
+moat removeinitscript <identifier>
+moat network har start|stop
+
+`pushstate` 优先调用 page main world 的 page-owned router，否则执行
+`history.pushState` 与导航事件。`addinitscript` 只作用于当前 tab/session
+的未来 document；identifier opaque，跨 tab/session 删除会失败。
+
+## Batch and output
+
+moat batch "get title" "get url"
+printf '%s\n' '[["get","title"],["get","url"]]' | moat batch
+moat batch --bail "open https://example.com" "get title"
+
+inline 和 stdin batch 都使用 `{success,data:{results}}` moat envelope。
+默认继续执行失败 item；`--bail` 遇到首个失败停止。`--json` 每命令只输出
+一个 JSON value。`AGENT_BROWSER_DEFAULT_TIMEOUT` 是 wait-family 的默认值，
+显式 `--timeout` 优先。
+
+## Unsupported
+
+`read`、`react`、`vitals`、`web-vitals`、`a11y`、`webmcp`、local launcher/
+plugin/device/orchestration families 返回 `unsupported_in_moat`。`tab` 只接受
+numeric index；`--label` 和字符串 tab reference 不支持。上游 startup 的
+`--init-script`、`AGENT_BROWSER_INIT_SCRIPTS`、`AGENT_BROWSER_ENABLE` 也不
+是 runtime `addinitscript`，会被拒绝。
 
 ## Exit codes
 
-0=ok, 2=usage, 66=element not found, 69=controller down, 75=timeout,
-77=no session, 78=config error
+0=ok, 1=command or batch failure, 2=usage, 66=element not found,
+69=Controller/session creation failure, 75=timeout, 77=no session,
+78=configuration error.
 ```
-
----
 
 ## 10. ADT 类型系统
 
