@@ -36,7 +36,7 @@ const html = `<!doctype html><title>Moat CLI Matrix</title><style>body{min-heigh
 // The runner installs the deterministic DOM after each navigation that would
 // otherwise replace it.
 const fixture = process.env.MOAT_FIXTURE_URL ?? "https://example.com/";
-const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop','popstate','navigate'])document.addEventListener(event,()=>window.matrixEvents.push(event));document.addEventListener('dragover',e=>e.preventDefault());true`];
+const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop','popstate','navigate']){const target=event==='popstate'||event==='navigate'?window:document;target.addEventListener(event,()=>window.matrixEvents.push(event));}document.addEventListener('dragover',e=>e.preventDefault());true`];
 
 const C = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string, artifacts?: string[]): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts });
 const L = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string): Case => ({ action, argv, availability: "local", verify, contains, notContains });
@@ -48,7 +48,7 @@ const cases: Case[] = [
   C("cookies_clear", ["cookies", "clear"]), C("navigate", ["open", fixture]),
   C("url", ["get","url"]), C("title",["get","title"],undefined,"Moat CLI Matrix"), C("back",["back"]), C("forward",["forward"]), C("reload",["reload"]),
   C("pushstate",["pushstate","/matrix-pushstate"],["eval","window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"],"popstate,navigate"),
-  C("addinitscript",["addinitscript","window.__moat_matrix_init = 'active'"]), C("removeinitscript",["removeinitscript","missing-matrix-init-script"]),
+  C("addinitscript",["addinitscript","(() => { const mark = () => { if (document.body) document.body.dataset.moatMatrixInit = 'active'; }; mark(); window.addEventListener('DOMContentLoaded', mark); })()"]), C("removeinitscript",["removeinitscript","missing-matrix-init-script"]),
   C("click",["click","#button"],["eval","document.querySelector('#button').dataset.clicked"],"yes"), C("dblclick",["dblclick","#button"],["eval","window.matrixEvents.includes('dblclick')"],"true"),
   C("fill",["fill","#input","filled"],["get","value","#input"],"filled"), C("type",["type","#input","-typed"],["get","value","#input"],"typed"),
   C("hover",["hover","#button"],["eval","document.querySelector('#button').matches(':hover')"],"true"), C("focus",["focus","#input"],["eval","document.activeElement.id"],"input"), C("check",["check","#check"],["is","checked","#check"],"true"),
@@ -302,6 +302,8 @@ for (const c of cases) {
     const sameEventsResult = await run(["eval", "window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"]);
     const fallbackEvents = JSON.stringify(eventsResult.value);
     const sameEvents = JSON.stringify(sameEventsResult.value);
+    const fallbackCheck = c.verify ? await run(c.verify) : undefined;
+    const fallbackCheckRendered = fallbackCheck ? JSON.stringify(fallbackCheck.value) : "";
     const fallbackPassed = responseUrl.includes("/matrix-pushstate")
       && urlResult.exit === 0
       && eventsResult.exit === 0
@@ -309,7 +311,12 @@ for (const c of cases) {
       && sameEventsResult.exit === 0
       && fallbackEvents.includes("popstate,navigate")
       && sameEvents.includes("popstate,navigate")
-      && !sameEvents.includes("popstate,navigate,popstate");
+      && !sameEvents.includes("popstate,navigate,popstate")
+      && (!fallbackCheck
+        || (fallbackCheck.exit === 0
+          && fallbackCheck.value?.success === true
+          && (!c.contains || fallbackCheckRendered.includes(c.contains))
+          && (!c.notContains || !fallbackCheckRendered.includes(c.notContains))));
 
     const routerOpen = await run(["open", new URL("/router", fixture).toString()]);
     const routerRestore = routerOpen.exit === 0 ? await run(installFixtureArgv) : routerOpen;
@@ -325,10 +332,10 @@ for (const c of cases) {
       && !JSON.stringify(routerEvents.value).includes("popstate,navigate");
     effectPassed = fallbackPassed && routerPassed;
     if (!effectPassed) {
-      diagnostic = `pushstate effect failed: response=${JSON.stringify(responseData)} url=${urlResult.stdout} events=${eventsResult.stdout} same=${sameEventsResult.stdout} route=${routeResult.stdout} routerEvents=${JSON.stringify(routerEvents.value)}`;
+      diagnostic = `pushstate effect failed: response=${JSON.stringify(responseData)} url=${urlResult.stdout} events=${eventsResult.stdout} same=${sameEventsResult.stdout} fallback=${fallbackCheck?.stdout ?? ""} route=${routeResult.stdout} routerEvents=${JSON.stringify(routerEvents.value)}`;
     }
   }
-  if (effectPassed && c.verify) {
+  if (effectPassed && c.verify && c.action !== "pushstate") {
     const check = await run(c.verify); const rendered = JSON.stringify(check.value);
     effectPassed = check.exit === 0 && check.value?.success === true && (!c.contains || rendered.includes(c.contains)) && (!c.notContains || !rendered.includes(c.notContains));
     if (!effectPassed) diagnostic = `effect verifier failed: ${check.stdout}${check.stderr}`;
@@ -339,10 +346,10 @@ for (const c of cases) {
   if (effectPassed && c.action === "addinitscript") {
     const data = r.value?.data;
     const responseValid = data && typeof data === "object" && "added" in data && data.added === true && "identifier" in data && typeof data.identifier === "string";
-    const before = await run(["eval", "typeof window.__moat_matrix_init"]);
+    const before = await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]);
     const reload = await run(["reload"]);
     const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
-    const after = restore.exit === 0 ? await run(["eval", "window.__moat_matrix_init"]) : restore;
+    const after = restore.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : restore;
     effectPassed = responseValid && before.exit === 0 && JSON.stringify(before.value).includes("undefined") && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("active");
     if (!effectPassed) diagnostic = `addinitscript lifecycle failed: response=${JSON.stringify(data)} before=${before.stdout} reload=${reload.stdout} after=${after.stdout}`;
   }
@@ -351,7 +358,7 @@ for (const c of cases) {
     const responseValid = data && typeof data === "object" && "removed" in data && data.removed === true && "identifier" in data && data.identifier === initScriptIdentifier;
     const reload = await run(["reload"]);
     const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
-    const after = restore.exit === 0 ? await run(["eval", "typeof window.__moat_matrix_init"]) : restore;
+    const after = restore.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : restore;
     effectPassed = responseValid && typeof initScriptIdentifier === "string" && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("undefined");
     if (!effectPassed) diagnostic = `removeinitscript lifecycle failed: response=${JSON.stringify(data)} reload=${reload.stdout} after=${after.stdout}`;
   }
