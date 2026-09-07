@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 
 type Availability = "controller" | "local" | "orchestrated" | "stable_unsupported";
 type EntryKind = "static" | "dynamic";
-type Case = { action: string; argv: string[]; availability: Availability; verify?: string[]; contains?: string; notContains?: string; artifacts?: string[] };
+type Case = { action: string; argv: string[]; availability: Availability; verify?: string[]; contains?: string; notContains?: string; artifacts?: string[]; coverageAction?: string };
 type ContractEntry = { action: string; sourceKind: EntryKind; dynamicSources: string[]; availability: Availability };
 type Contract = { entries: ContractEntry[]; topLevel: Record<string, TopLevelKind>; gaps: Record<string, string[]>; counts: Record<string, number> };
 type Run = { exit: number; stdout: string; stderr: string; value?: Record<string, unknown>; jsonValues: number };
@@ -38,7 +38,7 @@ const html = `<!doctype html><title>Moat CLI Matrix</title><style>body{min-heigh
 const fixture = process.env.MOAT_FIXTURE_URL ?? "https://example.com/";
 const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop','popstate','navigate']){const target=event==='popstate'||event==='navigate'?window:document;target.addEventListener(event,()=>window.matrixEvents.push(event));}document.addEventListener('dragover',e=>e.preventDefault());true`];
 
-const C = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string, artifacts?: string[]): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts });
+const C = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string, artifacts?: string[], coverageAction?: string): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts, coverageAction });
 const L = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string): Case => ({ action, argv, availability: "local", verify, contains, notContains });
 const O = (action: string, argv: string[], artifacts?: string[]): Case => ({ action, argv, availability: "orchestrated", artifacts });
 const U = (action: string, argv: string[]): Case => ({ action, argv, availability: "stable_unsupported" });
@@ -58,7 +58,7 @@ const cases: Case[] = [
   C("scroll",["scroll","down","100"],["eval","window.scrollY > 0"],"true"), C("scrollintoview",["scrollintoview","#target"],["eval","document.querySelector('#target').getBoundingClientRect().top < innerHeight"],"true"), C("wait",["wait","10"]),
   C("waitforurl",["wait","--url",`${new URL(fixture).origin}/*`]), C("waitforloadstate",["wait","--load","domcontentloaded"]), C("waitforfunction",["wait","--fn","document.querySelector('h1')?.textContent === 'Moat CLI Matrix'"]),
   C("waitfordownload",["wait","--download",join(artifacts,"wait-download.txt"),"--timeout","10000"],undefined,undefined,undefined,[join(artifacts,"wait-download.txt")]),
-  C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("snapshot_urls",["snapshot","-i","--urls","-s","body"],undefined,new URL("/target",fixture).toString()), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
+  C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("snapshot_urls",["snapshot","-i","--urls","-s","body"],undefined,new URL("/target",fixture).toString(),undefined,undefined,"snapshot"), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
   C("gettext",["get","text","h1"],undefined,"Moat CLI Matrix"), C("innerhtml",["get","html","h1"]), C("inputvalue",["get","value","#input"]),
   C("getattribute",["get","attr","h1","title"],undefined,"matrix-title"), C("count",["get","count","button"]), C("boundingbox",["get","box","h1"]), C("styles",["get","styles","h1"]), C("cdp_url",["get","cdp-url"]),
   C("isvisible",["is","visible","h1"],undefined,"true"), C("isenabled",["is","enabled","#button"],undefined,"true"), C("ischecked",["is","checked","#check"]),
@@ -138,12 +138,19 @@ try {
 const contractEntries = contract.entries;
 const expected = [...new Set(contractEntries.map(entry => entry.action))].sort();
 const expectedAvailability = new Map(contractEntries.map(entry => [entry.action, entry.availability]));
-const caseNames = cases.map(c => c.action);
-const duplicateCases = [...new Set(caseNames.filter((action, index) => caseNames.indexOf(action) !== index))].sort();
-const unknownCases = caseNames.filter(action => !expectedAvailability.has(action)).sort();
-const caseAvailabilityMismatches = cases
-  .filter(c => expectedAvailability.get(c.action) !== c.availability)
-  .map(c => ({ action: c.action, declared: c.availability, inventory: expectedAvailability.get(c.action) ?? "missing" }));
+const inventoryAction = (c: Case): string => c.coverageAction ?? c.action;
+const primaryCaseNames = cases.filter(c => c.coverageAction === undefined).map(c => c.action);
+const duplicateCases = [...new Set(primaryCaseNames.filter((action, index) => primaryCaseNames.indexOf(action) !== index))].sort();
+const unknownCases = cases
+  .filter(c => !expectedAvailability.has(inventoryAction(c)))
+  .map(c => c.action)
+  .sort();
+const caseAvailabilityMismatches = cases.flatMap(c => {
+  const inventory = expectedAvailability.get(inventoryAction(c));
+  return inventory === undefined || inventory !== c.availability
+    ? [{ action: c.action, declared: c.availability, inventory: inventory ?? "missing" }]
+    : [];
+});
 const results = [] as Record<string, unknown>[];
 
 // Local output must neither need nor create a session. Exercise every spelling
@@ -339,7 +346,7 @@ for (const c of cases) {
     const check = await run(c.verify); const rendered = JSON.stringify(check.value);
     effectPassed = check.exit === 0 && check.value?.success === true && (!c.contains || rendered.includes(c.contains)) && (!c.notContains || !rendered.includes(c.notContains));
     if (!effectPassed) diagnostic = `effect verifier failed: ${check.stdout}${check.stderr}`;
-  } else if (effectPassed && c.contains) {
+  } else if (effectPassed && c.contains && !c.verify) {
     effectPassed = JSON.stringify(r.value).includes(c.contains);
     if (!effectPassed) diagnostic = `response missing ${c.contains}`;
   }
@@ -348,19 +355,19 @@ for (const c of cases) {
     const responseValid = data && typeof data === "object" && "added" in data && data.added === true && "identifier" in data && typeof data.identifier === "string";
     const before = await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]);
     const reload = await run(["reload"]);
+    const after = reload.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : reload;
     const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
-    const after = restore.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : restore;
-    effectPassed = responseValid && before.exit === 0 && JSON.stringify(before.value).includes("undefined") && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("active");
-    if (!effectPassed) diagnostic = `addinitscript lifecycle failed: response=${JSON.stringify(data)} before=${before.stdout} reload=${reload.stdout} after=${after.stdout}`;
+    effectPassed = responseValid && before.exit === 0 && JSON.stringify(before.value).includes("undefined") && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("active") && restore.exit === 0;
+    if (!effectPassed) diagnostic = `addinitscript lifecycle failed: response=${JSON.stringify(data)} before=${before.stdout} reload=${reload.stdout} after=${after.stdout} restore=${restore.stdout}`;
   }
   if (effectPassed && c.action === "removeinitscript") {
     const data = r.value?.data;
     const responseValid = data && typeof data === "object" && "removed" in data && data.removed === true && "identifier" in data && data.identifier === initScriptIdentifier;
     const reload = await run(["reload"]);
+    const after = reload.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : reload;
     const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
-    const after = restore.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : restore;
-    effectPassed = responseValid && typeof initScriptIdentifier === "string" && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("undefined");
-    if (!effectPassed) diagnostic = `removeinitscript lifecycle failed: response=${JSON.stringify(data)} reload=${reload.stdout} after=${after.stdout}`;
+    effectPassed = responseValid && typeof initScriptIdentifier === "string" && reload.exit === 0 && after.exit === 0 && JSON.stringify(after.value).includes("undefined") && restore.exit === 0;
+    if (!effectPassed) diagnostic = `removeinitscript lifecycle failed: response=${JSON.stringify(data)} reload=${reload.stdout} after=${after.stdout} restore=${restore.stdout}`;
   }
   if (effectPassed && c.artifacts) {
     for (const path of c.artifacts) {
@@ -404,7 +411,7 @@ for (const c of cases) {
     if (!effectPassed) diagnostic = `URL diff did not contain both distinct documents: ${r.stdout}`;
   }
   if (r.jsonValues !== 1) diagnostic = `stdout is not exactly one JSON value: ${r.stdout}`;
-  results.push({ name:c.action, parserAction:c.action, availability:c.availability, argv, exit:r.exit, success:r.value?.success === true, error:r.value?.error, errorType:r.value?.errorType, jsonValues:r.jsonValues, elapsedMs, effectAssertion:c.verify ?? c.artifacts ?? (unsupported ? ["stable unsupported error"] : ["successful observable response"]), effectPassed, internalDiagnostic:diagnostic || r.stderr.trim() });
+  results.push({ name:c.action, parserAction:inventoryAction(c), availability:c.availability, argv, exit:r.exit, success:r.value?.success === true, error:r.value?.error, errorType:r.value?.errorType, jsonValues:r.jsonValues, elapsedMs, effectAssertion:c.verify ?? c.artifacts ?? (unsupported ? ["stable unsupported error"] : ["successful observable response"]), effectPassed, internalDiagnostic:diagnostic || r.stderr.trim() });
   // `window new` intentionally creates an about:blank page. Restore the
   // deterministic fixture only after its blank-page contract was asserted.
   if (c.action === "window_new" && r.exit === 0) {
@@ -412,7 +419,7 @@ for (const c of cases) {
     if (restore.exit === 0) await run(installFixtureArgv);
   }
 }
-const covered = [...new Set(cases.map(c=>c.action))].sort();
+const covered = [...new Set(cases.map(c => inventoryAction(c)))].sort();
 const missing = expected.filter(a=>!covered.includes(a));
 const failed = results.filter(r=>r.jsonValues !== 1 || (r.availability !== "stable_unsupported" && !r.success) || (r.availability === "stable_unsupported" && (r.exit === 0 || r.errorType !== "unsupported_in_moat")));
 const noOp = results.filter(r=>r.effectPassed !== true);
