@@ -459,7 +459,10 @@ build_all() {
     || die "${TARGET_PLATFORM} builder failed"
 
   local builder_container="moat-clean235-${RUN_ID}-builder-export"
-  inner_docker create --platform "$TARGET_PLATFORM" --name "$builder_container" "$BUILD_IMAGE" >/dev/null
+  # The final artifact image is FROM scratch and intentionally has no default
+  # command. Supply metadata only so Docker can create the stopped container
+  # for `cp`; this container is never started.
+  inner_docker create --platform "$TARGET_PLATFORM" --name "$builder_container" "$BUILD_IMAGE" /bin/true >/dev/null
   inner_docker cp "$builder_container:/out/moat-x86_64-linux" "$EVIDENCE_DIR/build/moat-x86_64-linux"
   inner_docker cp "$builder_container:/out/moat-x86_64-linux.sha256" "$EVIDENCE_DIR/build/moat-x86_64-linux.sha256"
   inner_docker cp "$builder_container:/out/toolchain-versions.txt" "$EVIDENCE_DIR/build/toolchain-versions.txt"
