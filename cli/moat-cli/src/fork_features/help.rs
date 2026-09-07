@@ -30,6 +30,11 @@ Browser and runtime state:
   console | errors | batch | diff
 
 Unavailable in moat architecture (stable unsupported_in_moat error):
+  read                        Upstream document fetching is not in moat
+  react                       React inspection is not in moat
+  vitals | web-vitals         Web Vitals collection is not in moat
+  a11y                        Upstream accessibility audit is not in moat
+  webmcp                      WebMCP page tools are not in moat
   auth                         Authentication uses moat profiles + neko login
   confirm | deny               No CLI-local action-policy layer
   inspect                      CDP is private and Controller-managed
@@ -38,6 +43,7 @@ Unavailable in moat architecture (stable unsupported_in_moat error):
   stream                       Live viewing uses neko WebRTC
   device list                  No local Xcode/Appium device backend
   install | upgrade | dashboard | profiles | session
+  mcp | doctor | skills | plugin | plugins | chat
 
 Global options:
   --json                       Emit exactly one JSON value per command
@@ -54,6 +60,9 @@ Global options:
 
 Environment:
   MOAT_CONTROLLER              Controller WebSocket URL
+  AGENT_BROWSER_DEFAULT_TIMEOUT Default wait timeout in milliseconds
+  AGENT_BROWSER_INIT_SCRIPTS   Unsupported: upstream local launcher only
+  AGENT_BROWSER_ENABLE         Unsupported: upstream plugin/runtime launcher only
   ~/.moat/session              Active session ID
   ~/.moat/config.json          Optional Controller configuration
 
@@ -98,7 +107,7 @@ pub fn print_command_help(command: &str) -> bool {
         "keyboard" => "keyboard <type|inserttext> <text>",
         "scroll" => "scroll <up|down|left|right> [pixels]",
         "scrollintoview" | "scrollinto" => "scrollintoview <selector>",
-        "wait" => "wait <selector|milliseconds|--text|--url|--load|--fn|--download> [value]",
+        "wait" => "wait <selector|milliseconds|--text|--url|--load|--fn|--download> [value] [--timeout <ms>]",
         "screenshot" => "screenshot [selector] [output-path] [--full|-f] [--annotate]",
         "pdf" => "pdf [output-path]",
         "snapshot" => "snapshot [-i] [-u] [-c] [-d <depth>] [-s <selector>]",
@@ -112,7 +121,7 @@ pub fn print_command_help(command: &str) -> bool {
         "network" => "network <route|unroute|requests|request|har> ... (route supports --abort, --body <json>, --resource-type <csv>; har start [--content <all|text|none>])",
         "storage" => "storage <local|session> <get|set|clear> ...",
         "cookies" => "cookies <get|set|clear> ...",
-        "tab" => "tab <new|list|switch|close> ...",
+        "tab" => "tab <new|list|switch|close> ... (numeric indexes only; --label unavailable)",
         "window" => "window new",
         "frame" => "frame <selector|main>",
         "dialog" => "dialog <accept|dismiss> [text]",
@@ -126,7 +135,16 @@ pub fn print_command_help(command: &str) -> bool {
         "tap" => "tap <selector>",
         "swipe" => "swipe <up|down|left|right> [distance]",
         "diff" => "diff <snapshot|screenshot|url> ...",
-        "batch" => "batch  # reads a JSON command array from stdin",
+        "batch" => "batch [--bail] [\"command ...\" ...]  # inline or JSON stdin",
+        "read" | "react" | "vitals" | "web-vitals" | "a11y" | "webmcp"
+        | "mcp" | "doctor" | "skills" | "plugin" | "plugins" | "chat" => {
+            println!(
+                "moat {command} - unavailable in the moat Controller architecture\n\n\
+                 This command returns a nonzero unsupported_in_moat error.\n\
+                 Run `moat --help` for the supported alternative."
+            );
+            return true;
+        }
         "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "device" | "install"
         | "upgrade" | "dashboard" | "profiles" | "session" | "launch" => {
             println!(
@@ -153,7 +171,20 @@ mod tests {
 
     #[test]
     fn recognizes_supported_and_unavailable_commands() {
-        for command in ["open", "snapshot", "network", "state", "auth", "stream"] {
+        for command in [
+            "open",
+            "snapshot",
+            "network",
+            "state",
+            "batch",
+            "read",
+            "react",
+            "vitals",
+            "a11y",
+            "webmcp",
+            "auth",
+            "stream",
+        ] {
             assert!(print_command_help(command));
         }
         assert!(!print_command_help("not-a-command"));

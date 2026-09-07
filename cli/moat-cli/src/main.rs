@@ -16,10 +16,12 @@ use serde_json::json;
 use std::env;
 use std::process::exit;
 
-use commands::{parse_command, ParseError};
+use commands::{parse_command, shell_words_split, ParseError};
 use connection::send_command;
 use flags::{clean_args, parse_flags, ControllerOverride};
-use fork_features::{print_command_help, print_help, unsupported_command, unsupported_flag};
+use fork_features::{
+    print_command_help, print_help, unsupported_command, unsupported_environment, unsupported_flag,
+};
 use output::{print_response_with_opts, OutputOptions};
 
 use moat_sdk::MoatClient;
@@ -133,6 +135,15 @@ async fn main() {
         print_version();
         return;
     }
+    if let Some(message) = unsupported_environment() {
+        if flags.json {
+            print_json_error(&message);
+        } else {
+            eprintln!("{} {}", color::error_indicator(), message);
+        }
+        exit(1);
+    }
+
     let controller_override_error = match &flags.controller {
         ControllerOverride::MissingValue => Some("Usage: moat --controller <url>"),
         ControllerOverride::EmptyValue => Some("--controller requires a non-empty URL"),
@@ -378,25 +389,30 @@ async fn main() {
     let cmd = match parse_command(&clean, &flags) {
         Ok(c) => c,
         Err(e) => {
+            let message = e.format();
             if flags.json {
-                let error_type = match &e {
-                    ParseError::UnknownCommand { .. } => "unknown_command",
-                    ParseError::UnknownSubcommand { .. } => "unknown_subcommand",
-                    ParseError::MissingArguments { .. } => "missing_arguments",
-                    ParseError::InvalidValue { .. } => "invalid_value",
-                    ParseError::InvalidSessionName { .. } => "invalid_session_name",
+                let error_type = if message.contains("unsupported_in_moat") {
+                    "unsupported_in_moat"
+                } else {
+                    match &e {
+                        ParseError::UnknownCommand { .. } => "unknown_command",
+                        ParseError::UnknownSubcommand { .. } => "unknown_subcommand",
+                        ParseError::MissingArguments { .. } => "missing_arguments",
+                        ParseError::InvalidValue { .. } => "invalid_value",
+                        ParseError::InvalidSessionName { .. } => "invalid_session_name",
+                    }
                 };
                 println!(
                     "{}",
                     serde_json::to_string(&json!({
                         "success": false,
-                        "error": e.format(),
+                        "error": message,
                         "errorType": error_type,
                     }))
                     .unwrap_or_default()
                 );
             } else {
-                eprintln!("{}", color::red(&e.format()));
+                eprintln!("{}", color::red(&message));
             }
             exit(1);
         }
@@ -405,7 +421,15 @@ async fn main() {
     // ─── Batch mode ───
 
     if cmd.get("action").and_then(|v| v.as_str()) == Some("batch") {
-        run_batch(&flags).await;
+        let bail = cmd.get("bail").and_then(|v| v.as_bool()).unwrap_or(false);
+        let inline_commands = cmd.get("commands").and_then(|value| value.as_array()).map(|commands| {
+            commands
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(shell_words_split)
+                .collect::<Vec<Vec<String>>>()
+        });
+        run_batch(&flags, bail, inline_commands).await;
         return;
     }
 
@@ -473,82 +497,166 @@ async fn main() {
     }
 }
 
-/// Batch mode: read commands from stdin, execute sequentially.
-async fn run_batch(flags: &flags::Flags) {
+/// Batch mode: execute inline shell-split commands when present; otherwise read
+/// the established JSON argv-array format from stdin. Every JSON invocation
+/// emits one moat `{success,data:{results}}` envelope.
+async fn run_batch(
+    flags: &flags::Flags,
+    bail: bool,
+    inline_commands: Option<Vec<Vec<String>>>,
+) {
     use std::io::Read as _;
 
-    let mut input = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
-        if flags.json {
-            print_json_error(format!("Failed to read stdin: {}", e));
-        } else {
-            eprintln!("{} Failed to read stdin: {}", color::error_indicator(), e);
-        }
-        exit(1);
-    }
-
-    let commands: Vec<Vec<String>> = match serde_json::from_str(&input) {
-        Ok(c) => c,
-        Err(e) => {
-            if flags.json {
-                print_json_error(format!("Invalid JSON: {}", e));
-            } else {
-                eprintln!("{} Invalid JSON: {}", color::error_indicator(), e);
+    let commands: Vec<Vec<String>> = match inline_commands {
+        Some(commands) => commands,
+        None => {
+            let mut input = String::new();
+            if let Err(error) = std::io::stdin().read_to_string(&mut input) {
+                if flags.json {
+                    print_json_error(format!("Failed to read stdin: {}", error));
+                } else {
+                    eprintln!("{} Failed to read stdin: {}", color::error_indicator(), error);
+                }
+                exit(1);
             }
-            exit(1);
+            match serde_json::from_str(&input) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    if flags.json {
+                        print_json_error(format!("Invalid JSON: {}", error));
+                    } else {
+                        eprintln!("{} Invalid JSON: {}", color::error_indicator(), error);
+                    }
+                    exit(1);
+                }
+            }
         }
     };
 
     let url = match controller_url(&flags.controller) {
-        Ok(u) => u,
-        Err(e) => {
+        Ok(url) => url,
+        Err(error) => {
             if flags.json {
-                print_json_error(e);
+                print_json_error(error);
             } else {
-                eprintln!("{} {}", color::error_indicator(), e);
+                eprintln!("{} {}", color::error_indicator(), error);
             }
             exit(78);
         }
     };
+    let output_opts = OutputOptions::from_flags(flags);
+    let mut results = Vec::new();
+    let mut success = true;
 
-    let output_opts = OutputOptions::from_flags(&flags);
-    let mut json_results = Vec::new();
-    let mut json_success = true;
-
-    for args in &commands {
-        let cmd = match parse_command(args, flags) {
-            Ok(c) => c,
-            Err(e) => {
-                if flags.json {
-                    print_json_error(e.format());
-                } else {
-                    eprintln!("{}", color::red(&e.format()));
-                }
-                exit(1);
+    for command_args in commands {
+        if command_args.is_empty() {
+            continue;
+        }
+        if let Some(message) = command_args
+            .first()
+            .and_then(|command| unsupported_command(command))
+        {
+            success = false;
+            if flags.json {
+                results.push(json!({
+                    "command": command_args,
+                    "success": false,
+                    "error": message,
+                    "errorType": "unsupported_in_moat",
+                }));
+            } else {
+                eprintln!("{} {}", color::error_indicator(), message);
             }
-        };
-
-        match send_command(cmd.clone(), &url).await {
-            Ok(resp) => {
-                if flags.json {
-                    json_success &= resp.success;
-                    json_results.push(serde_json::to_value(&resp).unwrap_or_default());
-                } else {
-                    let action = cmd.get("action").and_then(|v| v.as_str());
-                    print_response_with_opts(&resp, action, &output_opts);
-                }
+            if bail {
+                break;
             }
-            Err(e) => {
+            continue;
+        }
+        let command_name = command_args
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default();
+        if let Some(message) = unsupported_flag(&command_args, command_name) {
+            success = false;
+            if flags.json {
+                results.push(json!({
+                    "command": command_args,
+                    "success": false,
+                    "error": message,
+                    "errorType": "unsupported_in_moat",
+                }));
+            } else {
+                eprintln!("{} {}", color::error_indicator(), message);
+            }
+            if bail {
+                break;
+            }
+            continue;
+        }
+
+        let command = match parse_command(&command_args, flags) {
+            Ok(command) => command,
+            Err(error) => {
+                success = false;
+                let message = error.format();
                 if flags.json {
-                    json_success = false;
-                    json_results.push(json!({
+                    results.push(json!({
+                        "command": command_args,
                         "success": false,
-                        "error": e,
-                        "errorType": error_type(&e),
+                        "error": message,
+                        "errorType": if message.contains("unsupported_in_moat") {
+                            "unsupported_in_moat"
+                        } else {
+                            "invalid_command"
+                        }
                     }));
                 } else {
-                    eprintln!("{} {}", color::error_indicator(), e);
-                    exit(1);
+                    eprintln!("{} {}", color::error_indicator(), message);
+                }
+                if bail {
+                    break;
+                }
+                continue;
+            }
+        };
+        let action = command.get("action").and_then(|value| value.as_str());
+        match send_command(command.clone(), &url).await {
+            Ok(response) => {
+                if !response.success {
+                    success = false;
+                }
+                if flags.json {
+                    let mut result = json!({
+                        "command": command_args,
+                        "success": response.success,
+                        "result": response.data,
+                        "error": response.error,
+                    });
+                    if let Some(warning) = response.warning {
+                        result["warning"] = json!(warning);
+                    }
+                    results.push(result);
+                } else {
+                    print_response_with_opts(&response, action, &output_opts);
+                }
+                if !response.success && bail {
+                    break;
+                }
+            }
+            Err(error) => {
+                success = false;
+                if flags.json {
+                    results.push(json!({
+                        "command": command_args,
+                        "success": false,
+                        "error": error,
+                        "errorType": error_type(&error),
+                    }));
+                } else {
+                    eprintln!("{} {}", color::error_indicator(), error);
+                }
+                if bail {
+                    break;
                 }
             }
         }
@@ -558,13 +666,13 @@ async fn run_batch(flags: &flags::Flags) {
         println!(
             "{}",
             serde_json::to_string(&json!({
-                "success": json_success,
-                "data": { "results": json_results },
+                "success": success,
+                "data": { "results": results },
             }))
             .unwrap_or_default()
         );
-        if !json_success {
-            exit(1);
-        }
+    }
+    if !success {
+        exit(1);
     }
 }

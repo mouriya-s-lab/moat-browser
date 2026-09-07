@@ -1087,8 +1087,21 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         // === Tabs ===
         "tab" => match rest.first().copied() {
             Some("new") => {
+                if rest.iter().skip(1).any(|arg| *arg == "--label") {
+                    return Err(ParseError::InvalidValue {
+                        message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                            .to_string(),
+                        usage: "tab new [url]",
+                    });
+                }
                 let mut cmd = json!({ "id": id, "action": "tab_new" });
                 if let Some(url) = rest.get(1) {
+                    if url.starts_with("--") {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("unsupported_in_moat: unknown tab new option '{}'", url),
+                            usage: "tab new [url]",
+                        });
+                    }
                     cmd["url"] = json!(url);
                 }
                 Ok(cmd)
@@ -1096,26 +1109,40 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             Some("list") => Ok(json!({ "id": id, "action": "tab_list" })),
             Some("close") => {
                 let mut cmd = json!({ "id": id, "action": "tab_close" });
-                if let Some(index) = rest.get(1).and_then(|s| s.parse::<i32>().ok()) {
+                if let Some(value) = rest.get(1) {
+                    let index = value.parse::<i32>().map_err(|_| ParseError::InvalidValue {
+                        message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                            .to_string(),
+                        usage: "tab close [index]",
+                    })?;
                     cmd["index"] = json!(index);
                 }
                 Ok(cmd)
             }
             Some("switch") => {
-                let index = rest
+                let value = rest
                     .get(1)
-                    .and_then(|s| s.parse::<i32>().ok())
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "tab switch".to_string(),
                         usage: "tab switch <index>",
                     })?;
+                let index = value.parse::<i32>().map_err(|_| ParseError::InvalidValue {
+                    message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                        .to_string(),
+                    usage: "tab switch <index>",
+                })?;
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
             }
             Some(n) if n.parse::<i32>().is_ok() => {
                 let index = n.parse::<i32>().expect("already checked parse succeeds");
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
             }
-            _ => Ok(json!({ "id": id, "action": "tab_list" })),
+            Some(_) => Err(ParseError::InvalidValue {
+                message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                    .to_string(),
+                usage: "tab <index>|list|new|switch|close",
+            }),
+            None => Ok(json!({ "id": id, "action": "tab_list" })),
         },
 
         // === Window ===
@@ -1493,10 +1520,20 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
 
         "diff" => parse_diff(&rest, &id),
 
+
         // === Batch ===
         "batch" => {
             let bail = rest.contains(&"--bail");
-            Ok(json!({ "id": id, "action": "batch", "bail": bail }))
+            let commands: Vec<&str> = rest
+                .iter()
+                .filter(|arg| **arg != "--bail")
+                .copied()
+                .collect();
+            let mut command = json!({ "id": id, "action": "batch", "bail": bail });
+            if !commands.is_empty() {
+                command["commands"] = json!(commands);
+            }
+            Ok(command)
         }
 
         _ => Err(ParseError::UnknownCommand {
@@ -2515,6 +2552,7 @@ fn parse_storage(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         }
         Some(sub) => Err(ParseError::UnknownSubcommand {
             subcommand: sub.to_string(),
+
             valid_options: VALID,
         }),
         None => Err(ParseError::MissingArguments {
@@ -2522,6 +2560,39 @@ fn parse_storage(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             usage: "storage <local|session> [get|set|clear] [key] [value]",
         }),
     }
+}
+/// Split an inline batch command into argv while honoring shell quotes and
+/// backslash escapes. Batch never passes the raw string to the Controller.
+pub fn shell_words_split(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !in_single => {
+                if let Some(&next) = chars.peek() {
+                    chars.next();
+                    current.push(next);
+                }
+            }
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            c if c.is_whitespace() && !in_double && !in_single => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 #[cfg(test)]
@@ -2577,6 +2648,7 @@ mod tests {
             screenshot_quality: None,
             screenshot_format: None,
             idle_timeout: None,
+            default_timeout: None,
             no_auto_dialog: false,
         }
     }
@@ -4757,4 +4829,40 @@ mod tests {
         assert_eq!(cmd["action"], "batch");
         assert_eq!(cmd["bail"], true);
     }
+    #[test]
+    fn test_batch_inline_commands_are_retained() {
+        let cmd_args = vec![
+            "batch".to_string(),
+            "get title".to_string(),
+            "eval 'document.title = \"continued\"'".to_string(),
+        ];
+        let cmd = parse_command(&cmd_args, &default_flags()).unwrap();
+        assert_eq!(cmd["commands"], json!(["get title", "eval 'document.title = \"continued\"'"]));
+    }
+
+    #[test]
+    fn test_shell_words_split_preserves_quoted_script() {
+        assert_eq!(
+            shell_words_split("eval 'document.title = \"continued\"'"),
+            vec!["eval", "document.title = \"continued\""]
+        );
+    }
+
+    #[test]
+    fn test_default_timeout_applies_to_wait_family() {
+        let mut flags = default_flags();
+        flags.default_timeout = Some(100);
+        let cmd = parse_command(&args("wait --fn false"), &flags).unwrap();
+        assert_eq!(cmd["timeout"], 100);
+
+        let explicit = parse_command(&args("wait --fn false --timeout 2000"), &flags).unwrap();
+        assert_eq!(explicit["timeout"], 2000);
+    }
+
+    #[test]
+    fn test_tab_label_is_explicitly_unsupported() {
+        let error = parse_command(&args("tab new --label docs"), &default_flags()).unwrap_err();
+        assert!(error.format().contains("unsupported_in_moat"));
+    }
+
 }
