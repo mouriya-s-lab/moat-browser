@@ -529,11 +529,13 @@ moat --json batch --bail "open https://example.com" "get title"
   属于上游 launcher/plugin startup 配置，不是 `addinitscript` 的替代品；
   moat 返回 `unsupported_in_moat`。
 
-`--json` 每个命令只输出一个 JSON value；普通输出使用可读的成功/错误状态。
-当前 moat CLI 对 usage、element not found 和 timeout 都返回 exit 1；上游约定的
-exit 2、66、75 不由 moat CLI 发出。其余常用 exit code 为 0（成功）、1（命令或
-batch item 失败）、69（Controller/session 创建失败）、77（没有 active session）
-和 78（配置错误）。
+`--json` 对已经进入命令执行阶段的响应每个命令只输出一个 JSON value；普通输出
+使用可读的成功/错误状态。启动期读取 `~/.moat/config.json` 或相关配置失败时，
+错误发生在命令执行前，CLI 向 stderr 输出警告并以非零状态退出，可能没有 JSON
+stdout。当前 moat CLI 对 usage、element not found 和 timeout 都返回 exit 1；上游
+约定的 exit 2、66、75 不由 moat CLI 发出。其余常用 exit code 为 0（成功）、1
+（命令或 batch item 失败）、69（Controller/session 创建失败）、77（没有 active
+session）和 78（配置错误）。
 
 与 agent-browser 的关键差异是：agent-browser 可自动启动本地 daemon 和
 Chrome，而 moat 必须先 `moat connect`，并始终通过 Controller 的远程
@@ -703,8 +705,10 @@ moat --json batch --bail "open https://example.com" "get title"
 
 `--json` 下 inline 和 stdin batch 都使用 `{success,data:{results}}` moat
 envelope；不带 `--json` 时逐项输出可读文本，不输出 JSON envelope。默认继续执行
-失败 item；`--bail` 遇到首个失败停止。`--json` 每命令只输出一个 JSON value。
-`AGENT_BROWSER_DEFAULT_TIMEOUT` 是 wait-family 的默认值，显式 `--timeout` 优先。
+失败 item；`--bail` 遇到首个失败停止。对已经进入命令执行阶段的响应，`--json`
+每命令只输出一个 JSON value；启动期配置读取失败会在此阶段之前向 stderr 输出
+错误并以非零状态退出，可能没有 JSON stdout。`AGENT_BROWSER_DEFAULT_TIMEOUT`
+是 wait-family 的默认值，显式 `--timeout` 优先。
 
 ## Unsupported
 

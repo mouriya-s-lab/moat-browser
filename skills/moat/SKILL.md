@@ -168,8 +168,10 @@ With `--json`, inline and stdin batch both emit one moat response envelope:
 Failures retain their result entry. By default execution continues and the
 process exits nonzero if any item failed; `--bail` stops after the first failed
 item. Without `--json`, batch prints each successful response or error in
-human-readable text and does not emit the JSON envelope. `--json` emits exactly
-one JSON value.
+human-readable text and does not emit the JSON envelope. For responses that
+reach command execution, `--json` emits exactly one JSON value. Startup config
+loading errors occur before command execution, print a warning or error to
+stderr, and exit nonzero without guaranteeing JSON stdout.
 
 `AGENT_BROWSER_DEFAULT_TIMEOUT` supplies the default timeout in milliseconds
 for wait-family commands when no explicit `--timeout` is present. An explicit
