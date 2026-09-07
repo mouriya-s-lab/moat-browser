@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM node:22.14.0-bookworm-slim AS node-toolchain
 
-FROM rust:1.95.0-bookworm
+FROM rust:1.95.0-bookworm AS rust-builder
 COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
 
 
@@ -37,4 +37,4 @@ RUN mkdir -p /out \
     && find packages/types/dist packages/controller/dist -type f -print | sort > /out/generated-files.txt
 
 FROM scratch AS artifacts
-COPY --from=0 /out /out
+COPY --from=rust-builder /out /out

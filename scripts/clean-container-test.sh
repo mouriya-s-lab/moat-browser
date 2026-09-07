@@ -12,6 +12,10 @@ EVIDENCE_DIR=""
 OUTER_DOCKER_HOST="${MOAT_CLEAN_OUTER_DOCKER_HOST:-}"
 DIND_IMAGE="${MOAT_CLEAN_DIND_IMAGE:-docker:29-dind@sha256:c9da39e30475d7bf353436738239d02fb1c2a52a1c968322beccb6ec239707d8}"
 DIND_PLATFORM="${MOAT_CLEAN_DIND_PLATFORM:-linux/arm64}"
+TARGET_PLATFORM="linux/amd64"
+NATIVE_PLATFORM=""
+BUILDX_METADATA_PROVENANCE="max"
+export BUILDX_METADATA_PROVENANCE
 KEEP_RUNTIME=0
 STATE_LOADED=0
 CLEANUP_OK=1
@@ -107,6 +111,25 @@ if [[ -n "$OUTER_DOCKER_HOST" ]]; then
 fi
 host_docker() {
   env -u DOCKER_HOST docker "${HOST_DOCKER_ARGS[@]}" "$@"
+}
+record_outer_inventory() {
+  local output_dir="$1"
+  local suffix="$2"
+  host_docker ps -aq | while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    host_docker inspect --type container \
+      --format $'{{.Id}}\t{{.Name}}\t{{.Config.Image}}\t{{json .Config.Labels}}' "$id"
+  done | sort > "$output_dir/outer-containers-${suffix}.txt"
+  host_docker volume ls -q | while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    host_docker volume inspect \
+      --format $'{{.Name}}\t{{json .Labels}}' "$name"
+  done | sort > "$output_dir/outer-volumes-${suffix}.txt"
+  host_docker network ls -q | while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    host_docker network inspect \
+      --format $'{{.Id}}\t{{.Name}}\t{{json .Labels}}' "$id"
+  done | sort > "$output_dir/outer-networks-${suffix}.txt"
 }
 
 run_logged() {
@@ -333,7 +356,7 @@ build_image() {
   local context="$4"
   shift 4
   run_logged "build-${name}" inner_docker buildx build \
-    --pull --no-cache --platform linux/amd64 --provenance=mode=max --sbom=false --load \
+    --pull --no-cache --platform "$TARGET_PLATFORM" --provenance=mode=max --sbom=false --load \
     --metadata-file "$EVIDENCE_DIR/build/${name}-metadata.json" \
     --label "moat.clean235.run=${RUN_ID}" --label "moat.clean235.source=${SOURCE_COMMIT}" \
     "$@" -f "$dockerfile" -t "$tag" "$context"
@@ -433,10 +456,10 @@ build_all() {
   build_image build "$BUILD_IMAGE" \
     "$SOURCE_DIR/packages/e2e/clean-container/build.Dockerfile" "$SOURCE_DIR" \
     --build-arg "SOURCE_COMMIT=${SOURCE_COMMIT}" \
-    || die "Linux amd64 builder failed"
+    || die "${TARGET_PLATFORM} builder failed"
 
   local builder_container="moat-clean235-${RUN_ID}-builder-export"
-  inner_docker create --name "$builder_container" "$BUILD_IMAGE" >/dev/null
+  inner_docker create --platform "$TARGET_PLATFORM" --name "$builder_container" "$BUILD_IMAGE" >/dev/null
   inner_docker cp "$builder_container:/out/moat-x86_64-linux" "$EVIDENCE_DIR/build/moat-x86_64-linux"
   inner_docker cp "$builder_container:/out/moat-x86_64-linux.sha256" "$EVIDENCE_DIR/build/moat-x86_64-linux.sha256"
   inner_docker cp "$builder_container:/out/toolchain-versions.txt" "$EVIDENCE_DIR/build/toolchain-versions.txt"
@@ -519,9 +542,7 @@ PY
 }
 
 record_outer_baseline() {
-  host_docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Labels}}' | sort > "$EVIDENCE_DIR/runtime/outer-containers-before.txt"
-  host_docker volume ls --format '{{.Name}}\t{{.Labels}}' | sort > "$EVIDENCE_DIR/runtime/outer-volumes-before.txt"
-  host_docker network ls --format '{{.ID}}\t{{.Name}}\t{{.Labels}}' | sort > "$EVIDENCE_DIR/runtime/outer-networks-before.txt"
+  record_outer_inventory "$EVIDENCE_DIR/runtime" before
 }
 
 start_dind() {
@@ -556,7 +577,7 @@ start_dind() {
     --publish "127.0.0.1:${FIXTURE_HOST_PORT}:8081/tcp" \
     --publish "127.0.0.1:${UDP_BASE}-${UDP_END}:${UDP_BASE}-${UDP_END}/udp" \
     --env DOCKER_TLS_CERTDIR= \
-    "$DIND_IMAGE" --storage-driver=overlay2 > "$EVIDENCE_DIR/runtime/dind-id.txt"
+    "$DIND_IMAGE" --feature=containerd-snapshotter=true > "$EVIDENCE_DIR/runtime/dind-id.txt"
   wait_for "inner Docker daemon" 90 inner_docker info
   inner_docker network create --label "moat.clean235.run=${RUN_ID}" "$NETWORK_NAME" >/dev/null
   host_docker exec "$DIND_NAME" sh -c 'mkdir -p /data/profile /data/empty /data/profiles && chmod 0777 /data/profile /data/empty /data/profiles'
@@ -564,7 +585,15 @@ start_dind() {
 }
 
 record_inner_baseline() {
+  NATIVE_PLATFORM="$(inner_docker info --format '{{.OSType}}/{{.Architecture}}')"
+  export NATIVE_PLATFORM
   inner_docker info > "$EVIDENCE_DIR/runtime/inner-before-build-info.txt"
+  printf '%s\n' "$NATIVE_PLATFORM" > "$EVIDENCE_DIR/runtime/inner-native-platform.txt"
+  printf '%s\n' "$TARGET_PLATFORM" > "$EVIDENCE_DIR/runtime/target-platform.txt"
+  inner_docker info --format '{{.Driver}}' > "$EVIDENCE_DIR/runtime/inner-storage-driver.txt"
+  inner_docker info --format '{{json .DriverStatus}}' > "$EVIDENCE_DIR/runtime/inner-driver-status.json"
+  inner_docker buildx ls > "$EVIDENCE_DIR/runtime/inner-buildx-ls.txt"
+  inner_docker buildx inspect default > "$EVIDENCE_DIR/runtime/inner-buildx-default.txt"
   inner_docker ps -a -q > "$EVIDENCE_DIR/runtime/inner-before-build-containers.txt"
   inner_docker image ls -q > "$EVIDENCE_DIR/runtime/inner-before-build-images.txt"
   inner_docker volume ls -q > "$EVIDENCE_DIR/runtime/inner-before-build-volumes.txt"
@@ -572,7 +601,7 @@ record_inner_baseline() {
   inner_docker system df --format '{{json .}}' > "$EVIDENCE_DIR/runtime/inner-before-build-system-df.jsonl"
   inner_docker builder du --format '{{json .}}' > "$EVIDENCE_DIR/runtime/inner-before-build-cache.jsonl"
   host_docker inspect "$DIND_NAME" --format '{{json .}}' > "$EVIDENCE_DIR/runtime/dind-initial-inspect.json"
-  python3 \
+  python3 - \
     "$EVIDENCE_DIR/runtime/inner-before-build-containers.txt" \
     "$EVIDENCE_DIR/runtime/inner-before-build-images.txt" \
     "$EVIDENCE_DIR/runtime/inner-before-build-volumes.txt" \
@@ -597,7 +626,7 @@ if any("/var/run/docker.sock" in item for item in binds):
 PY
 }
 start_fixture() {
-  inner_docker run --detach --platform linux/amd64 \
+  inner_docker run --detach --platform "$TARGET_PLATFORM" \
     --name "${RUN_ID}-fixture" --hostname fixture --network "$NETWORK_NAME" --network-alias fixture \
     --label "moat.clean235.run=${RUN_ID}" --label "moat.clean235.role=fixture" \
     --publish "0.0.0.0:8081:8080/tcp" \
@@ -609,7 +638,7 @@ start_fixture() {
 }
 
 start_user() {
-  inner_docker run --detach --platform linux/amd64 \
+  inner_docker run --detach --platform "$TARGET_PLATFORM" \
     --name "${RUN_ID}-user-chrome" --hostname user-chrome --network "$NETWORK_NAME" --network-alias user-chrome \
     --label "moat.clean235.run=${RUN_ID}" --label "moat.clean235.role=user-chrome" \
     --shm-size 2g --cap-add SYS_ADMIN \
@@ -629,7 +658,7 @@ start_user() {
 start_controller() {
   local idle_timeout="$1"
   inner_docker rm -f "${RUN_ID}-controller" >/dev/null 2>&1 || true
-  inner_docker run --detach --platform linux/amd64 \
+  inner_docker run --detach --platform "$TARGET_PLATFORM" \
     --name "${RUN_ID}-controller" --hostname controller --network "$NETWORK_NAME" --network-alias controller \
     --label "moat.clean235.run=${RUN_ID}" --label "moat.clean235.role=controller" \
     --publish "0.0.0.0:3000:3000/tcp" \
@@ -660,6 +689,8 @@ EVIDENCE_DIR=$(printf '%q' "$EVIDENCE_DIR")
 DIND_NAME=$(printf '%q' "$DIND_NAME")
 DIND_VOLUME=$(printf '%q' "$DIND_VOLUME")
 DIND_PLATFORM=$(printf '%q' "$DIND_PLATFORM")
+TARGET_PLATFORM=$(printf '%q' "$TARGET_PLATFORM")
+NATIVE_PLATFORM=$(printf '%q' "$NATIVE_PLATFORM")
 DIND_PORT=$(printf '%q' "$DIND_PORT")
 INNER_DOCKER_HOST=$(printf '%q' "$INNER_DOCKER_HOST")
 NETWORK_NAME=$(printf '%q' "$NETWORK_NAME")
@@ -745,7 +776,7 @@ run_client() {
   mkdir -p "$result_dir"
   inner_docker rm -f "$name" >/dev/null 2>&1 || true
   set +e
-  inner_docker run --detach --platform linux/amd64 \
+  inner_docker run --detach --platform "$TARGET_PLATFORM" \
     --name "$name" --hostname "client-${kind}" --network "$NETWORK_NAME" \
     --label "moat.clean235.run=${RUN_ID}" --label "moat.clean235.role=client" \
     --env "MOAT_CONTROLLER=ws://controller:3000" \
@@ -900,6 +931,7 @@ cleanup_owned() {
   mkdir -p "$EVIDENCE_DIR/cleanup"
   inner_docker ps -a --no-trunc > "$EVIDENCE_DIR/cleanup/inner-owned-before.txt" 2>&1
   inner_docker ps -aq > "$EVIDENCE_DIR/cleanup/inner-owned-before-ids.txt" 2>&1
+  inner_docker volume ls -q > "$EVIDENCE_DIR/cleanup/inner-owned-before-volumes.txt" 2>&1
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     inner_docker rm -f "$id" >> "$EVIDENCE_DIR/cleanup/inner-sweep.log" 2>&1 || cleanup_ok=0
@@ -910,6 +942,12 @@ cleanup_owned() {
   inner_docker ps -a --no-trunc > "$EVIDENCE_DIR/cleanup/inner-after.txt" 2>&1
   inner_docker ps -aq > "$EVIDENCE_DIR/cleanup/inner-owned-leftovers.txt" 2>&1
   [[ ! -s "$EVIDENCE_DIR/cleanup/inner-owned-leftovers.txt" ]] || cleanup_ok=0
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    inner_docker volume rm "$id" >> "$EVIDENCE_DIR/cleanup/inner-volume-sweep.log" 2>&1 || cleanup_ok=0
+  done < "$EVIDENCE_DIR/cleanup/inner-owned-before-volumes.txt"
+  inner_docker volume ls -q > "$EVIDENCE_DIR/cleanup/inner-owned-leftover-volumes.txt" 2>&1
+  [[ ! -s "$EVIDENCE_DIR/cleanup/inner-owned-leftover-volumes.txt" ]] || cleanup_ok=0
   if inner_docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then cleanup_ok=0; fi
   host_docker exec "$DIND_NAME" sh -c 'find /data -maxdepth 2 -type f -print | sort' > "$EVIDENCE_DIR/cleanup/profile-files-after.txt" 2>&1 || cleanup_ok=0
   host_docker inspect "$DIND_NAME" --format '{{json .}}' > "$EVIDENCE_DIR/cleanup/dind-inspect-before-remove.json" 2>&1 || true
@@ -928,10 +966,8 @@ cleanup_owned() {
   fi
   if host_docker volume inspect "$DIND_VOLUME" >/dev/null 2>&1; then cleanup_ok=0; fi
   host_docker ps -a --no-trunc > "$EVIDENCE_DIR/cleanup/outer-after.txt" 2>&1
-  host_docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Labels}}' | sort > "$EVIDENCE_DIR/cleanup/outer-containers-after.txt" 2>&1
-  host_docker volume ls --format '{{.Name}}\t{{.Labels}}' | sort > "$EVIDENCE_DIR/cleanup/outer-volumes-after.txt" 2>&1
-  host_docker network ls --format '{{.ID}}\t{{.Name}}\t{{.Labels}}' | sort > "$EVIDENCE_DIR/cleanup/outer-networks-after.txt" 2>&1
-  python3 \
+  record_outer_inventory "$EVIDENCE_DIR/cleanup" after
+  python3 - \
     "$EVIDENCE_DIR/runtime/outer-containers-before.txt" \
     "$EVIDENCE_DIR/cleanup/outer-containers-after.txt" \
     "$EVIDENCE_DIR/runtime/outer-volumes-before.txt" \
@@ -939,12 +975,46 @@ cleanup_owned() {
     "$EVIDENCE_DIR/runtime/outer-networks-before.txt" \
     "$EVIDENCE_DIR/cleanup/outer-networks-after.txt" \
     > "$EVIDENCE_DIR/cleanup/outer-inventory-compare.txt" 2>&1 <<'PY' || cleanup_ok=0
+import json
 import pathlib
 import sys
+
+def labels(value):
+    parsed = json.loads(value)
+    if parsed is None:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"invalid Docker label map: {value!r}")
+    return tuple(sorted(parsed.items()))
+
+def inventory(path):
+    path = pathlib.Path(path)
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        if "containers" in path.name:
+            if len(fields) != 4:
+                raise SystemExit(f"invalid container inventory row: {line!r}")
+            key, label_field = tuple(fields[:3]), fields[3]
+        elif "volumes" in path.name:
+            if len(fields) != 2:
+                raise SystemExit(f"invalid volume inventory row: {line!r}")
+            key, label_field = (fields[0],), fields[1]
+        elif "networks" in path.name:
+            if len(fields) != 3:
+                raise SystemExit(f"invalid network inventory row: {line!r}")
+            key, label_field = tuple(fields[:2]), fields[2]
+        else:
+            raise SystemExit(f"unknown inventory file: {path}")
+        rows.append((key, labels(label_field)))
+    return tuple(sorted(rows))
+
 for before, after in zip(sys.argv[1::2], sys.argv[2::2]):
-    if pathlib.Path(before).read_text() != pathlib.Path(after).read_text():
+    if inventory(before) != inventory(after):
         raise SystemExit(f"outer inventory changed: {before} -> {after}")
-print("outer container, volume, and network inventories unchanged")
+print("outer container, volume, and network inventories unchanged (label maps normalized)")
 PY
   python3 - "$EVIDENCE_DIR/cleanup/result.json" "$cleanup_ok" <<'PY'
 import json
@@ -972,14 +1042,14 @@ build = root / "build"
 def status(value):
     return "pass" if value == "pass" else ("fail" if value == "fail" else "blocked")
 rows = [
-  {"row": 1, "dimension": "environment", "status": "pass", "evidence": ["source/commit.txt", "source/tree.txt", "runtime/outer-docker-info.txt", "runtime/inner-docker-info.txt"]},
+  {"row": 1, "dimension": "environment", "status": "pass", "evidence": ["source/commit.txt", "source/tree.txt", "runtime/outer-docker-info.txt", "runtime/inner-docker-info.txt", "runtime/dind-platform.txt", "runtime/inner-native-platform.txt", "runtime/target-platform.txt", "runtime/inner-storage-driver.txt", "runtime/inner-driver-status.json", "runtime/inner-buildx-ls.txt", "runtime/inner-buildx-default.txt"]},
   {"row": 2, "dimension": "integration", "status": "pass", "evidence": ["build/toolchain-versions.txt", "build/generated-files.txt", "build/moat-x86_64-linux.sha256", "rawlogs/build-build.log"]},
   {"row": 3, "dimension": "integration", "status": "pass", "evidence": ["images/controller.json", "images/agent.json", "images/user.json", "images/fixture.json", "images/base-identities.json", "rawlogs/build-controller.log", "rawlogs/build-agent.log", "rawlogs/build-user.log", "rawlogs/build-fixture.log"]},
   {"row": 4, "dimension": "integration", "status": status(row4), "evidence": ["client/normal/client-identity.json", "client/normal/installer-invalid.log", "client/normal/installer.log", "client/normal/basic/summary.json"]},
   {"row": 5, "dimension": "integration", "status": status(row5), "evidence": ["browser-session.json", "runtime/user-before-restart.json", "runtime/user-after-restart.json", "runtime/user-restart-observation-times.txt", "runtime/fixture-observations-before-user-restart.json", "runtime/fixture-observations-after-user-restart.json", "runtime/fixture-observations-before.json", "runtime/fixture-observations-after-normal.json", "cleanup/profile-files-after.txt"]},
   {"row": 6, "dimension": "integration", "status": status(row6), "evidence": ["client/normal/matrix/summary.json", "client/normal/matrix/cli-all-commands-results.json"]},
   {"row": 7, "dimension": "integration", "status": status(row7), "evidence": ["client/normal/replay-normal/row7-replay-normal.json", "client/idle/replay-idle/row7-replay-idle.json", "client/idle/replay-idle/row7-replay-idle.jsonl"]},
-  {"row": 8, "dimension": "integration", "status": status(row8), "evidence": ["client/second/basic/summary.json", "cleanup/inner-after.txt", "cleanup/profile-files-after.txt", "cleanup/outer-after.txt", "cleanup/result.json"]},
+  {"row": 8, "dimension": "integration", "status": status(row8), "evidence": ["client/second/basic/summary.json", "cleanup/inner-after.txt", "cleanup/inner-owned-before-volumes.txt", "cleanup/inner-owned-leftover-volumes.txt", "cleanup/profile-files-after.txt", "cleanup/outer-after.txt", "cleanup/result.json"]},
 ]
 identity = {}
 for name in ("controller", "agent", "user", "fixture", "client"):
@@ -1002,9 +1072,14 @@ pathlib.Path(summary).write_text(json.dumps({
     "baseIdentityFile": "images/base-identities.json",
     "baseIdentityText": "images/base-identities.txt",
     "dindPlatform": "runtime/dind-platform.txt",
+    "nativePlatform": "runtime/inner-native-platform.txt",
+    "targetPlatform": "runtime/target-platform.txt",
+    "innerStorageDriver": "runtime/inner-storage-driver.txt",
+    "innerDriverStatus": "runtime/inner-driver-status.json",
+    "innerBuildx": "runtime/inner-buildx-default.txt",
     "dindVolume": "runtime/dind-volume.txt",
   },
-  "cleanupOwned": ["DinD container", "DinD data volume", "inner network", "fixture", "user-chrome", "Controller", "agent-chrome session containers", "client containers", "profile copies under /data"],
+  "cleanupOwned": ["DinD container", "DinD data volume", "inner Docker containers", "inner Docker volumes", "inner network", "fixture", "user-chrome", "Controller", "agent-chrome session containers", "client containers", "profile copies under /data"],
   "evidenceRoot": str(root),
 }, indent=2, sort_keys=True) + "\n")
 PY
@@ -1027,7 +1102,7 @@ restart_user_phase() {
   runtime_identity "${RUN_ID}-user-chrome" "$EVIDENCE_DIR/runtime/user-after-restart.json"
   fixture_observations "$EVIDENCE_DIR/runtime/fixture-observations-after-user-restart.json"
   printf 'afterRestart=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$EVIDENCE_DIR/runtime/user-restart-observation-times.txt"
-  python3 \
+  python3 - \
     "$EVIDENCE_DIR/runtime/fixture-observations-before-user-restart.json" \
     "$EVIDENCE_DIR/runtime/fixture-observations-after-user-restart.json" <<'PY'
 import json
@@ -1067,7 +1142,7 @@ finish_phase() {
   elif ! assert_login_observations "$EVIDENCE_DIR/runtime/fixture-observations-before.json"; then
     row4=fail
     row5=fail
-  elif ! python3 \
+  elif ! python3 - \
     "$EVIDENCE_DIR/runtime/fixture-observations-before-user-restart.json" \
     "$EVIDENCE_DIR/runtime/fixture-observations-after-user-restart.json" \
     "$EVIDENCE_DIR/runtime/fixture-observations-before.json" <<'PY'
