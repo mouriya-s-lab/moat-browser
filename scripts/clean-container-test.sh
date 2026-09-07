@@ -546,7 +546,7 @@ record_outer_baseline() {
 }
 
 start_dind() {
-  RUN_ID="issue235-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  RUN_ID="issue235-$(date -u +%Y%m%dt%H%M%Sz)-$$"
   DIND_NAME="moat-clean235-dind-${RUN_ID}"
   DIND_VOLUME="${DIND_NAME}-data"
   NETWORK_NAME="moat-clean235-${RUN_ID}"
