@@ -48,6 +48,17 @@ export type PushStateResult = {
   readonly url: string;
 };
 
+export type AddInitScriptResult = {
+  readonly _tag: "AddInitScriptResult";
+  readonly added: true;
+  readonly identifier: string;
+};
+
+export type RemoveInitScriptResult = {
+  readonly _tag: "RemoveInitScriptResult";
+  readonly removed: true;
+  readonly identifier: string;
+};
 
 export type VoidResult = {
   readonly _tag: "VoidResult";
@@ -305,6 +316,8 @@ export type BatchResult = {
 export type CommandResultData =
   | NavigateResult
   | PushStateResult
+  | AddInitScriptResult
+  | RemoveInitScriptResult
   | VoidResult
   | LocatorResult
   | SnapshotResult
@@ -410,6 +423,9 @@ export type BrowserCommand =
   | { readonly action: "waitforloadstate"; readonly state: string; readonly timeout?: number }
   | { readonly action: "waitforfunction"; readonly expression: string; readonly timeout?: number }
 
+  // Page initialization scripts (current tab, future documents only)
+  | { readonly action: "addinitscript"; readonly script: string }
+  | { readonly action: "removeinitscript"; readonly identifier: string }
 
   // 语义定位器
   | {
@@ -640,6 +656,8 @@ const browserCommandSchema = type({
   .or({ action: "'waitforurl'", url: "string", "timeout?": "number" })
   .or({ action: "'waitforloadstate'", state: "string", "timeout?": "number" })
   .or({ action: "'waitforfunction'", expression: "string", "timeout?": "number" })
+  .or({ action: "'addinitscript'", script: "string" })
+  .or({ action: "'removeinitscript'", identifier: "string" })
   .or({
     action: "'getbyrole'",
     role: "string",

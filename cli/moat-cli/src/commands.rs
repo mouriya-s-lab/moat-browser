@@ -1528,6 +1528,26 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             })?;
             Ok(json!({ "id": id, "action": "pushstate", "url": url }))
         }
+        "addinitscript" => {
+            let script = rest
+                .first()
+                .ok_or_else(|| ParseError::MissingArguments {
+                    context: "addinitscript".to_string(),
+                    usage: "addinitscript <script>",
+                })?;
+            Ok(json!({ "id": id, "action": "addinitscript", "script": rest.join(" ") }))
+        }
+        "removeinitscript" => {
+            let identifier = rest.first().ok_or_else(|| ParseError::MissingArguments {
+                context: "removeinitscript".to_string(),
+                usage: "removeinitscript <identifier>",
+            })?;
+            Ok(json!({
+                "id": id,
+                "action": "removeinitscript",
+                "identifier": identifier
+            }))
+        }
 
         // === Batch ===
         "batch" => {
@@ -4874,10 +4894,22 @@ mod tests {
     }
 
     #[test]
-    fn test_pushstate_command() {
+    fn test_runtime_navigation_and_init_script_commands() {
         let pushstate = parse_command(&args("pushstate /dashboard"), &default_flags()).unwrap();
         assert_eq!(pushstate["action"], "pushstate");
         assert_eq!(pushstate["url"], "/dashboard");
+
+        let add = parse_command(
+            &args("addinitscript window.__moat_init = 42"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(add["action"], "addinitscript");
+        assert_eq!(add["script"], "window.__moat_init = 42");
+
+        let remove = parse_command(&args("removeinitscript abc"), &default_flags()).unwrap();
+        assert_eq!(remove["action"], "removeinitscript");
+        assert_eq!(remove["identifier"], "abc");
     }
 
 }

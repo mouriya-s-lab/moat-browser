@@ -23,15 +23,17 @@ applying the scoped fork changes.
 
 | Fork file | Upstream target comparison | Decision and reason |
 |---|---|---|
-| `moat-cli/src/commands.rs` | target adds centralized wait timeout injection, shell-split inline batch, tab labels, and local-runtime command families | Retain moat's numeric `index` tab wire and existing command branches. Import wait-family timeout handling and inline batch strings/shell splitting. Tab labels return an explicit `unsupported_in_moat` parser error without creating a tab. Target command families that require the upstream local runtime remain explicit unsupported capabilities. |
+| `moat-cli/src/commands.rs` | target adds centralized wait timeout injection, shell-split inline batch, tab labels, and the `pushstate`/init-script command family | Retain moat's numeric `index` tab wire and existing command branches. Import wait-family timeout handling and inline batch strings/shell splitting. Tab labels return an explicit `unsupported_in_moat` parser error without creating a tab. The page-navigation and init-script commands are forwarded as the 227 wire actions; target command families that require the upstream local runtime remain explicit unsupported capabilities. |
 | `moat-cli/src/flags.rs` | target adds `default_timeout` plus launcher/plugin flags (`--init-script`, `--enable`, provider/runtime, restore, WebGPU, WebMCP, CA, pin-tab, etc.) | Import `AGENT_BROWSER_DEFAULT_TIMEOUT` as an optional millisecond value. Do not parse launcher/plugin flags into a no-op: `unsupported_flags.rs` rejects target-only flags that require the upstream local runtime. `--controller` and moat session configuration remain fork behavior. |
 | `moat-cli/src/main.rs` | target passes inline batch commands to `run_batch` and emits native arrays; target also owns local daemon lifecycle | Keep moat WebSocket transport and the `{success,data:{results}}` batch envelope. Inline arguments are shell-split locally; absent inline arguments preserve the JSON argv-array stdin entry point. Each batch item applies the same unsupported command/flag boundary before parsing, so target-only capabilities cannot become a silent no-op. Failure items are retained, execution continues by default, `--bail` stops after the failure, and either mode exits 1 when any item fails. Non-empty `AGENT_BROWSER_INIT_SCRIPTS`/`AGENT_BROWSER_ENABLE` are rejected rather than silently ignored. |
-| `moat-cli/src/output.rs` | target adds local-daemon lifecycle renderers | Keep moat response/error formatting and numeric-tab display. No local-daemon renderer is imported; runtime page navigation and init-script output belong to the separate navigation/script lifecycle implementation. |
-| `moat-cli/src/fork_features/help.rs` | target help documents the complete local-browser surface | Help lists the supported moat syntax, inline/stdin batch forms, numeric-tab limitation, default timeout, and explicit unsupported target families/startup environments. It does not advertise local daemon/plugin behavior or runtime navigation/script commands not included in this candidate. |
+| `moat-cli/src/output.rs` | target adds local-daemon lifecycle renderers | Keep moat response/error formatting and numeric-tab display. Add concise human-readable success lines for runtime init-script registration/removal; page navigation keeps its returned URL response path. |
+| `moat-cli/src/fork_features/help.rs` | target help documents the complete local-browser surface | Help lists supported moat syntax, inline/stdin batch forms, numeric-tab limitation, page-navigation/init-script commands, default timeout, and explicit unsupported target families/startup environments. It does not advertise local daemon/plugin behavior. |
 | `moat-cli/src/fork_features/unsupported_commands.rs` | target parser accepts runtime families absent from moat | Central fork boundary for read, React, vitals, a11y, WebMCP, and target local orchestration commands. Errors are stable `unsupported_in_moat` values rather than `Unknown command`. |
 | `moat-cli/src/fork_features/unsupported_flags.rs` | target flags are accepted by the local launcher | Central fork boundary for target-only launcher/plugin flags and existing Controller-owned/local-daemon flags. |
-| `cli/sdk/src/lib.rs` | target native daemon handles target actions; moat SDK owns WebSocket and file materialization | Do not import the target daemon. Preserve the accepted remote CLI/SDK adaptations and the moat WebSocket transport. |
+| `cli/sdk/src/lib.rs` | target native daemon handles target actions; moat SDK owns WebSocket and file materialization | Do not import the target daemon. Preserve the accepted remote CLI/SDK adaptations and the moat WebSocket transport; 227 command values are sent through the existing JSON command envelope. |
 | `cli/moat-cli/src/connection.rs` | target uses Unix socket/TCP daemon transport | Keep the moat SDK WebSocket transport unchanged. |
+| `packages/types/src/index.ts` | target daemon action schema is local; moat needs a shared remote contract | Add `pushstate`, `addinitscript`, and `removeinitscript` to the canonical BrowserCommand and result ADTs plus the runtime schema. |
+| `packages/controller/src/cdp-bridge.ts` | target's page/CDP implementation owns navigation and init-script lifecycle | Execute `pushstate` in the page main world so page-owned routers are reached, falling back to history/events only when needed. Track init-script disposables by session and page, expose opaque identifiers, reject wrong-tab/session removal, and clean records on page close, tab close, session deregistration, and controller cleanup. |
 
 ## Public syntax accounting against target
 
@@ -41,14 +43,16 @@ omissions.
 
 ### Top-level commands
 
-| Target entry | Moat result in this candidate |
+| Target entry | Moat result |
 |---|---|
+| `pushstate <url>` | Supported and forwarded as `action: "pushstate"`; the Controller invokes the page-owned router when present and otherwise performs same-document history/events navigation. |
+| `addinitscript <script>` | Supported and forwarded as `action: "addinitscript"`; the returned opaque identifier belongs to the current tab and session and applies only to future documents. |
+| `removeinitscript <identifier>` | Supported and forwarded as `action: "removeinitscript"`; removal rejects an identifier owned by another tab/session and does not roll back an existing document. |
 | `batch [--bail] ["command ..." ...]` | Supported with local shell splitting and the moat envelope; JSON argv arrays from stdin remain supported. |
 | `tab new --label <name>` and string tab references | Explicit `unsupported_in_moat`; numeric `index` remains the protocol contract. |
 | `read`, `react`, `vitals`, `web-vitals`, `a11y`, `webmcp` | Explicit `unsupported_in_moat`; the upstream fetch/native/plugin runtime is not imported. |
 | `mcp`, `doctor`, `skills`, `plugin`, `plugins`, `chat` | Explicit `unsupported_in_moat`; these target local orchestration/plugin paths have no moat Controller contract. |
 | target local lifecycle (`install`, `upgrade`, `profiles`, `session`, `dashboard`, `launch`, `record`, `stream`, `device`, `auth`, `confirm`, `deny`, `inspect`) | Existing moat unsupported boundary remains explicit and machine-readable. |
-| `pushstate`, `addinitscript`, `removeinitscript` | Deferred to the separate page-navigation and init-script implementation; this candidate does not advertise or claim those commands. |
 | `open` with no URL | Not imported: moat sessions are created by `init`; `open` requires a navigation URL. |
 
 ### Target-only global flags and environments
@@ -73,9 +77,10 @@ the existing text payload contract.
 ### Target output families
 
 Target-only WebMCP, vitals, a11y, React tree/render, local daemon lifecycle, and
-native batch-array renderers are not copied. Moat keeps its response formatter
-and retains the `{success,data:{results}}` envelope for both inline and stdin
-batch modes.
+native batch-array renderers are not copied. Moat keeps its response formatter,
+prints readable runtime init-script status lines, returns the `pushstate` URL
+through the existing navigation response path, and retains the
+`{success,data:{results}}` envelope for both inline and stdin batch modes.
 
 ## Reproducible sync procedure
 
@@ -89,8 +94,9 @@ batch modes.
 4. Keep unsupported target-only commands and flags at the fork boundary with a
    stable `unsupported_in_moat` result. Do not import upstream `native`, `read`,
    plugin, or launcher modules merely because a parser helper references them.
-5. Preserve the separate implementation boundary for page navigation and
-   runtime init scripts; do not claim those commands from this CLI sync alone.
+5. Add the 227 page-navigation and init-script actions together with their
+   canonical types, Controller execution, page/session ownership, and cleanup;
+   do not publish a parser-only command.
 
 ## Intentional boundaries
 
@@ -98,7 +104,10 @@ batch modes.
   indexes, and the request fails before a tab is created.
 - `--init-script` and `AGENT_BROWSER_INIT_SCRIPTS` are startup configuration for
   the upstream local launcher. They are not runtime page init scripts; moat
-  rejects them until a complete transport path exists.
+  rejects them rather than silently ignoring them.
+- Runtime init scripts are scoped to the current page and session, affect future
+  documents only, and use opaque identifiers whose ownership is checked before
+  removal.
 - The upstream read, React, vitals, a11y, WebMCP, and local orchestration
   families are explicit unsupported capabilities, not parser omissions and not
   fake success paths.

@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { chromium, devices } from "patchright";
 import type {
   Browser,
   BrowserContext,
   CDPSession,
   Dialog,
+  Disposable,
   Frame,
   Locator,
   Page,
@@ -22,6 +24,8 @@ import type {
   LocatorSubaction,
   NavigateResult,
   PushStateResult,
+  AddInitScriptResult,
+  RemoveInitScriptResult,
   ScreenshotResult,
   SnapshotResult,
   TabInfo,
@@ -83,6 +87,74 @@ export type CdpConnection = {
 
 const contextCdpUrls = new WeakMap<BrowserContext, string>();
 
+type InitScriptRecord = {
+  readonly sessionId: string;
+  readonly page: Page;
+  readonly disposable: Disposable;
+};
+
+const initScriptRecords = new Map<string, InitScriptRecord>();
+const pageInitScriptIdentifiers = new WeakMap<Page, Set<string>>();
+const sessionInitScriptIdentifiers = new Map<string, Set<string>>();
+const initScriptLifecyclePages = new WeakSet<Page>();
+
+function rememberInitScript(record: InitScriptRecord, identifier: string): void {
+  initScriptRecords.set(identifier, record);
+
+  const pageIdentifiers = pageInitScriptIdentifiers.get(record.page) ?? new Set<string>();
+  pageIdentifiers.add(identifier);
+  pageInitScriptIdentifiers.set(record.page, pageIdentifiers);
+
+  const sessionIdentifiers = sessionInitScriptIdentifiers.get(record.sessionId) ?? new Set<string>();
+  sessionIdentifiers.add(identifier);
+  sessionInitScriptIdentifiers.set(record.sessionId, sessionIdentifiers);
+}
+
+function forgetInitScript(identifier: string, record: InitScriptRecord): void {
+  initScriptRecords.delete(identifier);
+
+  const pageIdentifiers = pageInitScriptIdentifiers.get(record.page);
+  if (pageIdentifiers) {
+    pageIdentifiers.delete(identifier);
+    if (pageIdentifiers.size === 0) pageInitScriptIdentifiers.delete(record.page);
+  }
+
+  const sessionIdentifiers = sessionInitScriptIdentifiers.get(record.sessionId);
+  if (sessionIdentifiers) {
+    sessionIdentifiers.delete(identifier);
+    if (sessionIdentifiers.size === 0) sessionInitScriptIdentifiers.delete(record.sessionId);
+  }
+}
+
+function cleanupPageInitScripts(page: Page): void {
+  const identifiers = pageInitScriptIdentifiers.get(page);
+  if (!identifiers) return;
+
+  for (const identifier of [...identifiers]) {
+    const record = initScriptRecords.get(identifier);
+    if (!record) continue;
+    forgetInitScript(identifier, record);
+    void record.disposable.dispose().catch(() => {});
+  }
+}
+
+function cleanupSessionInitScripts(sessionId: string): void {
+  const identifiers = sessionInitScriptIdentifiers.get(sessionId);
+  if (!identifiers) return;
+
+  for (const identifier of [...identifiers]) {
+    const record = initScriptRecords.get(identifier);
+    if (!record) continue;
+    forgetInitScript(identifier, record);
+    void record.disposable.dispose().catch(() => {});
+  }
+}
+
+function observeInitScriptLifecycle(page: Page): void {
+  if (initScriptLifecyclePages.has(page)) return;
+  initScriptLifecyclePages.add(page);
+  page.on("close", () => cleanupPageInitScripts(page));
+}
 
 
 const REMOTE_DOWNLOAD_PATH = "/data/profile/.moat-downloads";
@@ -280,6 +352,7 @@ function harMimeIsText(mimeType: string): boolean {
 }
 
 function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState {
+  observeInitScriptLifecycle(page);
   const state = getSessionRuntimeState(sessionId);
   if (state.observedPages.has(page)) return state;
   state.observedPages.add(page);
@@ -380,6 +453,7 @@ async function ensureCdpRuntimeObserver(
 }
 
 export function clearSessionRuntimeState(sessionId: string): void {
+  cleanupSessionInitScripts(sessionId);
   const state = sessionRuntimeState.get(sessionId);
   if (state) {
     for (const cdp of state.observerSessions) void cdp.detach().catch(() => {});
@@ -906,6 +980,32 @@ export async function executeCommand(
         return ok(result);
       }
 
+      case "addinitscript": {
+        const disposable = await page.addInitScript(command.script);
+        let identifier = `init-${randomUUID()}`;
+        while (initScriptRecords.has(identifier)) identifier = `init-${randomUUID()}`;
+        rememberInitScript({ sessionId, page, disposable }, identifier);
+        const result: AddInitScriptResult = { _tag: "AddInitScriptResult", added: true, identifier };
+        return ok(result);
+      }
+
+      case "removeinitscript": {
+        const record = initScriptRecords.get(command.identifier);
+        if (!record || record.sessionId !== sessionId || record.page !== page) {
+          return err({
+            _tag: "CommandFailed",
+            message: `Init script is not owned by the active tab/session: ${command.identifier}`,
+          });
+        }
+        await record.disposable.dispose();
+        forgetInitScript(command.identifier, record);
+        const result: RemoveInitScriptResult = {
+          _tag: "RemoveInitScriptResult",
+          removed: true,
+          identifier: command.identifier,
+        };
+        return ok(result);
+      }
 
 
       case "back": {
@@ -1098,6 +1198,7 @@ export async function executeCommand(
         }
         const closingPage = context.pages()[closeIndex];
         await closingPage.close();
+        cleanupPageInitScripts(closingPage);
         if (activeTabIndex >= context.pages().length) {
           activeTabIndex = Math.max(0, context.pages().length - 1);
         }
