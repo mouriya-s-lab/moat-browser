@@ -120,6 +120,11 @@ pub fn unsupported_flag(args: &[String], command: &str) -> Option<String> {
                 "unsupported_in_moat: {arg} is a local browser launch option; the Controller owns browser creation"
             ));
         }
+        if UPSTREAM_LOCAL_FLAGS.contains(&arg.as_str()) {
+            return Some(format!(
+                "unsupported_in_moat: {arg} belongs to agent-browser local daemon state and is unavailable in moat"
+            ));
+        }
         if is_upstream_unavailable_flag(arg)
             && !is_positional_operand(args, command, index)
         {
@@ -174,6 +179,13 @@ mod tests {
                 .unwrap()
                 .contains("unsupported_in_moat")
         );
+        for flag in UPSTREAM_LOCAL_FLAGS {
+            assert!(
+                unsupported_flag(&args(&["open", "x", *flag]), "open")
+                    .expect("every upstream local flag must be rejected")
+                    .contains("unsupported_in_moat")
+            );
+        }
     }
 
     #[test]
