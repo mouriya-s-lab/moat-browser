@@ -30,6 +30,12 @@ describe("wireRequestSchema — valid requests", () => {
       command: { action: "navigate", url: "https://example.com" },
     });
   });
+  test("command — pushstate", () => {
+    const command = { action: "pushstate", url: "/router" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
 
   test("command — getbyrole with subaction", () => {
     const result = wireRequestSchema({

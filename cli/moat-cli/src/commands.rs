@@ -1520,6 +1520,14 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
 
         "diff" => parse_diff(&rest, &id),
 
+        // === SPA navigation and runtime init scripts (issue 227) ===
+        "pushstate" => {
+            let url = rest.first().ok_or_else(|| ParseError::MissingArguments {
+                context: "pushstate".to_string(),
+                usage: "pushstate <url>",
+            })?;
+            Ok(json!({ "id": id, "action": "pushstate", "url": url }))
+        }
 
         // === Batch ===
         "batch" => {
@@ -4863,6 +4871,13 @@ mod tests {
     fn test_tab_label_is_explicitly_unsupported() {
         let error = parse_command(&args("tab new --label docs"), &default_flags()).unwrap_err();
         assert!(error.format().contains("unsupported_in_moat"));
+    }
+
+    #[test]
+    fn test_pushstate_command() {
+        let pushstate = parse_command(&args("pushstate /dashboard"), &default_flags()).unwrap();
+        assert_eq!(pushstate["action"], "pushstate");
+        assert_eq!(pushstate["url"], "/dashboard");
     }
 
 }

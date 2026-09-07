@@ -1,5 +1,14 @@
 import { chromium, devices } from "patchright";
-import type { Browser, BrowserContext, CDPSession, Dialog, Frame, Locator, Page, Request } from "patchright";
+import type {
+  Browser,
+  BrowserContext,
+  CDPSession,
+  Dialog,
+  Frame,
+  Locator,
+  Page,
+  Request,
+} from "patchright";
 import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +21,7 @@ import type {
   LocatorResult,
   LocatorSubaction,
   NavigateResult,
+  PushStateResult,
   ScreenshotResult,
   SnapshotResult,
   TabInfo,
@@ -72,6 +82,8 @@ export type CdpConnection = {
 };
 
 const contextCdpUrls = new WeakMap<BrowserContext, string>();
+
+
 
 const REMOTE_DOWNLOAD_PATH = "/data/profile/.moat-downloads";
 
@@ -866,6 +878,35 @@ export async function executeCommand(
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
+      case "pushstate": {
+        runtimeState.activeFrame = undefined;
+        // Patchright defaults evaluate() to its isolated utility world.  The
+        // page-owned Next router only exists in the main world, so this
+        // explicit `false` is required without changing the global eval path.
+        const expression = `((url) => {
+          const before = location.href;
+          const absolute = new URL(url, before).href;
+          if (absolute === before) return before;
+
+          const router = typeof window.next === "object" && window.next && window.next.router;
+          if (router && typeof router.push === "function") {
+            try {
+              router.push(url);
+              return location.href;
+            } catch {}
+          }
+
+          history.pushState(null, "", absolute);
+          try { dispatchEvent(new PopStateEvent("popstate", { state: null })); } catch {}
+          try { dispatchEvent(new Event("navigate")); } catch {}
+          return location.href;
+        })(${JSON.stringify(command.url)})`;
+        const resultingUrl = await page.evaluate<string>(expression, undefined, false);
+        const result: PushStateResult = { _tag: "PushStateResult", url: resultingUrl };
+        return ok(result);
+      }
+
+
 
       case "back": {
         runtimeState.activeFrame = undefined;
@@ -1055,7 +1096,8 @@ export async function executeCommand(
         if (!Number.isInteger(closeIndex) || closeIndex < 0 || closeIndex >= context.pages().length) {
           return err({ _tag: "CommandFailed", message: `Unknown tab index: ${closeIndex}` });
         }
-        await context.pages()[closeIndex].close();
+        const closingPage = context.pages()[closeIndex];
+        await closingPage.close();
         if (activeTabIndex >= context.pages().length) {
           activeTabIndex = Math.max(0, context.pages().length - 1);
         }

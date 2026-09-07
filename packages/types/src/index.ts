@@ -43,6 +43,12 @@ export type NavigateResult = {
   readonly title: string;
 };
 
+export type PushStateResult = {
+  readonly _tag: "PushStateResult";
+  readonly url: string;
+};
+
+
 export type VoidResult = {
   readonly _tag: "VoidResult";
 };
@@ -298,6 +304,7 @@ export type BatchResult = {
 
 export type CommandResultData =
   | NavigateResult
+  | PushStateResult
   | VoidResult
   | LocatorResult
   | SnapshotResult
@@ -394,6 +401,7 @@ export type LocatorSubaction =
 export type BrowserCommand =
   // 导航
   | { readonly action: "navigate"; readonly url: string; readonly waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" | "none"; readonly headers?: Readonly<Record<string, string>> }
+  | { readonly action: "pushstate"; readonly url: string }
   | { readonly action: "back" }
   | { readonly action: "forward" }
   | { readonly action: "reload" }
@@ -401,6 +409,7 @@ export type BrowserCommand =
   | { readonly action: "waitforurl"; readonly url: string; readonly timeout?: number }
   | { readonly action: "waitforloadstate"; readonly state: string; readonly timeout?: number }
   | { readonly action: "waitforfunction"; readonly expression: string; readonly timeout?: number }
+
 
   // 语义定位器
   | {
@@ -623,6 +632,7 @@ const browserCommandSchema = type({
   "waitUntil?": "'load' | 'domcontentloaded' | 'networkidle' | 'commit' | 'none'",
   "headers?": type("Record<string, string>"),
 })
+  .or({ action: "'pushstate'", url: "string" })
   .or({ action: "'back'" })
   .or({ action: "'forward'" })
   .or({ action: "'reload'" })

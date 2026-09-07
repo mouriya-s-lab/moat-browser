@@ -28,6 +28,7 @@ Browser and runtime state:
   set viewport|device|geo|offline|headers|credentials|media
   network route|unroute|requests|request
   console | errors | batch | diff
+  pushstate
 
 Unavailable in moat architecture (stable unsupported_in_moat error):
   read                        Upstream document fetching is not in moat
@@ -136,6 +137,7 @@ pub fn print_command_help(command: &str) -> bool {
         "swipe" => "swipe <up|down|left|right> [distance]",
         "diff" => "diff <snapshot|screenshot|url> ...",
         "batch" => "batch [--bail] [\"command ...\" ...]  # inline or JSON stdin",
+        "pushstate" => "pushstate <url>",
         "read" | "react" | "vitals" | "web-vitals" | "a11y" | "webmcp"
         | "mcp" | "doctor" | "skills" | "plugin" | "plugins" | "chat" => {
             println!(
@@ -177,6 +179,7 @@ mod tests {
             "network",
             "state",
             "batch",
+            "pushstate",
             "read",
             "react",
             "vitals",
