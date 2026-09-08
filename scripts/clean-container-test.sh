@@ -850,38 +850,31 @@ PY
 stop_user_gracefully() {
   local name="${RUN_ID}-user-chrome"
   runtime_identity "$name" "$EVIDENCE_DIR/runtime/user-before-stop.json"
-  if ! inner_docker exec "$name" supervisorctl status > "$EVIDENCE_DIR/runtime/user-supervisor-before-stop.log" 2>&1; then
-    echo "supervisorctl status failed; refusing to treat a container stop as a clean browser stop" >&2
-    return 1
-  fi
-  local programs
-  programs="$(python3 - "$EVIDENCE_DIR/runtime/user-supervisor-before-stop.log" <<'PY'
-import pathlib
-import sys
-for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
-    fields = line.split()
-    if len(fields) >= 2 and fields[1] in {"RUNNING", "STARTING"}:
-        print(fields[0])
-PY
-)"
-  [[ -n "$programs" ]] || {
-    echo "supervisorctl reported no running managed programs" >&2
+  local chromium_status
+  chromium_status="$(inner_docker exec "$name" supervisorctl status chromium 2>&1)" || {
+    echo "supervisorctl status chromium failed; refusing to treat a container stop as a clean browser stop" >&2
     return 1
   }
-  while IFS= read -r program; do
-    [[ -n "$program" ]] || continue
-    inner_docker exec "$name" supervisorctl stop "$program" >> "$EVIDENCE_DIR/runtime/user-supervisor-stop.log" 2>&1 \
-      || return 1
-  done <<< "$programs"
+  printf '%s\n' "$chromium_status" > "$EVIDENCE_DIR/runtime/user-supervisor-before-stop.log"
+  [[ "$chromium_status" == chromium*RUNNING* || "$chromium_status" == chromium*STARTING* ]] || {
+    echo "chromium is not running; refusing to treat a container stop as a clean browser stop" >&2
+    return 1
+  }
+  inner_docker exec "$name" supervisorctl stop chromium > "$EVIDENCE_DIR/runtime/user-supervisor-stop.log" 2>&1 || return 1
   inner_docker exec "$name" supervisorctl status > "$EVIDENCE_DIR/runtime/user-supervisor-after-stop.log" 2>&1 \
     || return 1
   python3 - "$EVIDENCE_DIR/runtime/user-supervisor-after-stop.log" <<'PY'
 import pathlib
 import sys
+found = False
 for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
     fields = line.split()
-    if len(fields) >= 2 and fields[1] in {"RUNNING", "STARTING"}:
-        raise SystemExit(f"managed process remained active after supervisor stop: {fields[0]}")
+    if fields and fields[0] == "chromium":
+        found = True
+        if len(fields) < 2 or fields[1] not in {"STOPPED", "EXITED"}:
+            raise SystemExit(f"chromium not stopped after supervisor stop: {line}")
+if not found:
+    raise SystemExit("chromium missing from supervisor status after stop")
 PY
   inner_docker stop "$name" > "$EVIDENCE_DIR/runtime/user-stop.log"
   local state exit_code oom_killed
@@ -891,7 +884,9 @@ PY
   printf '%s\n' "$state" > "$EVIDENCE_DIR/runtime/user-stop-state.txt"
   printf '%s\n' "$exit_code" > "$EVIDENCE_DIR/runtime/user-stop-exit-code.txt"
   printf '%s\n' "$oom_killed" > "$EVIDENCE_DIR/runtime/user-stop-oom-killed.txt"
-  [[ "$state" == exited && "$exit_code" == 0 && "$oom_killed" == false ]] || return 1
+  # docker stop SIGTERMs PID 1 (supervisord); 143 is its normal clean-stop exit alongside 0.
+  [[ "$state" == exited && "$oom_killed" == false ]] || return 1
+  [[ "$exit_code" == 0 || "$exit_code" == 143 ]] || return 1
   runtime_identity "$name" "$EVIDENCE_DIR/runtime/user-after-stop.json"
 }
 
