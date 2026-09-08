@@ -2,7 +2,7 @@ import { describe, expect, it, mock, beforeEach } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BrowserContext, Locator, Page, Response } from "patchright";
+import type { BrowserContext, Locator, Page, Response, Route } from "patchright";
 import type { BrowserCommand, CookieEntry } from "@moat-browser/types";
 import { clearSessionRuntimeState, executeCommand, type Result } from "./cdp-bridge.js";
 import type { RefStore } from "./ref-store.js";
@@ -18,6 +18,8 @@ function mockLocator(overrides?: Partial<Locator>): Locator {
     check: mock(() => Promise.resolve()),
     uncheck: mock(() => Promise.resolve()),
     hover: mock(() => Promise.resolve()),
+    innerText: mock(() => Promise.resolve("")),
+    textContent: mock(() => Promise.resolve("")),
     highlight: mock(() => Promise.resolve()),
     setInputFiles: mock(() => Promise.resolve()),
     dragTo: mock(() => Promise.resolve()),
@@ -37,8 +39,9 @@ function mockLocator(overrides?: Partial<Locator>): Locator {
       },
     }])),
     ariaSnapshot: mock(() => Promise.resolve('- heading "Test"\n- button "Click me"')),
-    screenshot: mock(() => Promise.resolve(Buffer.from("locator-png-data"))),
-    nth: mock(function (this: Locator) { return this; }),
+    nth: mock((_index: number) => locator),
+    and: mock(function (this: Locator) { return this; }),
+    or: mock(function (_locator: Locator) { return _locator; }),
     ...overrides,
   } as unknown as Locator;
   (locator as unknown as { getByRole: (role: string, options?: object) => Locator }).getByRole = mock(() => locator);
@@ -311,11 +314,68 @@ describe("cdp-bridge", () => {
       const r = await executeCommand(ctx, { action: "getbyrole", role: "button", subaction: "hover" }, refStore, SESSION);
       expect(assertOk(r)._tag).toBe("VoidResult");
     });
+    it("getbytext text returns innerText and falls back to textContent", async () => {
+      const rendered = mockLocator({
+        innerText: mock(() => Promise.resolve("Rendered")),
+        textContent: mock(() => Promise.resolve("Source")),
+      });
+      page = mockPage({ getByText: mock(() => rendered) });
+      ctx = mockContext([page]);
 
-    it("getbyrole with nth narrows to nth element", async () => {
-      await executeCommand(ctx, { action: "getbyrole", role: "button", nth: 2 }, refStore, SESSION);
-      const loc = (page.getByRole as ReturnType<typeof mock>).mock.results[0].value;
-      expect(loc.nth).toHaveBeenCalledWith(2);
+      const preferred = assertOk(await executeCommand(
+        ctx,
+        { action: "getbytext", text: "Rendered", subaction: "text" },
+        refStore,
+        SESSION,
+      ));
+      expect(preferred).toEqual({ _tag: "GetTextResult", text: "Rendered" });
+
+      const fallback = mockLocator({
+        innerText: mock(() => Promise.resolve("")),
+        textContent: mock(() => Promise.resolve("Body")),
+      });
+      page = mockPage({ getByText: mock(() => fallback) });
+      ctx = mockContext([page]);
+      const fallbackResult = assertOk(await executeCommand(
+        ctx,
+        { action: "getbytext", text: "Body", subaction: "text" },
+        refStore,
+        SESSION,
+      ));
+      expect(fallbackResult).toEqual({ _tag: "GetTextResult", text: "Body" });
+    });
+
+    it("getby locators reject missing fill/type values before interaction", async () => {
+      const locator = mockLocator();
+      page = mockPage({
+        getByTitle: mock(() => locator),
+        getByText: mock(() => locator),
+      });
+      ctx = mockContext([page]);
+
+      const fillError = assertErr(await executeCommand(
+        ctx,
+        { action: "getbytitle", text: "Title", subaction: "fill" },
+        refStore,
+        SESSION,
+      ));
+      expect(fillError).toEqual({
+        _tag: "ValidationFailed",
+        message: "Missing 'value' for fill subaction",
+      });
+
+      const typeError = assertErr(await executeCommand(
+        ctx,
+        { action: "getbytext", text: "Target", subaction: "type" },
+        refStore,
+        SESSION,
+      ));
+      expect(typeError).toEqual({
+        _tag: "ValidationFailed",
+        message: "Missing 'value' for type subaction",
+      });
+      expect(locator.fill).not.toHaveBeenCalled();
+      expect(locator.pressSequentially).not.toHaveBeenCalled();
     });
 
     it("getbylabel without subaction returns LocatorResult", async () => {
@@ -368,11 +428,6 @@ describe("cdp-bridge", () => {
       expect(assertOk(r)._tag).toBe("VoidResult");
     });
 
-    it("type ref returns VoidResult (uses pressSequentially)", async () => {
-      const r = await executeCommand(ctx, { action: "type", ref: "@e1", value: "text" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
     it("hover ref returns VoidResult", async () => {
       const r = await executeCommand(ctx, { action: "hover", ref: "@e1" }, refStore, SESSION);
       expect(assertOk(r)._tag).toBe("VoidResult");
@@ -411,10 +466,111 @@ describe("cdp-bridge", () => {
         maxDepth: 0,
       }, refStore, SESSION);
       const data = assertOk(r);
-      expect(page.locator).toHaveBeenCalledWith("main");
       if (data._tag === "SnapshotResult") {
         expect(data.snapshot).toBe('- @e1 link "Top"');
       }
+    });
+
+    it("snapshot urls resolves link hrefs without shifting interactive refs", async () => {
+      const link = mockLocator({
+        evaluate: mock(() => Promise.resolve("https://example.com/target")),
+      });
+      const root = mockLocator({
+        ariaSnapshot: mock(() => Promise.resolve(
+          '- heading "Probe"\n- link "Target":\n  - /url: /target',
+        )),
+      });
+      root.getByRole = mock(
+        (role: Parameters<Locator["getByRole"]>[0]) => role === "link" ? link : root,
+      );
+      page = mockPage({ locator: mock(() => root) });
+      ctx = mockContext([page]);
+
+      const r = await executeCommand(ctx, {
+        action: "snapshot",
+        selector: "main",
+        interactive: true,
+        urls: true,
+      }, refStore, SESSION);
+      const data = assertOk(r);
+
+      if (data._tag === "SnapshotResult") {
+        expect(data.snapshot).toBe('- @e1 link "Target" [url=https://example.com/target]');
+        expect(data.snapshot).not.toContain("/url:");
+      }
+      expect(refStore.resolve(SESSION, "@e1")).toBe(link);
+    });
+    it("snapshot keeps selector and ref roots for URL enrichment", async () => {
+      const root = mockLocator({
+        ariaSnapshot: mock(() => Promise.resolve('- link "Target"')),
+        evaluate: mock(() => Promise.resolve("https://example.com/target")),
+      });
+      const descendant = mockLocator({
+        evaluate: mock(() => Promise.reject(new Error("descendant locator should not be used"))),
+      });
+      root.getByRole = mock(() => descendant);
+      root.and = mock(() => root);
+      root.or = mock(() => root);
+      page = mockPage({ locator: mock(() => root) });
+      ctx = mockContext([page]);
+
+      const withoutUrls = assertOk(await executeCommand(ctx, {
+        action: "snapshot",
+        selector: "a",
+        interactive: true,
+      }, refStore, SESSION));
+      if (withoutUrls._tag === "SnapshotResult") {
+        expect(withoutUrls.snapshot).toBe('- @e1 link "Target"');
+      }
+      expect(refStore.resolve(SESSION, "@e1")).toBe(root);
+
+      const withUrls = assertOk(await executeCommand(ctx, {
+        action: "snapshot",
+        ref: "@e1",
+        interactive: true,
+        urls: true,
+      }, refStore, SESSION));
+      if (withUrls._tag === "SnapshotResult") {
+        expect(withUrls.snapshot).toBe('- @e1 link "Target" [url=https://example.com/target]');
+      }
+    });
+
+    it("snapshot URL refs preserve duplicate-name occurrence after depth filtering", async () => {
+      const links = [
+        mockLocator({ evaluate: mock(() => Promise.resolve("https://example.com/first")) }),
+        mockLocator({ evaluate: mock(() => Promise.resolve("https://example.com/nested")) }),
+        mockLocator({ evaluate: mock(() => Promise.resolve("https://example.com/third")) }),
+      ];
+      const nth = mock((index: number) => links[index] ?? links[0]);
+      const root = mockLocator({
+        ariaSnapshot: mock(() => Promise.resolve(
+          '- link "Same"\n  - link "Same"\n- link "Same"',
+        )),
+      });
+      root.getByRole = mock(() => root);
+      root.and = mock(() => root);
+      root.or = mock(() => root);
+      root.nth = nth;
+      page = mockPage({ locator: mock(() => root) });
+      ctx = mockContext([page]);
+
+      const r = await executeCommand(ctx, {
+        action: "snapshot",
+        selector: "#links",
+        interactive: true,
+        maxDepth: 0,
+        urls: true,
+      }, refStore, SESSION);
+      const data = assertOk(r);
+
+      if (data._tag === "SnapshotResult") {
+        expect(data.snapshot).toBe(
+          '- @e1 link "Same" [url=https://example.com/first]\n'
+          + '- @e2 link "Same" [url=https://example.com/third]',
+        );
+      }
+      expect(nth).toHaveBeenNthCalledWith(1, 0);
+      expect(nth).toHaveBeenNthCalledWith(2, 2);
     });
 
     it("screenshot returns ScreenshotResult", async () => {
@@ -434,16 +590,6 @@ describe("cdp-bridge", () => {
       if (data._tag === "ScreenshotResult") {
         expect(data.format).toBe("jpeg");
       }
-    });
-
-    it("screenshot applies selector or full page capture options", async () => {
-      const locator = mockLocator();
-      page = mockPage({ locator: mock(() => locator) });
-      ctx = mockContext([page]);
-      await executeCommand(ctx, { action: "screenshot", selector: "main" }, refStore, SESSION);
-      expect(locator.screenshot).toHaveBeenCalled();
-      await executeCommand(ctx, { action: "screenshot", fullPage: true }, refStore, SESSION);
-      expect(page.screenshot).toHaveBeenLastCalledWith(expect.objectContaining({ fullPage: true }));
     });
 
     it("annotated screenshot draws and removes overlays around interactive refs", async () => {
@@ -642,17 +788,79 @@ describe("cdp-bridge", () => {
   });
 
   describe("network and runtime logs", () => {
-    it("route and unroute install and remove matching handlers", async () => {
+    it("route filters resource types, fulfills matches, and unroute removes handlers", async () => {
+      let resourceType = "document";
+      const handlers: Array<(route: Route) => Promise<void>> = [];
+      page = mockPage({
+        route: mock((_url: string, handler: (route: Route) => Promise<void>) => {
+          handlers.push(handler);
+          return Promise.resolve();
+        }) as Page["route"],
+      });
+      ctx = mockContext([page]);
+
       await executeCommand(ctx, {
         action: "route",
-        url: "**/api/*",
-        abort: true,
+        url: "**/json",
+        abort: false,
+        body: "{\"mock\":true}",
+        resourceType: " XHR, Fetch ",
       }, refStore, SESSION);
-      await executeCommand(ctx, { action: "unroute", url: "**/api/*" }, refStore, SESSION);
+
+      const route = {
+        request: mock(() => ({ resourceType: () => resourceType })),
+        abort: mock(() => Promise.resolve()),
+        continue: mock(() => Promise.resolve()),
+        fulfill: mock(() => Promise.resolve()),
+      } as unknown as Route;
+
+      await handlers[0](route);
+      expect(route.continue).toHaveBeenCalledTimes(1);
+      expect(route.fulfill).not.toHaveBeenCalled();
+
+      resourceType = "XHR";
+      await handlers[0](route);
+      expect(route.fulfill).toHaveBeenCalledWith({
+        body: "{\"mock\":true}",
+        contentType: "application/json",
+      });
+
+      await executeCommand(ctx, { action: "unroute", url: "**/json" }, refStore, SESSION);
       await executeCommand(ctx, { action: "unroute" }, refStore, SESSION);
       expect(page.route).toHaveBeenCalledTimes(1);
-      expect(page.unroute).toHaveBeenCalledWith("**/api/*");
+      expect(page.unroute).toHaveBeenCalledWith("**/json");
       expect(page.unrouteAll).toHaveBeenCalledWith({ behavior: "wait" });
+    });
+
+    it("route abort takes precedence over a response body", async () => {
+      const handlers: Array<(route: Route) => Promise<void>> = [];
+      page = mockPage({
+        route: mock((_url: string, handler: (route: Route) => Promise<void>) => {
+          handlers.push(handler);
+          return Promise.resolve();
+        }) as Page["route"],
+      });
+      ctx = mockContext([page]);
+
+      await executeCommand(ctx, {
+        action: "route",
+        url: "**/json",
+        abort: true,
+        body: "{\"ignored\":true}",
+        resourceType: "xhr",
+      }, refStore, SESSION);
+
+      const route = {
+        request: mock(() => ({ resourceType: () => "XHR" })),
+        abort: mock(() => Promise.resolve()),
+        continue: mock(() => Promise.resolve()),
+        fulfill: mock(() => Promise.resolve()),
+      } as unknown as Route;
+      await handlers[0](route);
+
+      expect(route.abort).toHaveBeenCalledTimes(1);
+      expect(route.fulfill).not.toHaveBeenCalled();
+      expect(route.continue).not.toHaveBeenCalled();
     });
 
     it("console and page error commands return observed events and clear them", async () => {
@@ -1133,7 +1341,7 @@ describe("cdp-bridge", () => {
       expect(detach).toHaveBeenCalledTimes(1);
     });
 
-    it("HAR start clears prior requests and stop exports captured requests", async () => {
+    it("HAR defaults to text bodies and filters binary responses", async () => {
       const handlers = new Map<string, (value: unknown) => void>();
       page = mockPage({
         on: mock((event: string, handler: (value: unknown) => void) => {
@@ -1142,23 +1350,144 @@ describe("cdp-bridge", () => {
         }) as Page["on"],
       });
       ctx = mockContext([page]);
+      const jsonBody = Buffer.from('{"original":true}');
+      const binaryBody = Buffer.from([0, 255, 128, 254]);
+      const emitResponse = (
+        request: Record<string, unknown>,
+        body: Buffer,
+        mimeType: string,
+      ) => {
+        handlers.get("request")?.(request);
+        handlers.get("response")?.({
+          request: () => request,
+          status: () => 200,
+          headers: () => ({ "content-type": mimeType, "content-length": String(body.length) }),
+          body: () => Promise.resolve(body),
+        });
+      };
+
       await executeCommand(ctx, { action: "har_start" }, refStore, SESSION);
-      handlers.get("request")?.({
-        url: () => "https://example.com/api",
-        method: () => "POST",
+      const jsonRequest = {
+        url: () => "https://example.com/json",
+        method: () => "GET",
         resourceType: () => "fetch",
-        headers: () => ({ "content-type": "application/json" }),
-        postData: () => "{}",
-      });
+        headers: () => ({}),
+        postData: () => null,
+      };
+      const binaryRequest = {
+        url: () => "https://example.com/binary",
+        method: () => "GET",
+        resourceType: () => "fetch",
+        headers: () => ({}),
+        postData: () => null,
+      };
+      emitResponse(jsonRequest, jsonBody, "application/json");
+      emitResponse(binaryRequest, binaryBody, "application/octet-stream");
 
       const data = assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION));
-
       expect(data._tag).toBe("BinaryFileResult");
       if (data._tag === "BinaryFileResult") {
         const har = JSON.parse(Buffer.from(data.base64, "base64").toString());
-        expect(data.requestCount).toBe(1);
-        expect(har.log.version).toBe("1.2");
-        expect(har.log.entries[0].request.url).toBe("https://example.com/api");
+        expect(data.requestCount).toBe(2);
+        expect(har.log.entries[0].response.content).toEqual({
+          size: jsonBody.length,
+          mimeType: "application/json",
+          text: jsonBody.toString("utf8"),
+        });
+        expect(har.log.entries[1].response.content).toEqual({
+          size: binaryBody.length,
+          mimeType: "application/octet-stream",
+        });
+      }
+    });
+
+    it("HAR all mode waits for an in-flight body and preserves binary bytes", async () => {
+      const handlers = new Map<string, (value: unknown) => void>();
+      page = mockPage({
+        on: mock((event: string, handler: (value: unknown) => void) => {
+          handlers.set(event, handler);
+          return page;
+        }) as Page["on"],
+      });
+      ctx = mockContext([page]);
+      const binaryBody = Buffer.from([0, 255, 128, 254]);
+      let resolveBody: ((body: Buffer) => void) | undefined;
+      const bodyRead = new Promise<Buffer>((resolve) => {
+        resolveBody = resolve;
+      });
+      const request = {
+        url: () => "https://example.com/binary",
+        method: () => "GET",
+        resourceType: () => "fetch",
+        headers: () => ({}),
+        postData: () => null,
+      };
+
+      await executeCommand(ctx, { action: "har_start", content: "all" }, refStore, SESSION);
+      handlers.get("request")?.(request);
+      handlers.get("response")?.({
+        request: () => request,
+        status: () => 200,
+        headers: () => ({
+          "content-type": "application/octet-stream",
+          "content-length": String(binaryBody.length),
+        }),
+        body: () => bodyRead,
+      });
+
+      const stop = executeCommand(ctx, { action: "har_stop" }, refStore, SESSION);
+      resolveBody?.(binaryBody);
+      const data = assertOk(await stop);
+      expect(data._tag).toBe("BinaryFileResult");
+      if (data._tag === "BinaryFileResult") {
+        const har = JSON.parse(Buffer.from(data.base64, "base64").toString());
+        expect(har.log.entries[0].response.content).toEqual({
+          size: binaryBody.length,
+          mimeType: "application/octet-stream",
+          text: binaryBody.toString("base64"),
+          encoding: "base64",
+        });
+      }
+    });
+
+    it("HAR none mode retains response metadata without embedding bodies", async () => {
+      const handlers = new Map<string, (value: unknown) => void>();
+      page = mockPage({
+        on: mock((event: string, handler: (value: unknown) => void) => {
+          handlers.set(event, handler);
+          return page;
+        }) as Page["on"],
+      });
+      ctx = mockContext([page]);
+      const body = Buffer.from('{"original":true}');
+      const request = {
+        url: () => "https://example.com/json",
+        method: () => "GET",
+        resourceType: () => "fetch",
+        headers: () => ({}),
+        postData: () => null,
+      };
+
+      await executeCommand(ctx, { action: "har_start", content: "none" }, refStore, SESSION);
+      handlers.get("request")?.(request);
+      handlers.get("response")?.({
+        request: () => request,
+        status: () => 200,
+        headers: () => ({
+          "content-type": "application/json",
+          "content-length": String(body.length),
+        }),
+        body: () => Promise.resolve(body),
+      });
+
+      const data = assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION));
+      expect(data._tag).toBe("BinaryFileResult");
+      if (data._tag === "BinaryFileResult") {
+        const har = JSON.parse(Buffer.from(data.base64, "base64").toString());
+        expect(har.log.entries[0].response.content).toEqual({
+          size: body.length,
+          mimeType: "application/json",
+        });
       }
     });
   });

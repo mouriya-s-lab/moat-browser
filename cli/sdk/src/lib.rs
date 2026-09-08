@@ -610,7 +610,7 @@ fn required_string(request: &Value, field: &str) -> Result<String, SdkError> {
 
 fn snapshot_request(request: &Value) -> Value {
     let mut command = serde_json::json!({ "action": "snapshot" });
-    for key in ["selector", "compact", "maxDepth", "interactive"] {
+    for key in ["selector", "compact", "maxDepth", "interactive", "urls"] {
         if let Some(value) = request.get(key) {
             command[key] = value.clone();
         }
@@ -750,6 +750,19 @@ fn prepare_command(
             })?;
         obj.remove("path");
         obj.insert("state".into(), state);
+    }
+
+    if obj.get("action").and_then(|v| v.as_str()) == Some("route") {
+        if let Some(response) = obj.remove("response") {
+            let body = response
+                .get("body")
+                .and_then(Value::as_str)
+                .ok_or_else(|| SdkError::CommandFailed {
+                    error: "route response requires a string body".into(),
+                    code: 1,
+                })?;
+            obj.insert("body".into(), Value::String(body.to_owned()));
+        }
     }
 
     match obj.get("action").and_then(|value| value.as_str()) {
@@ -1070,6 +1083,44 @@ mod tests {
         assert!(request.get("path").is_none());
         assert!(request.get("selector").is_none());
         assert_eq!(request["fullPage"], false);
+    }
+
+    #[test]
+    fn prepare_route_normalizes_upstream_response_body_for_wire() {
+        let mut request = json!({
+            "id": "cli-id",
+            "action": "route",
+            "url": "**/json",
+            "abort": false,
+            "response": { "body": "{\"mock\":true}" },
+            "resourceType": "XHR, Fetch"
+        });
+
+        prepare_command(&mut request).unwrap();
+
+        assert_eq!(
+            request,
+            json!({
+                "action": "route",
+                "url": "**/json",
+                "abort": false,
+                "body": "{\"mock\":true}",
+                "resourceType": "XHR, Fetch"
+            })
+        );
+    }
+
+    #[test]
+    fn prepare_route_rejects_response_without_string_body() {
+        let mut request = json!({
+            "action": "route",
+            "url": "**/json",
+            "abort": false,
+            "response": {}
+        });
+
+        let error = prepare_command(&mut request).unwrap_err().to_string();
+        assert!(error.contains("route response requires a string body"));
     }
 
     #[test]

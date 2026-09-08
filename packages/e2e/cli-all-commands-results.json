@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-07-17T22:05:08.129Z",
-  "controller": "ws://browser.hb.lan:3000",
-  "moat": "/Users/mouriya/Ext/code/moat-browser-worktrees/0718-ea01/cli/target/release/moat",
+  "generatedAt": "2026-09-06T17:35:46.683Z",
+  "controller": "ws://127.0.0.1:57057",
+  "moat": "/Users/mouriya/Ext/work/orca/moat-acceptance-226-229-20260907/runtime-cd4cdec3/moat",
   "expectedActions": 121,
-  "coveredActions": 121,
-  "cases": 121,
+  "coveredActions": 122,
+  "cases": 122,
   "missing": [],
   "failed": [],
   "noOp": [],
@@ -193,7 +193,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 19.273708000000624,
+      "elapsedMs": 68.39612500000112,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -211,7 +211,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 102.30629200000021,
+      "elapsedMs": 718.3572499999991,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -229,7 +229,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 7.466500000000451,
+      "elapsedMs": 5.057707999998456,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -247,7 +247,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 52.16920800000116,
+      "elapsedMs": 90.4177499999987,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -264,7 +264,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 172.1509160000005,
+      "elapsedMs": 1176.9007920000004,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -281,7 +281,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 3018.159875000001,
+      "elapsedMs": 3016.9490829999995,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -298,7 +298,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 135.3217079999995,
+      "elapsedMs": 146.54716700000063,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -316,7 +316,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 292.89229200000045,
+      "elapsedMs": 503.64041599999837,
       "effectAssertion": [
         "eval",
         "document.querySelector('#button').dataset.clicked"
@@ -335,7 +335,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 175.50600000000122,
+      "elapsedMs": 297.041541999999,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('dblclick')"
@@ -355,7 +355,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 62.002707999999984,
+      "elapsedMs": 215.33874999999898,
       "effectAssertion": [
         "get",
         "value",
@@ -376,7 +376,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 65.93362499999967,
+      "elapsedMs": 179.89162499999657,
       "effectAssertion": [
         "get",
         "value",
@@ -396,7 +396,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 128.09412499999962,
+      "elapsedMs": 261.47491699999955,
       "effectAssertion": [
         "eval",
         "document.querySelector('#button').matches(':hover')"
@@ -415,7 +415,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 69.85954200000015,
+      "elapsedMs": 151.80520799999795,
       "effectAssertion": [
         "eval",
         "document.activeElement.id"
@@ -434,7 +434,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 231.35475000000042,
+      "elapsedMs": 342.9795000000013,
       "effectAssertion": [
         "is",
         "checked",
@@ -454,7 +454,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 232.36245899999994,
+      "elapsedMs": 335.1197920000013,
       "effectAssertion": [
         "is",
         "checked",
@@ -475,7 +475,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 60.925208000000566,
+      "elapsedMs": 163.39099999999962,
       "effectAssertion": [
         "get",
         "value",
@@ -496,7 +496,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 473.16058299999895,
+      "elapsedMs": 826.237333000001,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('drop')"
@@ -511,12 +511,12 @@
       "argv": [
         "upload",
         "#file",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/upload.txt"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/upload.txt"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 101.660167,
+      "elapsedMs": 226.35454200000095,
       "effectAssertion": [
         "eval",
         "document.querySelector('#file').files[0].name"
@@ -531,14 +531,14 @@
       "argv": [
         "download",
         "#download",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/download.txt"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/download.txt"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 308.7079169999997,
+      "elapsedMs": 452.2727920000034,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/download.txt"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/download.txt"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -554,7 +554,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 9.358707999999751,
+      "elapsedMs": 8.378166999998939,
       "effectAssertion": [
         "eval",
         "document.activeElement !== document.body"
@@ -573,7 +573,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 8.013457999999446,
+      "elapsedMs": 8.049584000000323,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('keydown')"
@@ -592,7 +592,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 7.965541999999914,
+      "elapsedMs": 4.356625000000349,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('keyup')"
@@ -612,7 +612,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 19.273541999998997,
+      "elapsedMs": 18.17137499999808,
       "effectAssertion": [
         "get",
         "value",
@@ -633,7 +633,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 10.068916000000172,
+      "elapsedMs": 8.331917000003159,
       "effectAssertion": [
         "eval",
         "window.scrollY > 0"
@@ -652,7 +652,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 249.69866699999875,
+      "elapsedMs": 173.09245799999917,
       "effectAssertion": [
         "eval",
         "document.querySelector('#target').getBoundingClientRect().top < innerHeight"
@@ -671,7 +671,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 1010.0894580000004,
+      "elapsedMs": 1009.1460000000006,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -690,7 +690,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 18.341291999999157,
+      "elapsedMs": 10.311333999998169,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -709,7 +709,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 13.924791999999798,
+      "elapsedMs": 20.87037500000224,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -728,7 +728,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 13.933666999999332,
+      "elapsedMs": 37.50087500000154,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -742,16 +742,16 @@
       "argv": [
         "wait",
         "--download",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/wait-download.txt",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/wait-download.txt",
         "--timeout",
         "10000"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 551.2064579999987,
+      "elapsedMs": 574.3835419999996,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/wait-download.txt"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/wait-download.txt"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -762,14 +762,14 @@
       "availability": "controller",
       "argv": [
         "screenshot",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/screen.png"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/screen.png"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 216.69254100000035,
+      "elapsedMs": 242.27662500000224,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/screen.png"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/screen.png"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -780,14 +780,14 @@
       "availability": "controller",
       "argv": [
         "pdf",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/page.pdf"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/page.pdf"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 69.68366599999717,
+      "elapsedMs": 164.549417000002,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/page.pdf"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/page.pdf"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -803,7 +803,28 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 69.85454199999731,
+      "elapsedMs": 121.52920799999993,
+      "effectAssertion": [
+        "successful observable response"
+      ],
+      "effectPassed": true,
+      "internalDiagnostic": ""
+    },
+    {
+      "name": "snapshot_urls",
+      "parserAction": "snapshot_urls",
+      "availability": "controller",
+      "argv": [
+        "snapshot",
+        "-i",
+        "--urls",
+        "-s",
+        "body"
+      ],
+      "exit": 0,
+      "success": true,
+      "jsonValues": 1,
+      "elapsedMs": 477.0783330000013,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -821,7 +842,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 22.334333999999217,
+      "elapsedMs": 52.921542000000045,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -840,7 +861,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 13.728000000002794,
+      "elapsedMs": 152.18166700000074,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -859,7 +880,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 13.130875000002561,
+      "elapsedMs": 152.9416659999988,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -878,7 +899,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 13.083041999998386,
+      "elapsedMs": 157.87866700000086,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -898,7 +919,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 12.634084000001167,
+      "elapsedMs": 174.3987500000003,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -917,7 +938,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 147.01854200000162,
+      "elapsedMs": 207.5112079999999,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -936,7 +957,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 113.79658299999937,
+      "elapsedMs": 166.88104100000055,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -955,7 +976,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 21.403833000000304,
+      "elapsedMs": 23.836291999999958,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -973,7 +994,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 11.667709000001196,
+      "elapsedMs": 7.181625000001077,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -992,7 +1013,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 150.58520800000042,
+      "elapsedMs": 161.62362500000017,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1011,7 +1032,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 18.783792000001995,
+      "elapsedMs": 164.6349160000027,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1030,7 +1051,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 16.10200000000259,
+      "elapsedMs": 161.03987499999857,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1051,7 +1072,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 150.45933300000252,
+      "elapsedMs": 163.96662500000093,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1070,7 +1091,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 148.02470800000083,
+      "elapsedMs": 161.80574999999953,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1089,7 +1110,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 156.41549999999916,
+      "elapsedMs": 153.8548750000009,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1108,7 +1129,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 156.20966599999883,
+      "elapsedMs": 165.60516599999755,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1127,7 +1148,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 155.15029200000208,
+      "elapsedMs": 157.64879199999996,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1146,7 +1167,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 155.9988749999975,
+      "elapsedMs": 159.2997499999983,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1165,7 +1186,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 151.9117499999993,
+      "elapsedMs": 160.0515000000014,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1185,7 +1206,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 14.074500000002445,
+      "elapsedMs": 10.420208999999886,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1205,7 +1226,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 22.237042000000656,
+      "elapsedMs": 32.53829200000109,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('mousemove')"
@@ -1224,7 +1245,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 10.460790999997698,
+      "elapsedMs": 11.24883299999783,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('mousedown')"
@@ -1243,7 +1264,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 10.09912500000064,
+      "elapsedMs": 6.2960000000020955,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('mouseup')"
@@ -1264,7 +1285,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 9.153874999999971,
+      "elapsedMs": 12.755750000000262,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('wheel')"
@@ -1285,7 +1306,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 51.84850000000006,
+      "elapsedMs": 49.24345900000117,
       "effectAssertion": [
         "eval",
         "innerWidth + 'x' + innerHeight"
@@ -1305,7 +1326,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 101.47849999999744,
+      "elapsedMs": 140.65720800000054,
       "effectAssertion": [
         "eval",
         "innerWidth + 'x' + innerHeight"
@@ -1326,7 +1347,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 12.102374999998574,
+      "elapsedMs": 14.20179100000314,
       "effectAssertion": [
         "eval",
         "new Promise(r => navigator.geolocation.getCurrentPosition(p => r(p.coords.latitude.toFixed(4))))"
@@ -1346,7 +1367,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 9.72229199999856,
+      "elapsedMs": 7.094417000000249,
       "effectAssertion": [
         "eval",
         "navigator.onLine"
@@ -1366,7 +1387,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 8.276499999999942,
+      "elapsedMs": 5.263708999998926,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1386,7 +1407,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 50.79012500000317,
+      "elapsedMs": 4.6842080000024,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1406,7 +1427,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 11.539917000001878,
+      "elapsedMs": 5.650249999998778,
       "effectAssertion": [
         "eval",
         "matchMedia('(prefers-color-scheme: dark)').matches && matchMedia('(prefers-reduced-motion: reduce)').matches"
@@ -1428,7 +1449,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 53.32679199999984,
+      "elapsedMs": 56.09962500000256,
       "effectAssertion": [
         "storage",
         "local",
@@ -1451,7 +1472,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 10.480333999999857,
+      "elapsedMs": 11.130334000001312,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1470,7 +1491,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 10.695959000000585,
+      "elapsedMs": 10.524333000001207,
       "effectAssertion": [
         "storage",
         "local",
@@ -1493,7 +1514,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 8.779583999999886,
+      "elapsedMs": 20.168791999996756,
       "effectAssertion": [
         "cookies",
         "get"
@@ -1512,7 +1533,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 8.567250000000058,
+      "elapsedMs": 8.726957999999286,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1533,7 +1554,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 9.729834000001574,
+      "elapsedMs": 8.722082999996928,
       "effectAssertion": [
         "eval",
         "fetch('https://moat.invalid/matrix-route').then(r => r.text())"
@@ -1552,7 +1573,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 12.920458000000508,
+      "elapsedMs": 7.642832999998063,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1571,7 +1592,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 8.953750000000582,
+      "elapsedMs": 7.305958000000828,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1590,7 +1611,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 8.639957999999751,
+      "elapsedMs": 8.631915999998455,
       "effectAssertion": [
         "eval",
         "fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"
@@ -1610,7 +1631,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 12.1306250000016,
+      "elapsedMs": 7.74408300000141,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1625,14 +1646,14 @@
         "network",
         "har",
         "stop",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/network.har"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/network.har"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 13.151292000002286,
+      "elapsedMs": 7.848624999998719,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/network.har"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/network.har"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -1647,7 +1668,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 20.68512499999997,
+      "elapsedMs": 7.766583999997238,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1664,7 +1685,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 12.93475000000035,
+      "elapsedMs": 4.806832999998733,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1682,7 +1703,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 55.847624999998516,
+      "elapsedMs": 83.79249999999956,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1701,7 +1722,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 31.533166000001074,
+      "elapsedMs": 10.932166000002326,
       "effectAssertion": [
         "clipboard",
         "read"
@@ -1721,7 +1742,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 212.02058300000135,
+      "elapsedMs": 698.5600000000013,
       "effectAssertion": [
         "get",
         "url"
@@ -1740,7 +1761,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 56.39074999999866,
+      "elapsedMs": 58.01641699999891,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1759,7 +1780,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 56.702416999996785,
+      "elapsedMs": 49.32562500000131,
       "effectAssertion": [
         "get",
         "url"
@@ -1778,7 +1799,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 58.78562500000044,
+      "elapsedMs": 47.12299999999959,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1796,7 +1817,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 125.09233299999687,
+      "elapsedMs": 460.7637080000022,
       "effectAssertion": [
         "get",
         "url"
@@ -1815,7 +1836,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 327.2712079999983,
+      "elapsedMs": 370.48008299999856,
       "effectAssertion": [
         "get",
         "text",
@@ -1835,7 +1856,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 11.597750000000815,
+      "elapsedMs": 7.04975000000195,
       "effectAssertion": [
         "get",
         "text",
@@ -1856,7 +1877,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 550.7734579999997,
+      "elapsedMs": 578.3798749999987,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1874,7 +1895,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 266.023624999998,
+      "elapsedMs": 295.1307500000039,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.includes('touchstart') && window.matrixEvents.includes('touchend')"
@@ -1894,7 +1915,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 494.1922909999994,
+      "elapsedMs": 324.58329099999537,
       "effectAssertion": [
         "eval",
         "window.matrixEvents.filter(x => x === 'touchstart' || x === 'touchend').length >= 4"
@@ -1913,7 +1934,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 238.12833300000057,
+      "elapsedMs": 217.26570899999933,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1927,14 +1948,14 @@
       "argv": [
         "trace",
         "stop",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/trace.zip"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/trace.zip"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 18.22399999999834,
+      "elapsedMs": 18.648416999996698,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/trace.zip"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/trace.zip"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -1950,7 +1971,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 65.30891699999847,
+      "elapsedMs": 141.43770799999766,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -1964,14 +1985,14 @@
       "argv": [
         "profiler",
         "stop",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/profile.json"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/profile.json"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 105.56762499999968,
+      "elapsedMs": 53.80620799999451,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/profile.json"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/profile.json"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -1983,14 +2004,14 @@
       "argv": [
         "state",
         "save",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/.moat/states/matrix-state.json"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/.moat/states/matrix-state.json"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 34.123875000001135,
+      "elapsedMs": 29.291792000003625,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/.moat/states/matrix-state.json"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/.moat/states/matrix-state.json"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -2002,12 +2023,12 @@
       "argv": [
         "state",
         "load",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/.moat/states/matrix-state.json"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/.moat/states/matrix-state.json"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 146.05516699999862,
+      "elapsedMs": 98.22833399999945,
       "effectAssertion": [
         "storage",
         "local",
@@ -2027,7 +2048,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 31.652125000000524,
+      "elapsedMs": 7.145958000000974,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -2045,7 +2066,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 4.144083999999566,
+      "elapsedMs": 2.695791999998619,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -2064,7 +2085,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 3.8466669999979786,
+      "elapsedMs": 2.21875,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -2084,7 +2105,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 3.1084159999991243,
+      "elapsedMs": 2.1191669999971054,
       "effectAssertion": [
         "state",
         "list"
@@ -2105,7 +2126,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 2.6951669999980368,
+      "elapsedMs": 2.146667000000889,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -2124,7 +2145,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 2.4168339999996533,
+      "elapsedMs": 2.3560420000067097,
       "effectAssertion": [
         "state",
         "list"
@@ -2143,7 +2164,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 63.23133299999972,
+      "elapsedMs": 152.2418749999997,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -2158,16 +2179,16 @@
         "diff",
         "screenshot",
         "--baseline",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/screen.png",
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/screen.png",
         "--output",
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/diff.png"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/diff.png"
       ],
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 383.90008300000045,
+      "elapsedMs": 297.87841599999956,
       "effectAssertion": [
-        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-7fcheC/artifacts/diff.png"
+        "/var/folders/j1/5g4c8n255j3f95292lsctb6w0000gn/T/moat-cli-e2e-BECq1v/artifacts/diff.png"
       ],
       "effectPassed": true,
       "internalDiagnostic": ""
@@ -2185,7 +2206,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 383.3555830000005,
+      "elapsedMs": 1640.4173329999976,
       "effectAssertion": [
         "successful observable response"
       ],
@@ -2206,7 +2227,7 @@
       "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 7.235583000001498,
+      "elapsedMs": 4.2364160000070115,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2226,7 +2247,7 @@
       "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 6.42041700000118,
+      "elapsedMs": 4.043791999996756,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2247,7 +2268,7 @@
       "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 5.369749999998021,
+      "elapsedMs": 4.098207999995793,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2268,7 +2289,7 @@
       "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 3.754666000000725,
+      "elapsedMs": 3.564875000003667,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2289,7 +2310,7 @@
       "error": "unsupported_in_moat: auth is unavailable: authentication uses moat profiles and the neko login flow",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 3.261833000000479,
+      "elapsedMs": 2.0735419999982696,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2308,7 +2329,7 @@
       "error": "unsupported_in_moat: confirm is unavailable: moat has no CLI-local action-policy confirmation layer",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.633749999997235,
+      "elapsedMs": 1.985791999999492,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2327,7 +2348,7 @@
       "error": "unsupported_in_moat: deny is unavailable: moat has no CLI-local action-policy confirmation layer",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.353125000001455,
+      "elapsedMs": 1.7148750000051223,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2346,7 +2367,7 @@
       "error": "unsupported_in_moat: inspect is unavailable: CDP is private and Controller-managed",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.332209000000148,
+      "elapsedMs": 1.554708000003302,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2365,7 +2386,7 @@
       "error": "unsupported_in_moat: launch is unavailable: the Controller owns browser creation",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.051167000001442,
+      "elapsedMs": 1.7561659999992116,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2385,7 +2406,7 @@
       "error": "unsupported_in_moat: stream is unavailable: live viewing uses neko WebRTC",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.138999999999214,
+      "elapsedMs": 1.644458000002487,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2405,7 +2426,7 @@
       "error": "unsupported_in_moat: stream is unavailable: live viewing uses neko WebRTC",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.1057919999984733,
+      "elapsedMs": 1.5009999999965657,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2425,7 +2446,7 @@
       "error": "unsupported_in_moat: stream is unavailable: live viewing uses neko WebRTC",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.292041999997309,
+      "elapsedMs": 1.5062089999992168,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2445,7 +2466,7 @@
       "error": "unsupported_in_moat: record is unavailable: browser video recording is outside the Controller contract",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 1.9152090000025055,
+      "elapsedMs": 1.5174580000020796,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2465,7 +2486,7 @@
       "error": "unsupported_in_moat: record is unavailable: browser video recording is outside the Controller contract",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 1.833083000001352,
+      "elapsedMs": 2.2734589999963646,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2485,7 +2506,7 @@
       "error": "unsupported_in_moat: record is unavailable: browser video recording is outside the Controller contract",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 1.893000000000029,
+      "elapsedMs": 1.7753340000053868,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2505,7 +2526,7 @@
       "error": "unsupported_in_moat: device is unavailable: moat has no local Xcode/Appium device backend",
       "errorType": "unsupported_in_moat",
       "jsonValues": 1,
-      "elapsedMs": 2.028958999999304,
+      "elapsedMs": 1.7477910000015981,
       "effectAssertion": [
         "stable unsupported error"
       ],
@@ -2522,7 +2543,7 @@
       "exit": 0,
       "success": true,
       "jsonValues": 1,
-      "elapsedMs": 1625.440499999997,
+      "elapsedMs": 5494.042792,
       "effectAssertion": [
         "successful observable response"
       ],

@@ -10,6 +10,7 @@ import type {
   CookieEntry,
   EvalResult,
   LocatorResult,
+  LocatorSubaction,
   NavigateResult,
   ScreenshotResult,
   SnapshotResult,
@@ -34,6 +35,7 @@ import type {
   NetworkRequestsResult,
   NetworkRequestDetailResult,
   BinaryFileResult,
+  HarContentMode,
   ClipboardResult,
   DialogResult,
   FrameResult,
@@ -177,6 +179,8 @@ type SessionRuntimeState = {
   readonly pageErrors: Array<{ readonly message: string }>;
   readonly requestIds: WeakMap<Request, string>;
   readonly requests: Map<string, NetworkRequestEntry>;
+  readonly responseBodyReads: Map<string, Promise<Buffer | undefined>>;
+  readonly responseBodySizes: Map<string, Promise<number | undefined>>;
   activeFrame?: Frame;
   pendingDialog?: Dialog;
   dialogInfo?: {
@@ -187,6 +191,7 @@ type SessionRuntimeState = {
   traceActive: boolean;
   profilerSession?: CDPSession;
   harActive: boolean;
+  harContentMode: HarContentMode;
   nextRequestId: number;
 };
 
@@ -206,8 +211,11 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     pageErrors: [],
     requestIds: new WeakMap<Request, string>(),
     requests: new Map<string, NetworkRequestEntry>(),
+    responseBodyReads: new Map<string, Promise<Buffer | undefined>>(),
+    responseBodySizes: new Map<string, Promise<number | undefined>>(),
     traceActive: false,
     harActive: false,
+    harContentMode: "text",
     nextRequestId: 1,
   };
   sessionRuntimeState.set(sessionId, created);
@@ -231,6 +239,32 @@ function recordPageError(state: SessionRuntimeState, message: string): void {
   state.pendingErrorMessages.add(message);
   queueMicrotask(() => state.pendingErrorMessages.delete(message));
   state.pageErrors.push({ message });
+}
+
+function responseHeader(
+  headers: Readonly<Record<string, string>> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const lowerName = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lowerName) return value;
+  }
+  return undefined;
+}
+
+function harMimeIsText(mimeType: string): boolean {
+  const mime = mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return mime.startsWith("text/")
+    || mime.endsWith("+json")
+    || mime.endsWith("+xml")
+    || mime === "application/json"
+    || mime === "application/xml"
+    || mime === "application/javascript"
+    || mime === "application/x-javascript"
+    || mime === "application/ecmascript"
+    || mime === "application/x-www-form-urlencoded"
+    || mime === "application/graphql";
 }
 
 function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState {
@@ -269,15 +303,29 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
     if (!requestId) return;
     const current = state.requests.get(requestId);
     if (!current) return;
+    const responseHeaders = response.headers();
     state.requests.set(requestId, {
       ...current,
       status: response.status(),
-      responseHeaders: response.headers(),
+      responseHeaders,
     });
-    response.text().then((responseBody) => {
+    const bodyRead = response.body().then((bytes) => {
       const latest = state.requests.get(requestId);
-      if (latest) state.requests.set(requestId, { ...latest, responseBody });
-    }).catch(() => {});
+      if (latest) {
+        state.requests.set(requestId, {
+          ...latest,
+          responseBody: bytes.toString("utf8"),
+        });
+      }
+      return bytes;
+    }).catch(() => undefined);
+    if (state.harActive) {
+      state.responseBodySizes.set(requestId, bodyRead.then((bytes) => bytes?.byteLength));
+      const captureHarBody = state.harContentMode === "all"
+        || (state.harContentMode === "text"
+          && harMimeIsText(responseHeader(responseHeaders, "content-type") ?? ""));
+      if (captureHarBody) state.responseBodyReads.set(requestId, bodyRead);
+    }
   });
   return state;
 }
@@ -348,12 +396,7 @@ async function readCdpStream(cdp: CDPSession, handle: string): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-// ─── Locator subaction type ───
-
-type LocatorSubaction = "click" | "fill" | "type" | "check" | "uncheck" | "hover";
-
 // ─── executeLocatorAction ───
-
 async function executeLocatorAction(
   locator: Locator,
   subaction: LocatorSubaction | undefined,
@@ -372,11 +415,23 @@ async function executeLocatorAction(
       return ok({ _tag: "VoidResult" } as const);
 
     case "fill":
-      await locator.fill(value!);
+      if (value === undefined) {
+        return err({
+          _tag: "ValidationFailed",
+          message: "Missing 'value' for fill subaction",
+        } as const);
+      }
+      await locator.fill(value);
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!);
+      if (value === undefined) {
+        return err({
+          _tag: "ValidationFailed",
+          message: "Missing 'value' for type subaction",
+        } as const);
+      }
+      await locator.pressSequentially(value);
       return ok({ _tag: "VoidResult" } as const);
 
     case "check":
@@ -390,6 +445,16 @@ async function executeLocatorAction(
     case "hover":
       await locator.hover();
       return ok({ _tag: "VoidResult" } as const);
+
+    case "text": {
+      const innerText = await locator.innerText();
+      const textContent = innerText === "" ? await locator.textContent() : null;
+      const result: GetTextResult = {
+        _tag: "GetTextResult",
+        text: innerText !== "" ? innerText : (textContent ?? ""),
+      };
+      return ok(result);
+    }
 
     default:
       return exhaustive(subaction);
@@ -420,6 +485,8 @@ async function executeElementAction(
   selector: string | undefined,
   action: "click" | "fill" | "type" | "hover",
   value?: string,
+  clear?: boolean,
+  delay?: number,
 ): Promise<Result<CommandResultData, ControllerError>> {
   const locator = resolveLocator(scope, refStore, sessionId, ref, selector);
   if (!locator) return err({ _tag: "ElementNotFound", selector: ref ?? selector } as const);
@@ -434,7 +501,12 @@ async function executeElementAction(
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!);
+      if (clear) await locator.fill("");
+      if (delay === undefined) {
+        await locator.pressSequentially(value!);
+      } else {
+        await locator.pressSequentially(value!, { delay });
+      }
       return ok({ _tag: "VoidResult" } as const);
 
     case "hover":
@@ -455,6 +527,7 @@ const INTERACTIVE_ROLES = new Set([
 
 // Matches lines like "- button "Submit"" or "  - textbox "Name" [attr=val]"
 const ARIA_LINE_RE = /^(\s*- )(\w+)(?: "([^"]*)")?(.*)$/;
+const ARIA_URL_LINE_RE = /^\s*- \/url:\s*.*$/;
 
 async function buildAriaSnapshot(
   scope: Page | Frame,
@@ -466,47 +539,195 @@ async function buildAriaSnapshot(
     readonly interactive?: boolean;
     readonly compact?: boolean;
     readonly maxDepth?: number;
+    readonly urls?: boolean;
   } = {},
 ): Promise<string> {
   const root = options.ref
     ? refStore.resolve(sessionId, options.ref)
     : scope.locator(options.selector ?? "body");
   if (!root) throw new Error(`Unknown element ref: ${options.ref}`);
+
   const snapshot = await root.ariaSnapshot();
+  const rawLines = snapshot.split("\n");
+  const indentations = rawLines.map((line) => line.length - line.trimStart().length);
+
+  const roleOccurrences = new Map<string, number>();
+  const roleOccurrenceBySource = new Map<number, number>();
+  const namedOccurrences = new Map<string, Map<string, number>>();
+  const namedOccurrenceBySource = new Map<number, number>();
+  for (const [sourceIndex, line] of rawLines.entries()) {
+    const match = ARIA_LINE_RE.exec(line);
+    if (!match || !INTERACTIVE_ROLES.has(match[2])) continue;
+
+    const [, , role, name] = match;
+    const roleOccurrence = roleOccurrences.get(role) ?? 0;
+    roleOccurrences.set(role, roleOccurrence + 1);
+    roleOccurrenceBySource.set(sourceIndex, roleOccurrence);
+
+    if (name) {
+      const occurrencesByName = namedOccurrences.get(role) ?? new Map<string, number>();
+      const namedOccurrence = occurrencesByName.get(name) ?? 0;
+      occurrencesByName.set(name, namedOccurrence + 1);
+      namedOccurrences.set(role, occurrencesByName);
+      namedOccurrenceBySource.set(sourceIndex, namedOccurrence);
+    }
+  }
+
+  const visibleLines = rawLines
+    .map((line, sourceIndex) => ({ line, sourceIndex, indentation: indentations[sourceIndex] }))
+    .filter(({ line, indentation }) => {
+      if (options.maxDepth !== undefined && Math.floor(indentation / 2) > options.maxDepth) {
+        return false;
+      }
+      if (!options.interactive) return true;
+      const match = ARIA_LINE_RE.exec(line);
+      return match !== null && INTERACTIVE_ROLES.has(match[2]);
+    });
+
+  type RenderedSnapshotLine = {
+    readonly sourceIndex: number;
+    readonly line: string;
+    readonly role?: string;
+    readonly locator?: Locator;
+  };
+
   const refs = new Map<string, Locator>();
   let counter = 1;
-  const nthByRole = new Map<string, number>();
+  const getRoleLocator = (
+    role: Parameters<Page["getByRole"]>[0],
+    name?: string,
+  ): Locator => {
+    const options = name === undefined ? undefined : { name, exact: true };
+    const descendants = root.getByRole(role, options);
+    const rootMatch = root.and(scope.getByRole(role, options));
+    return rootMatch.or(descendants);
+  };
 
-  const annotated = snapshot.split("\n").filter((line) => {
-    if (options.maxDepth !== undefined) {
-      const indentation = line.length - line.trimStart().length;
-      if (Math.floor(indentation / 2) > options.maxDepth) return false;
-    }
-    if (!options.interactive) return true;
-    const match = ARIA_LINE_RE.exec(line);
-    return match !== null && INTERACTIVE_ROLES.has(match[2]);
-  }).map((line) => {
+  const renderedLines: Array<RenderedSnapshotLine> = visibleLines.map(({ line, sourceIndex }) => {
     const m = ARIA_LINE_RE.exec(line);
-    if (!m) return line;
+    if (!m) return { sourceIndex, line };
 
     const [, indent, role, name, rest] = m;
-    if (!INTERACTIVE_ROLES.has(role)) return line;
+    if (!INTERACTIVE_ROLES.has(role)) return { sourceIndex, line };
 
     const key = `@e${counter}`;
-    const locator = name
-      ? root.getByRole(role as Parameters<Page["getByRole"]>[0], { name, exact: true })
-      : (() => {
-          const n = nthByRole.get(role) ?? 0;
-          nthByRole.set(role, n + 1);
-          return root.getByRole(role as Parameters<Page["getByRole"]>[0]).nth(n);
-        })();
+    const occurrence = name
+      ? namedOccurrenceBySource.get(sourceIndex)
+      : roleOccurrenceBySource.get(sourceIndex);
+    if (occurrence === undefined) {
+      throw new Error(`Cannot map ARIA ${role} at snapshot line ${sourceIndex}`);
+    }
+    const locator = getRoleLocator(
+      role as Parameters<Page["getByRole"]>[0],
+      name || undefined,
+    ).nth(occurrence);
     refs.set(key, locator);
     counter++;
 
-    return name
-      ? `${indent}${key} ${role} "${name}"${rest}`
-      : `${indent}${key} ${role}${rest}`;
-  }).filter((line) => !options.compact || line.trim().length > 0).join("\n");
+    return {
+      sourceIndex,
+      line: name
+        ? `${indent}${key} ${role} "${name}"${rest}`
+        : `${indent}${key} ${role}${rest}`,
+      role,
+      locator,
+    };
+  });
+
+  if (!options.urls) {
+    refStore.update(sessionId, refs);
+    return renderedLines
+      .filter((entry) => !options.compact || entry.line.trim().length > 0)
+      .map((entry) => entry.line)
+      .join("\n");
+  }
+
+  // URL enrichment is opt-in. Keep the normal snapshot path above free of
+  // parent maps and reverse scans; URL relationships are derived linearly only
+  // when the caller requests resolved links.
+  const urlChildrenByLink = new Map<number, Array<number>>();
+  const rawParentStack: Array<{ readonly indentation: number; readonly sourceIndex: number }> = [];
+  for (let sourceIndex = 0; sourceIndex < rawLines.length; sourceIndex++) {
+    const indentation = indentations[sourceIndex];
+    while (
+      rawParentStack.length > 0
+      && rawParentStack[rawParentStack.length - 1].indentation >= indentation
+    ) {
+      rawParentStack.pop();
+    }
+    const parentIndex = rawParentStack.at(-1)?.sourceIndex;
+    if (parentIndex !== undefined && ARIA_URL_LINE_RE.test(rawLines[sourceIndex])) {
+      const parentMatch = ARIA_LINE_RE.exec(rawLines[parentIndex]);
+      if (parentMatch?.[2] === "link") {
+        const children = urlChildrenByLink.get(parentIndex) ?? [];
+        children.push(sourceIndex);
+        urlChildrenByLink.set(parentIndex, children);
+      }
+    }
+    rawParentStack.push({ indentation, sourceIndex });
+  }
+
+  const visibleParentBySource = new Map<number, number>();
+  const visibleParentStack: Array<{ readonly indentation: number; readonly sourceIndex: number }> = [];
+  for (const child of visibleLines) {
+    while (
+      visibleParentStack.length > 0
+      && visibleParentStack[visibleParentStack.length - 1].indentation >= child.indentation
+    ) {
+      visibleParentStack.pop();
+    }
+    const parent = visibleParentStack.at(-1);
+    if (parent) visibleParentBySource.set(child.sourceIndex, parent.sourceIndex);
+    visibleParentStack.push(child);
+  }
+
+  const linkUrls = new Map<number, string>();
+  await Promise.all(
+    renderedLines.map(async (entry) => {
+      if (entry.role !== "link" || !entry.locator) return;
+      const url = await entry.locator.evaluate((element) => {
+        if (element instanceof HTMLAnchorElement) return element.href;
+        return "";
+      });
+      if (url) linkUrls.set(entry.sourceIndex, url);
+    }),
+  );
+
+  const removedUrlSources = new Set<number>();
+  for (const sourceIndex of linkUrls.keys()) {
+    for (const childSourceIndex of urlChildrenByLink.get(sourceIndex) ?? []) {
+      removedUrlSources.add(childSourceIndex);
+    }
+  }
+
+  const renderedChildParents = new Set<number>();
+  for (const [childSourceIndex, parentSourceIndex] of visibleParentBySource) {
+    if (!removedUrlSources.has(childSourceIndex)) {
+      renderedChildParents.add(parentSourceIndex);
+    }
+  }
+
+  const withUrl = (line: string, url: string, hasChildren: boolean): string => {
+    if (line.includes("[url=")) return line;
+    const colon = /:\s*$/.exec(line);
+    const base = colon ? line.slice(0, colon.index) : line;
+    const suffix = colon && hasChildren ? colon[0] : "";
+    return `${base} [url=${url}]${suffix}`;
+  };
+
+  const annotated = renderedLines
+    .filter((entry) => !removedUrlSources.has(entry.sourceIndex))
+    .map((entry) => {
+      const url = linkUrls.get(entry.sourceIndex);
+      if (!url) return entry.line;
+      return withUrl(
+        entry.line,
+        url,
+        renderedChildParents.has(entry.sourceIndex),
+      );
+    })
+    .filter((line) => !options.compact || line.trim().length > 0)
+    .join("\n");
 
   refStore.update(sessionId, refs);
   return annotated;
@@ -707,19 +928,19 @@ export async function executeCommand(
       case "getbytext":
         return executeLocatorAction(
           scope.getByText(command.text, { exact: command.exact }),
-          command.subaction,
+          command.subaction, command.value,
         );
 
       case "getbyalttext":
         return executeLocatorAction(
           scope.getByAltText(command.text, { exact: command.exact }),
-          command.subaction,
+          command.subaction, command.value,
         );
 
       case "getbytitle":
         return executeLocatorAction(
           scope.getByTitle(command.text, { exact: command.exact }),
-          command.subaction,
+          command.subaction, command.value,
         );
 
       case "getbytestid":
@@ -735,7 +956,10 @@ export async function executeCommand(
         return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "fill", command.value);
 
       case "type":
-        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "type", command.text);
+        return executeElementAction(
+          scope, refStore, sessionId, command.ref, command.selector, "type",
+          command.text, command.clear, command.delay,
+        );
 
       case "hover":
         return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "hover");
@@ -1196,8 +1420,17 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
       }
 
-      case "route":
+      case "route": {
+        const resourceTypes = (command.resourceType ?? "")
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter((value) => value.length > 0);
         await page.route(command.url, async (route) => {
+          const requestResourceType = route.request().resourceType().toLowerCase();
+          if (resourceTypes.length > 0 && !resourceTypes.includes(requestResourceType)) {
+            await route.continue();
+            return;
+          }
           if (command.abort) {
             await route.abort();
           } else if (command.body !== undefined) {
@@ -1207,6 +1440,7 @@ export async function executeCommand(
           }
         });
         return ok({ _tag: "VoidResult" } as const);
+      }
 
       case "unroute":
         if (command.url !== undefined) {
@@ -1541,6 +1775,9 @@ export async function executeCommand(
           return err({ _tag: "CommandFailed", message: "HAR recording already active" });
         }
         runtimeState.requests.clear();
+        runtimeState.responseBodyReads.clear();
+        runtimeState.responseBodySizes.clear();
+        runtimeState.harContentMode = command.content ?? "text";
         runtimeState.harActive = true;
         const r: StartedResult = { _tag: "StartedResult", started: true };
         return ok(r);
@@ -1551,38 +1788,67 @@ export async function executeCommand(
           return err({ _tag: "CommandFailed", message: "No HAR recording in progress" });
         }
         runtimeState.harActive = false;
-        const entries = [...runtimeState.requests.values()].map((request) => ({
-          startedDateTime: new Date().toISOString(),
-          time: 0,
-          request: {
-            method: request.method,
-            url: request.url,
-            httpVersion: "HTTP/1.1",
-            headers: Object.entries(request.requestHeaders).map(([name, value]) => ({ name, value })),
-            queryString: [],
-            cookies: [],
-            headersSize: -1,
-            bodySize: request.postData?.length ?? 0,
-            ...(request.postData === undefined ? {} : { postData: { mimeType: "", text: request.postData } }),
-          },
-          response: {
-            status: request.status ?? 0,
-            statusText: "",
-            httpVersion: "HTTP/1.1",
-            headers: Object.entries(request.responseHeaders ?? {}).map(([name, value]) => ({ name, value })),
-            cookies: [],
-            content: {
-              size: request.responseBody?.length ?? 0,
-              mimeType: request.responseHeaders?.["content-type"] ?? "",
-              ...(request.responseBody === undefined ? {} : { text: request.responseBody }),
+        const contentMode = runtimeState.harContentMode;
+        const pendingBodySizes = [...runtimeState.responseBodySizes.entries()];
+        const responseBodySizes = new Map<string, number>();
+        for (const [requestId, bodySize] of pendingBodySizes) {
+          const size = await bodySize;
+          if (size !== undefined) responseBodySizes.set(requestId, size);
+        }
+        runtimeState.responseBodySizes.clear();
+        const pendingBodyReads = [...runtimeState.responseBodyReads.entries()];
+        const responseBodies = new Map<string, Buffer>();
+        for (const [requestId, bodyRead] of pendingBodyReads) {
+          const body = await bodyRead;
+          if (body !== undefined) responseBodies.set(requestId, body);
+        }
+        runtimeState.responseBodyReads.clear();
+
+        const entries = [...runtimeState.requests.values()].map((request) => {
+          const mimeType = responseHeader(request.responseHeaders, "content-type") ?? "";
+          const body = responseBodies.get(request.requestId);
+          const contentLength = Number.parseInt(
+            responseHeader(request.responseHeaders, "content-length") ?? "",
+            10,
+          );
+          const bodySize = body?.byteLength
+            ?? responseBodySizes.get(request.requestId)
+            ?? (Number.isFinite(contentLength) && contentLength >= 0 ? contentLength : 0);
+          const content = body === undefined
+            || !(contentMode === "all" || (contentMode === "text" && harMimeIsText(mimeType)))
+            ? { size: bodySize, mimeType }
+            : contentMode === "all" && !harMimeIsText(mimeType)
+              ? { size: bodySize, mimeType, text: body.toString("base64"), encoding: "base64" as const }
+              : { size: bodySize, mimeType, text: body.toString("utf8") };
+          return {
+            startedDateTime: new Date().toISOString(),
+            time: 0,
+            request: {
+              method: request.method,
+              url: request.url,
+              httpVersion: "HTTP/1.1",
+              headers: Object.entries(request.requestHeaders).map(([name, value]) => ({ name, value })),
+              queryString: [],
+              cookies: [],
+              headersSize: -1,
+              bodySize: request.postData?.length ?? 0,
+              ...(request.postData === undefined ? {} : { postData: { mimeType: "", text: request.postData } }),
             },
-            redirectURL: "",
-            headersSize: -1,
-            bodySize: request.responseBody?.length ?? 0,
-          },
-          cache: {},
-          timings: { send: 0, wait: 0, receive: 0 },
-        }));
+            response: {
+              status: request.status ?? 0,
+              statusText: "",
+              httpVersion: "HTTP/1.1",
+              headers: Object.entries(request.responseHeaders ?? {}).map(([name, value]) => ({ name, value })),
+              cookies: [],
+              content,
+              redirectURL: "",
+              headersSize: -1,
+              bodySize,
+            },
+            cache: {},
+            timings: { send: 0, wait: 0, receive: 0 },
+          };
+        });
         const bytes = Buffer.from(JSON.stringify({
           log: {
             version: "1.2",

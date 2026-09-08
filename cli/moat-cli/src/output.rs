@@ -1578,6 +1578,7 @@ Designed for AI agents to understand page structure.
 
 Options:
   -i, --interactive    Only include interactive elements
+  -u, --urls           Include resolved href URLs on link elements
   -c, --compact        Remove empty structural elements
   -d, --depth <n>      Limit tree depth
   -s, --selector <sel> Scope snapshot to CSS selector
@@ -1748,8 +1749,8 @@ Locators:
   last <selector>          Last matching element
   nth <index> <selector>   Nth matching element (0-based)
 
-Actions (default: click):
-  click, fill, type, hover, focus, check, uncheck
+Actions (when supplied; omitted action only queries the locator):
+  click, fill <text>, type <text>, check, uncheck, hover, text
 
 Options:
   --name <name>        Filter role by accessible name
@@ -1848,6 +1849,7 @@ Subcommands:
   route <url> [options]      Intercept requests matching URL pattern
     --abort                  Abort matching requests
     --body <json>            Respond with custom body
+    --resource-type <csv>    Filter by resource type (comma-separated)
   unroute [url]              Remove route (all if no URL)
   requests [options]         List captured requests
     --clear                  Clear request log
@@ -2625,7 +2627,7 @@ Browser Settings:  agent-browser set <setting> [value]
   media [dark|light] [reduced-motion]
 
 Network:  agent-browser network <action>
-  route <url> [--abort|--body <json>]
+  route <url> [--abort|--body <json>] [--resource-type <csv>]
   unroute [url]
   requests [--clear] [--filter <pattern>]
   har <start|stop> [path]

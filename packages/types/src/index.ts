@@ -204,6 +204,8 @@ export type NetworkRequestDetailResult = {
   readonly request: NetworkRequestEntry;
 };
 
+export type HarContentMode = "all" | "text" | "none";
+
 export type BinaryFileResult = {
   readonly _tag: "BinaryFileResult";
   readonly base64: string;
@@ -376,6 +378,17 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   ValidationFailed: 2,
 };
 
+// ─── LocatorSubaction ───
+
+export type LocatorSubaction =
+  | "click"
+  | "fill"
+  | "type"
+  | "check"
+  | "uncheck"
+  | "hover"
+  | "text";
+
 // ─── BrowserCommand ───
 
 export type BrowserCommand =
@@ -395,7 +408,7 @@ export type BrowserCommand =
       readonly role: string;
       readonly name?: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+      readonly subaction?: LocatorSubaction;
       readonly value?: string;
       readonly nth?: number;
     }
@@ -403,49 +416,52 @@ export type BrowserCommand =
       readonly action: "getbylabel";
       readonly label: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+      readonly subaction?: LocatorSubaction;
       readonly value?: string;
     }
   | {
       readonly action: "getbyplaceholder";
       readonly placeholder: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "fill" | "type";
+      readonly subaction?: "click" | "fill" | "type" | "check" | "hover" | "text";
       readonly value?: string;
     }
   | {
       readonly action: "getbytext";
       readonly text: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "hover";
+      readonly subaction?: "click" | "fill" | "check" | "hover" | "text";
+      readonly value?: string;
     }
   | {
       readonly action: "getbyalttext";
       readonly text: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "hover";
+      readonly subaction?: "click" | "fill" | "check" | "hover" | "text";
+      readonly value?: string;
     }
   | {
       readonly action: "getbytitle";
       readonly text: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "hover";
+      readonly subaction?: "click" | "fill" | "check" | "hover" | "text";
+      readonly value?: string;
     }
   | {
       readonly action: "getbytestid";
       readonly testId: string;
-      readonly subaction?: "click" | "fill" | "type";
+      readonly subaction?: "click" | "fill" | "type" | "check" | "hover" | "text";
       readonly value?: string;
     }
 
   // @eN 引用 / CSS selector 操作
   | { readonly action: "click"; readonly ref?: string; readonly selector?: string; readonly newTab?: boolean }
   | { readonly action: "fill"; readonly ref?: string; readonly selector?: string; readonly value: string }
-  | { readonly action: "type"; readonly ref?: string; readonly selector?: string; readonly text: string }
+  | { readonly action: "type"; readonly ref?: string; readonly selector?: string; readonly text: string; readonly clear?: boolean; readonly delay?: number }
   | { readonly action: "hover"; readonly ref?: string; readonly selector?: string }
 
   // 页面信息
-  | { readonly action: "snapshot"; readonly selector?: string; readonly ref?: string; readonly interactive?: boolean; readonly compact?: boolean; readonly maxDepth?: number }
+  | { readonly action: "snapshot"; readonly selector?: string; readonly ref?: string; readonly interactive?: boolean; readonly compact?: boolean; readonly maxDepth?: number; readonly urls?: boolean }
   | { readonly action: "screenshot"; readonly format?: "png" | "jpeg"; readonly quality?: number; readonly selector?: string; readonly ref?: string; readonly fullPage?: boolean; readonly annotate?: boolean }
   | { readonly action: "eval"; readonly code: string }
 
@@ -512,7 +528,7 @@ export type BrowserCommand =
   | { readonly action: "storage_get"; readonly type: "local" | "session"; readonly key?: string }
   | { readonly action: "storage_set"; readonly type: "local" | "session"; readonly key: string; readonly value: string }
   | { readonly action: "storage_clear"; readonly type: "local" | "session" }
-  | { readonly action: "route"; readonly url: string; readonly abort: boolean; readonly body?: string }
+  | { readonly action: "route"; readonly url: string; readonly abort: boolean; readonly body?: string; readonly resourceType?: string }
   | { readonly action: "unroute"; readonly url?: string }
   | { readonly action: "requests"; readonly clear: boolean; readonly filter?: string; readonly type?: string; readonly method?: string; readonly status?: string }
   | { readonly action: "request_detail"; readonly requestId: string }
@@ -539,7 +555,7 @@ export type BrowserCommand =
   | { readonly action: "trace_stop" }
   | { readonly action: "profiler_start"; readonly categories?: ReadonlyArray<string> }
   | { readonly action: "profiler_stop" }
-  | { readonly action: "har_start" }
+  | { readonly action: "har_start"; readonly content?: HarContentMode }
   | { readonly action: "har_stop" }
   | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{
       readonly name: string;
@@ -619,7 +635,7 @@ const browserCommandSchema = type({
     role: "string",
     "name?": "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover' | 'text'",
     "value?": "string",
     "nth?": "number",
   })
@@ -627,51 +643,54 @@ const browserCommandSchema = type({
   .or({ action: "'trace_stop'" })
   .or({ action: "'profiler_start'", "categories?": "string[]" })
   .or({ action: "'profiler_stop'" })
-  .or({ action: "'har_start'" })
+  .or({ action: "'har_start'", "content?": "'all' | 'text' | 'none'" })
   .or({ action: "'har_stop'" })
   .or({
     action: "'getbylabel'",
     label: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover' | 'text'",
     "value?": "string",
   })
   .or({
     action: "'getbyplaceholder'",
     placeholder: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'fill' | 'type'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'hover' | 'text'",
     "value?": "string",
   })
   .or({
     action: "'getbytext'",
     text: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'check' | 'hover' | 'text'",
+    "value?": "string",
   })
   .or({
     action: "'getbyalttext'",
     text: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'check' | 'hover' | 'text'",
+    "value?": "string",
   })
   .or({
     action: "'getbytitle'",
     text: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'check' | 'hover' | 'text'",
+    "value?": "string",
   })
   .or({
     action: "'getbytestid'",
     testId: "string",
-    "subaction?": "'click' | 'fill' | 'type'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'hover' | 'text'",
     "value?": "string",
   })
   .or({ action: "'click'", "ref?": "string", "selector?": "string", "newTab?": "boolean" })
   .or({ action: "'fill'", "ref?": "string", "selector?": "string", value: "string" })
-  .or({ action: "'type'", "ref?": "string", "selector?": "string", text: "string" })
+  .or({ action: "'type'", "ref?": "string", "selector?": "string", text: "string", "clear?": "boolean", "delay?": "number.integer >= 0" })
   .or({ action: "'hover'", "ref?": "string", "selector?": "string" })
-  .or({ action: "'snapshot'", "selector?": "string", "ref?": "string", "interactive?": "boolean", "compact?": "boolean", "maxDepth?": "number.integer >= 0" })
+  .or({ action: "'snapshot'", "selector?": "string", "ref?": "string", "interactive?": "boolean", "compact?": "boolean", "maxDepth?": "number.integer >= 0", "urls?": "boolean" })
   .or({
     action: "'screenshot'",
     "format?": "'png' | 'jpeg'",
@@ -734,7 +753,7 @@ const browserCommandSchema = type({
   .or({ action: "'storage_get'", type: "'local' | 'session'", "key?": "string" })
   .or({ action: "'storage_set'", type: "'local' | 'session'", key: "string", value: "string" })
   .or({ action: "'storage_clear'", type: "'local' | 'session'" })
-  .or({ action: "'route'", url: "string", abort: "boolean", "body?": "string" })
+  .or({ action: "'route'", url: "string", abort: "boolean", "body?": "string", "resourceType?": "string" })
   .or({ action: "'unroute'", "url?": "string" })
   .or({ action: "'requests'", clear: "boolean", "filter?": "string", "type?": "string", "method?": "string", "status?": "string" })
   .or({ action: "'request_detail'", requestId: "string" })

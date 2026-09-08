@@ -176,7 +176,7 @@ types 变更：
 // 扩展为
 | { readonly action: "click"; readonly ref?: string; readonly selector?: string; readonly newTab?: boolean }
 | { readonly action: "fill"; readonly ref?: string; readonly selector?: string; readonly value: string }
-| { readonly action: "type"; readonly ref?: string; readonly selector?: string; readonly text: string }
+| { readonly action: "type"; readonly ref?: string; readonly selector?: string; readonly text: string; readonly clear?: boolean; readonly delay?: number }
 | { readonly action: "hover"; readonly ref?: string; readonly selector?: string }
 ```
 

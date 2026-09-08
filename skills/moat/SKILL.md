@@ -84,10 +84,10 @@ moat open https://example.com
 moat back
 moat forward
 moat reload
-moat snapshot
+moat snapshot [--interactive] [--urls] [--compact] [--depth <n>] [--selector <sel>]
 moat click @e1
 moat fill @e1 "text"
-moat type @e1 "text"
+moat type @e1 "text" --clear --delay 300
 moat hover @e1
 moat press Enter
 moat screenshot
@@ -95,6 +95,22 @@ moat eval "document.title"
 moat batch
 ```
 
+`moat type <selector> <text>` appends text character by character. Add
+`--clear` to empty the target before typing, and `--delay <ms>` to wait that
+many milliseconds between characters. Both options work with CSS selectors and
+snapshot references.
+
+Capture network traffic as a HAR artifact:
+
+```bash
+moat network har start --content text
+moat network har stop ./network.har
+```
+
+`--content` accepts `text` (the default; embeds text MIME responses), `all`
+(embeds binary responses as base64), or `none` (metadata only).
+
+`--urls` adds each referenced link's browser-resolved absolute `href` to the snapshot.
 `moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector.
 
 ## Neko login URL

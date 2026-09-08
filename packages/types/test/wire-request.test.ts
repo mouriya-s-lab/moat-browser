@@ -43,6 +43,35 @@ describe("wireRequestSchema — valid requests", () => {
       command: { action: "getbyrole", role: "button", name: "Submit", subaction: "click" },
     });
   });
+  test("command — getbytext forwards value for value-taking subactions", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "getbytext", text: "Editable", subaction: "fill", value: "hello" },
+    });
+    expect(result).toEqual({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "getbytext", text: "Editable", subaction: "fill", value: "hello" },
+    });
+  });
+
+  test("command — all semantic locator actions are accepted", () => {
+    const commands = [
+      { action: "getbyrole", role: "checkbox", subaction: "check" },
+      { action: "getbylabel", label: "Name", subaction: "uncheck" },
+      { action: "getbyplaceholder", placeholder: "Notes", subaction: "hover" },
+      { action: "getbytext", text: "Probe", subaction: "text" },
+      { action: "getbyalttext", text: "Alt", subaction: "text" },
+      { action: "getbytitle", text: "Title", subaction: "text" },
+      { action: "getbytestid", testId: "notes", subaction: "text" },
+    ];
+
+    for (const command of commands) {
+      const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+      expect(result).not.toBeInstanceOf(type.errors);
+    }
+  });
 
   test("command — snapshot", () => {
     const result = wireRequestSchema({
@@ -54,6 +83,56 @@ describe("wireRequestSchema — valid requests", () => {
       type: "command",
       sessionId: "s1",
       command: { action: "snapshot" },
+    });
+  });
+
+  test("command — route with resource type filter", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: {
+        action: "route",
+        url: "**/json",
+        abort: false,
+        body: "{\"mock\":true}",
+        resourceType: "XHR, Fetch",
+      },
+    });
+    expect(result).toEqual({
+      type: "command",
+      sessionId: "s1",
+      command: {
+        action: "route",
+        url: "**/json",
+        abort: false,
+        body: "{\"mock\":true}",
+        resourceType: "XHR, Fetch",
+      },
+    });
+  });
+  test("command — snapshot with URLs", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "snapshot", interactive: true, selector: "body", urls: true },
+    });
+    expect(result).toEqual({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "snapshot", interactive: true, selector: "body", urls: true },
+    });
+  });
+
+  test("command — HAR start content mode", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "har_start", content: "all" },
+    });
+    expect(result).toEqual({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "har_start", content: "all" },
     });
   });
 
@@ -108,6 +187,27 @@ describe("wireRequestSchema — valid requests", () => {
       command: { action: "fill", ref: "@e1", value: "hello" },
     });
   });
+  test("command — type with clear and delay", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "type", selector: "#input", text: "ab", clear: true, delay: 300 },
+    });
+    expect(result).toEqual({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "type", selector: "#input", text: "ab", clear: true, delay: 300 },
+    });
+  });
+
+  test("command — type rejects negative delay", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "type", selector: "#input", text: "ab", delay: -1 },
+    });
+    expect(result).toBeInstanceOf(type.errors);
+  });
 
   test("command — eval", () => {
     const result = wireRequestSchema({
@@ -154,6 +254,14 @@ describe("wireRequestSchema — invalid requests", () => {
       type: "command",
       sessionId: "s1",
       command: { action: "nonexistent" },
+    });
+    expect(result).toBeInstanceOf(type.errors);
+  });
+  test("getbyrole rejects null name instead of widening optional string", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "getbyrole", role: "heading", name: null },
     });
     expect(result).toBeInstanceOf(type.errors);
   });

@@ -104,6 +104,7 @@ echo ""
 | C1 | `moat click "#login button"` | 点击按钮（CSS selector） |
 | C2 | `moat fill "#username" "test"` | 填写输入框 |
 | C3 | `moat type "#username" "test"` | 逐字输入 |
+| C3a | `moat type "#username" "test" --clear --delay 100` | 清空后逐字输入，字符间隔至少 100ms |
 | C4 | `moat hover "#login button"` | 悬浮 |
 
 ### 4.6 页面信息
