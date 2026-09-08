@@ -1194,10 +1194,12 @@ PY
   fi
   if ! assert_report_passed "$EVIDENCE_DIR/client/normal/matrix/summary.json"; then row6=fail; fi
   if ! assert_report_passed "$EVIDENCE_DIR/client/normal/replay-normal/row7-replay-normal.json"; then row7=fail; fi
+  inner_docker logs "${RUN_ID}-controller" > "$EVIDENCE_DIR/rawlogs/controller-normal.log" 2>&1 || true
 
   if ! start_controller 10000; then row7=fail; fi
   if ! run_client idle "$EVIDENCE_DIR/client/idle"; then row7=fail; fi
   if ! assert_report_passed "$EVIDENCE_DIR/client/idle/replay-idle/row7-replay-idle.json"; then row7=fail; fi
+  inner_docker logs "${RUN_ID}-controller" > "$EVIDENCE_DIR/rawlogs/controller-idle.log" 2>&1 || true
 
   if ! reset_second_runtime; then
     row8=fail
@@ -1217,6 +1219,7 @@ PY
       row8=fail
     fi
   fi
+  inner_docker logs "${RUN_ID}-controller" > "$EVIDENCE_DIR/rawlogs/controller-second.log" 2>&1 || true
   cleanup_owned
   [[ "$CLEANUP_OK" -eq 1 ]] || row8=fail
   local final_state=complete

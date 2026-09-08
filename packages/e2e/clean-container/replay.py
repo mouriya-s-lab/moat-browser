@@ -392,6 +392,15 @@ class ScenarioContext:
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
         return value
+
+    @staticmethod
+    def _command_failure(result: CommandResult, context: str) -> str:
+        return (
+            f"{context}: sequence={result.sequence} argv={result.argv} "
+            f"exit_code={result.exit_code} timed_out={result.timed_out} "
+            f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-500:]!r}"
+        )
+
     def data(self, result: CommandResult) -> dict[str, JSONValue]:
         if not isinstance(result.parsed, dict):
             raise ReplayFailure(f"command {result.sequence} did not return a JSON object: {result.stdout!r}")
@@ -1005,11 +1014,12 @@ class ReplayRunner:
 
     def row_226_snapshot_roots(self, context: ScenarioContext) -> None:
         context.init()
+        # Bare sections flatten in the AX tree, so nest the depth probe link in list/listitem.
         duplicate_html = (
             "<!doctype html><title>Snapshot</title><body>"
             "<section id='links'><a href='/protocol/first'>Same</a>"
             "<a href='/protocol/second'>Same</a></section>"
-            "<section aria-label='Deep'><a href='/protocol/first'>Nested</a></section>"
+            "<ul aria-label='Deep'><li><a href='/protocol/first'>Nested</a></li></ul>"
             "<a href='/protocol/second'>Outer</a></body>"
         )
         context.open(self.fixture_root())
