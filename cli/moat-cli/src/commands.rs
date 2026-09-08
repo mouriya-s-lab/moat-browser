@@ -72,6 +72,21 @@ pub fn gen_id() -> String {
 }
 
 pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError> {
+    let mut result = parse_command_inner(args, flags)?;
+    if result
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|action| action.starts_with("wait"))
+        && result.get("timeout").is_none()
+    {
+        if let Some(timeout) = flags.default_timeout {
+            result["timeout"] = json!(timeout);
+        }
+    }
+    Ok(result)
+}
+
+fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseError> {
     if args.is_empty() {
         return Err(ParseError::MissingArguments {
             context: "".to_string(),
@@ -394,86 +409,120 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
 
         // === Wait ===
         "wait" => {
+            // --timeout applies to every wait variant. Extract it before
+            // dispatching the variant so it cannot be silently ignored.
+            let mut wait_args = rest.clone();
+            let mut explicit_timeout: Option<u64> = None;
+            if let Some(idx) = wait_args.iter().position(|&arg| arg == "--timeout") {
+                let raw = wait_args
+                    .get(idx + 1)
+                    .ok_or_else(|| ParseError::MissingArguments {
+                        context: "wait --timeout".to_string(),
+                        usage: "wait <selector|ms|--url|--load|--fn|--text> [--timeout <ms>]",
+                    })?;
+                explicit_timeout = Some(raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("--timeout expects a number in ms, got '{}'", raw),
+                    usage: "wait <selector|ms|--url|--load|--fn|--text> [--timeout <ms>]",
+                })?);
+                wait_args.drain(idx..=idx + 1);
+            }
+            let with_timeout = |mut command: Value| {
+                if let Some(timeout) = explicit_timeout {
+                    command["timeout"] = json!(timeout);
+                }
+                command
+            };
+
             // Check for --url flag: wait --url "**/dashboard"
-            if let Some(idx) = rest.iter().position(|&s| s == "--url" || s == "-u") {
-                let url = rest
+            if let Some(idx) = wait_args
+                .iter()
+                .position(|&s| s == "--url" || s == "-u")
+            {
+                let url = wait_args
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --url".to_string(),
                         usage: "wait --url <pattern>",
                     })?;
-                return Ok(json!({ "id": id, "action": "waitforurl", "url": url }));
+                return Ok(with_timeout(
+                    json!({ "id": id, "action": "waitforurl", "url": url }),
+                ));
             }
 
             // Check for --load flag: wait --load networkidle
-            if let Some(idx) = rest.iter().position(|&s| s == "--load" || s == "-l") {
-                let state = rest
+            if let Some(idx) = wait_args
+                .iter()
+                .position(|&s| s == "--load" || s == "-l")
+            {
+                let state = wait_args
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --load".to_string(),
                         usage: "wait --load <state>",
                     })?;
-                return Ok(json!({ "id": id, "action": "waitforloadstate", "state": state }));
+                return Ok(with_timeout(
+                    json!({ "id": id, "action": "waitforloadstate", "state": state }),
+                ));
             }
 
             // Check for --fn flag: wait --fn "window.ready === true"
-            if let Some(idx) = rest.iter().position(|&s| s == "--fn" || s == "-f") {
-                let expr = rest
+            if let Some(idx) = wait_args
+                .iter()
+                .position(|&s| s == "--fn" || s == "-f")
+            {
+                let expr = wait_args
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --fn".to_string(),
                         usage: "wait --fn <expression>",
                     })?;
-                return Ok(json!({ "id": id, "action": "waitforfunction", "expression": expr }));
+                return Ok(with_timeout(
+                    json!({ "id": id, "action": "waitforfunction", "expression": expr }),
+                ));
             }
 
-            // Check for --text flag: wait --text "Welcome" [--timeout ms]
-            if let Some(idx) = rest.iter().position(|&s| s == "--text" || s == "-t") {
-                let text = rest
+            // Check for --text flag: wait --text "Welcome"
+            if let Some(idx) = wait_args
+                .iter()
+                .position(|&s| s == "--text" || s == "-t")
+            {
+                let text = wait_args
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --text".to_string(),
                         usage: "wait --text <text>",
                     })?;
-                let mut cmd = json!({ "id": id, "action": "wait", "text": text });
-                if let Some(t_idx) = rest.iter().position(|&s| s == "--timeout") {
-                    if let Some(Ok(ms)) = rest.get(t_idx + 1).map(|s| s.parse::<u64>()) {
-                        cmd["timeout"] = json!(ms);
-                    }
-                }
-                return Ok(cmd);
+                return Ok(with_timeout(
+                    json!({ "id": id, "action": "wait", "text": text }),
+                ));
             }
 
-            // Check for --download flag: wait --download [path] [--timeout ms]
-            if rest.iter().any(|&s| s == "--download" || s == "-d") {
-                let mut cmd = json!({ "id": id, "action": "waitfordownload" });
-                // Check for optional path (first non-flag argument after --download)
-                let download_idx = rest
+            // Check for --download flag: wait --download [path]
+            if wait_args
+                .iter()
+                .any(|&s| s == "--download" || s == "-d")
+            {
+                let mut command = json!({ "id": id, "action": "waitfordownload" });
+                let download_idx = wait_args
                     .iter()
                     .position(|&s| s == "--download" || s == "-d")
                     .unwrap();
-                if let Some(path) = rest.get(download_idx + 1) {
+                if let Some(path) = wait_args.get(download_idx + 1) {
                     if !path.starts_with("--") {
-                        cmd["path"] = json!(path);
+                        command["path"] = json!(path);
                     }
                 }
-                // Check for optional timeout
-                if let Some(idx) = rest.iter().position(|&s| s == "--timeout") {
-                    if let Some(timeout_str) = rest.get(idx + 1) {
-                        if let Ok(timeout) = timeout_str.parse::<u64>() {
-                            cmd["timeout"] = json!(timeout);
-                        }
-                    }
-                }
-                return Ok(cmd);
+                return Ok(with_timeout(command));
             }
 
             // Default: selector or timeout
-            if let Some(arg) = rest.first() {
+            if let Some(arg) = wait_args.first() {
                 if let Ok(timeout) = arg.parse::<u64>() {
                     Ok(json!({ "id": id, "action": "wait", "timeout": timeout }))
                 } else {
-                    Ok(json!({ "id": id, "action": "wait", "selector": arg }))
+                    Ok(with_timeout(
+                        json!({ "id": id, "action": "wait", "selector": arg }),
+                    ))
                 }
             } else {
                 Err(ParseError::MissingArguments {
@@ -1038,8 +1087,21 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         // === Tabs ===
         "tab" => match rest.first().copied() {
             Some("new") => {
+                if rest.iter().skip(1).any(|arg| *arg == "--label") {
+                    return Err(ParseError::InvalidValue {
+                        message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                            .to_string(),
+                        usage: "tab new [url]",
+                    });
+                }
                 let mut cmd = json!({ "id": id, "action": "tab_new" });
                 if let Some(url) = rest.get(1) {
+                    if url.starts_with("--") {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("unsupported_in_moat: unknown tab new option '{}'", url),
+                            usage: "tab new [url]",
+                        });
+                    }
                     cmd["url"] = json!(url);
                 }
                 Ok(cmd)
@@ -1047,26 +1109,40 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
             Some("list") => Ok(json!({ "id": id, "action": "tab_list" })),
             Some("close") => {
                 let mut cmd = json!({ "id": id, "action": "tab_close" });
-                if let Some(index) = rest.get(1).and_then(|s| s.parse::<i32>().ok()) {
+                if let Some(value) = rest.get(1) {
+                    let index = value.parse::<i32>().map_err(|_| ParseError::InvalidValue {
+                        message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                            .to_string(),
+                        usage: "tab close [index]",
+                    })?;
                     cmd["index"] = json!(index);
                 }
                 Ok(cmd)
             }
             Some("switch") => {
-                let index = rest
+                let value = rest
                     .get(1)
-                    .and_then(|s| s.parse::<i32>().ok())
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "tab switch".to_string(),
                         usage: "tab switch <index>",
                     })?;
+                let index = value.parse::<i32>().map_err(|_| ParseError::InvalidValue {
+                    message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                        .to_string(),
+                    usage: "tab switch <index>",
+                })?;
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
             }
             Some(n) if n.parse::<i32>().is_ok() => {
                 let index = n.parse::<i32>().expect("already checked parse succeeds");
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
             }
-            _ => Ok(json!({ "id": id, "action": "tab_list" })),
+            Some(_) => Err(ParseError::InvalidValue {
+                message: "unsupported_in_moat: tab labels are unavailable; use numeric tab indexes"
+                    .to_string(),
+                usage: "tab <index>|list|new|switch|close",
+            }),
+            None => Ok(json!({ "id": id, "action": "tab_list" })),
         },
 
         // === Window ===
@@ -1444,10 +1520,20 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
 
         "diff" => parse_diff(&rest, &id),
 
+
         // === Batch ===
         "batch" => {
             let bail = rest.contains(&"--bail");
-            Ok(json!({ "id": id, "action": "batch", "bail": bail }))
+            let commands: Vec<&str> = rest
+                .iter()
+                .filter(|arg| **arg != "--bail")
+                .copied()
+                .collect();
+            let mut command = json!({ "id": id, "action": "batch", "bail": bail });
+            if !commands.is_empty() {
+                command["commands"] = json!(commands);
+            }
+            Ok(command)
         }
 
         _ => Err(ParseError::UnknownCommand {
@@ -2466,6 +2552,7 @@ fn parse_storage(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         }
         Some(sub) => Err(ParseError::UnknownSubcommand {
             subcommand: sub.to_string(),
+
             valid_options: VALID,
         }),
         None => Err(ParseError::MissingArguments {
@@ -2473,6 +2560,39 @@ fn parse_storage(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             usage: "storage <local|session> [get|set|clear] [key] [value]",
         }),
     }
+}
+/// Split an inline batch command into argv while honoring shell quotes and
+/// backslash escapes. Batch never passes the raw string to the Controller.
+pub fn shell_words_split(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !in_single => {
+                if let Some(&next) = chars.peek() {
+                    chars.next();
+                    current.push(next);
+                }
+            }
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            c if c.is_whitespace() && !in_double && !in_single => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 #[cfg(test)]
@@ -2528,6 +2648,7 @@ mod tests {
             screenshot_quality: None,
             screenshot_format: None,
             idle_timeout: None,
+            default_timeout: None,
             no_auto_dialog: false,
         }
     }
@@ -4708,4 +4829,40 @@ mod tests {
         assert_eq!(cmd["action"], "batch");
         assert_eq!(cmd["bail"], true);
     }
+    #[test]
+    fn test_batch_inline_commands_are_retained() {
+        let cmd_args = vec![
+            "batch".to_string(),
+            "get title".to_string(),
+            "eval 'document.title = \"continued\"'".to_string(),
+        ];
+        let cmd = parse_command(&cmd_args, &default_flags()).unwrap();
+        assert_eq!(cmd["commands"], json!(["get title", "eval 'document.title = \"continued\"'"]));
+    }
+
+    #[test]
+    fn test_shell_words_split_preserves_quoted_script() {
+        assert_eq!(
+            shell_words_split("eval 'document.title = \"continued\"'"),
+            vec!["eval", "document.title = \"continued\""]
+        );
+    }
+
+    #[test]
+    fn test_default_timeout_applies_to_wait_family() {
+        let mut flags = default_flags();
+        flags.default_timeout = Some(100);
+        let cmd = parse_command(&args("wait --fn false"), &flags).unwrap();
+        assert_eq!(cmd["timeout"], 100);
+
+        let explicit = parse_command(&args("wait --fn false --timeout 2000"), &flags).unwrap();
+        assert_eq!(explicit["timeout"], 2000);
+    }
+
+    #[test]
+    fn test_tab_label_is_explicitly_unsupported() {
+        let error = parse_command(&args("tab new --label docs"), &default_flags()).unwrap_err();
+        assert!(error.format().contains("unsupported_in_moat"));
+    }
+
 }

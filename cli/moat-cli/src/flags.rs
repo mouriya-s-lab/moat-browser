@@ -318,6 +318,8 @@ pub struct Flags {
     pub screenshot_quality: Option<u32>,
     pub screenshot_format: Option<String>,
     pub idle_timeout: Option<String>, // Canonical milliseconds string for AGENT_BROWSER_IDLE_TIMEOUT_MS
+    /// Default timeout in milliseconds for wait-family commands without an explicit timeout.
+    pub default_timeout: Option<u64>,
     pub no_auto_dialog: bool,
 
     // Track which launch-time options were explicitly passed via CLI
@@ -450,6 +452,9 @@ pub fn parse_flags(args: &[String]) -> Flags {
             "AGENT_BROWSER_IDLE_TIMEOUT_MS",
         )
         .or(config.idle_timeout),
+        default_timeout: env::var("AGENT_BROWSER_DEFAULT_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok()),
         no_auto_dialog: env_var_is_truthy("AGENT_BROWSER_NO_AUTO_DIALOG")
             || config.no_auto_dialog.unwrap_or(false),
         cli_executable_path: false,

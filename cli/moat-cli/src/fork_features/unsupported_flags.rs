@@ -32,8 +32,84 @@ const UPSTREAM_LOCAL_FLAGS: &[&str] = &[
     "--color-scheme",
 ];
 
+// These flags are valid upstream syntax but require the upstream local
+// launcher/plugin runtime. Reject them instead of parsing and silently
+// discarding their effect in the moat Controller transport.
+const UPSTREAM_UNAVAILABLE_FLAGS: &[&str] = &[
+    "--restore",
+    "--restore-save",
+    "--restore-check-url",
+    "--restore-check-text",
+    "--restore-check-fn",
+    "--namespace",
+    "--init-script",
+    "--enable",
+    "--webgpu",
+    "--no-webmcp",
+    "--ca-cert",
+    "--no-ca-cert",
+    "--hide-scrollbars",
+    "--pin-tab",
+    "--no-pin-tab",
+    "--no-xvfb",
+    "--model",
+    "--verbose",
+    "--quiet",
+];
+fn is_upstream_unavailable_flag(arg: &str) -> bool {
+    UPSTREAM_UNAVAILABLE_FLAGS.contains(&arg)
+        || arg.starts_with("--restore=")
+        || matches!(arg, "-v" | "-q")
+}
+
+
+pub fn unsupported_environment() -> Option<String> {
+    for (name, reason) in [
+        (
+            "AGENT_BROWSER_INIT_SCRIPTS",
+            "startup init scripts require the upstream local browser launcher",
+        ),
+        (
+            "AGENT_BROWSER_ENABLE",
+            "startup feature scripts require the upstream plugin/runtime launcher",
+        ),
+    ] {
+        if std::env::var_os(name).is_some_and(|value| !value.is_empty()) {
+            return Some(format!("unsupported_in_moat: {name} is unavailable: {reason}"));
+        }
+    }
+    None
+}
+
+fn is_positional_operand(args: &[String], command: &str, index: usize) -> bool {
+    let Some(command_index) = args.iter().position(|arg| arg == command) else {
+        return false;
+    };
+    if index <= command_index {
+        return false;
+    }
+    let offset = index - command_index;
+    match command {
+        // These commands intentionally accept arbitrary text/script operands.
+        "eval" | "addinitscript" => offset >= 1,
+        "fill" | "type" | "select" | "upload" | "download" => offset >= 2,
+        "clipboard" => offset >= 2,
+        "keyboard" => offset >= 2,
+        "find" => offset >= 2,
+        "wait" => args
+            .get(index.saturating_sub(1))
+            .is_some_and(|previous| {
+                matches!(
+                    previous.as_str(),
+                    "--url" | "-u" | "--load" | "-l" | "--fn" | "-f" | "--text" | "-t"
+                )
+            }),
+        _ => false,
+    }
+}
+
 pub fn unsupported_flag(args: &[String], command: &str) -> Option<String> {
-    for arg in args {
+    for (index, arg) in args.iter().enumerate() {
         if arg == "--controller" && command == "use" {
             return Some(format!(
                 "unsupported_in_moat: --controller is not valid for the local `{command}` command"
@@ -47,6 +123,13 @@ pub fn unsupported_flag(args: &[String], command: &str) -> Option<String> {
         if UPSTREAM_LOCAL_FLAGS.contains(&arg.as_str()) {
             return Some(format!(
                 "unsupported_in_moat: {arg} belongs to agent-browser local daemon state and is unavailable in moat"
+            ));
+        }
+        if is_upstream_unavailable_flag(arg)
+            && !is_positional_operand(args, command, index)
+        {
+            return Some(format!(
+                "unsupported_in_moat: {arg} requires the upstream local launcher or plugin runtime and is unavailable in moat"
             ));
         }
         if arg == "--profile" && !matches!(command, "init" | "connect") {
@@ -96,6 +179,13 @@ mod tests {
                 .unwrap()
                 .contains("unsupported_in_moat")
         );
+        for flag in UPSTREAM_LOCAL_FLAGS {
+            assert!(
+                unsupported_flag(&args(&["open", "x", *flag]), "open")
+                    .expect("every upstream local flag must be rejected")
+                    .contains("unsupported_in_moat")
+            );
+        }
     }
 
     #[test]
@@ -120,6 +210,44 @@ mod tests {
         );
         assert_eq!(
             unsupported_flag(&args(&["open", "x", "--headers", "{}"]), "open"),
+            None
+        );
+    }
+    #[test]
+    fn rejects_upstream_local_runtime_flags() {
+        for flag in [
+            "--init-script",
+            "--enable",
+            "--no-webmcp",
+            "--restore",
+            "--pin-tab",
+        ] {
+            assert!(
+                unsupported_flag(&args(&["open", "x", flag]), "open")
+                    .expect("flag must be rejected")
+                    .contains("unsupported_in_moat")
+            );
+        }
+    }
+    #[test]
+    fn recognizes_equals_and_short_forms() {
+        for flag in ["--restore=work", "-v", "-q"] {
+            assert!(
+                unsupported_flag(&args(&["open", "x", flag]), "open")
+                    .expect("flag must be rejected")
+                    .contains("unsupported_in_moat")
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_flag_like_text_operands() {
+        assert_eq!(
+            unsupported_flag(&args(&["fill", "#input", "--model"]), "fill"),
+            None
+        );
+        assert_eq!(
+            unsupported_flag(&args(&["type", "#input", "--verbose"]), "type"),
             None
         );
     }
