@@ -1229,13 +1229,13 @@ PY
 
 if [[ "$PHASE" == prepare ]]; then
   trap 'if [[ "$KEEP_RUNTIME" -ne 1 && "$STATE_LOADED" -eq 1 ]]; then cleanup_owned; fi' EXIT
-  prepare_phase
+  prepare_phase 2>"$LOG_DIR/prepare-stderr.log"
   KEEP_RUNTIME=1
 elif [[ "$PHASE" == restart-user ]]; then
-  trap 'if [[ "$KEEP_RUNTIME" -ne 1 && "$STATE_LOADED" -eq 1 ]]; then cleanup_owned; fi' EXIT
-  restart_user_phase
+  # restart-user is operator-driven and retryable; explicit cleanup happens in finish; never auto-destroy a logged-in profile.
+  restart_user_phase 2>"$LOG_DIR/restart-user-stderr.log"
   KEEP_RUNTIME=1
 else
   trap cleanup_owned EXIT
-  finish_phase
+  finish_phase 2>"$LOG_DIR/finish-stderr.log"
 fi
