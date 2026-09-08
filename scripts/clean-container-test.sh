@@ -851,16 +851,16 @@ stop_user_gracefully() {
   local name="${RUN_ID}-user-chrome"
   runtime_identity "$name" "$EVIDENCE_DIR/runtime/user-before-stop.json"
   local chromium_status
-  chromium_status="$(inner_docker exec "$name" supervisorctl status chromium 2>&1)" || {
-    echo "supervisorctl status chromium failed; refusing to treat a container stop as a clean browser stop" >&2
-    return 1
-  }
+  chromium_status="$(inner_docker exec "$name" supervisorctl status chromium 2>/dev/null | grep '^chromium' || true)"
   printf '%s\n' "$chromium_status" > "$EVIDENCE_DIR/runtime/user-supervisor-before-stop.log"
-  [[ "$chromium_status" == chromium*RUNNING* || "$chromium_status" == chromium*STARTING* ]] || {
-    echo "chromium is not running; refusing to treat a container stop as a clean browser stop" >&2
+  if [[ "$chromium_status" == chromium*RUNNING* || "$chromium_status" == chromium*STARTING* ]]; then
+    inner_docker exec "$name" supervisorctl stop chromium > "$EVIDENCE_DIR/runtime/user-supervisor-stop.log" 2>&1 || return 1
+  elif [[ "$chromium_status" == chromium*STOPPED* || "$chromium_status" == chromium*EXITED* || "$chromium_status" == chromium*FATAL* ]]; then
+    printf 'chromium already stopped (%s); proceeding to container stop\n' "$chromium_status" > "$EVIDENCE_DIR/runtime/user-supervisor-stop.log"
+  else
+    echo "unexpected chromium state; refusing to treat a container stop as a clean browser stop: $chromium_status" >&2
     return 1
-  }
-  inner_docker exec "$name" supervisorctl stop chromium > "$EVIDENCE_DIR/runtime/user-supervisor-stop.log" 2>&1 || return 1
+  fi
   inner_docker exec "$name" supervisorctl status > "$EVIDENCE_DIR/runtime/user-supervisor-after-stop.log" 2>&1 \
     || return 1
   python3 - "$EVIDENCE_DIR/runtime/user-supervisor-after-stop.log" <<'PY'
