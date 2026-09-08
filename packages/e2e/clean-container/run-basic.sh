@@ -247,6 +247,12 @@ run_title_lifecycle() {
 
 if [[ "$MODE" == "second" ]]; then
   run_title_lifecycle "$EMPTY_PROFILE" second
+  run_checked_step second-connect-empty 0 connect --profile "$EMPTY_PROFILE"
+  expect_session_id second-connect-empty
+  run_checked_step second-open-private 0 open "${FIXTURE_ROOT}/private"
+  run_checked_step second-auth-state 0 get attr "#auth-state" "data-auth-state"
+  expect_data_field second-auth-state value logged-out
+  run_checked_step second-disconnect 0 disconnect
 else
   run_title_lifecycle "$EMPTY_PROFILE" lifecycle
 
