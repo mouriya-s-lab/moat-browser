@@ -1015,11 +1015,11 @@ class ReplayRunner:
 
     def row_226_snapshot_roots(self, context: ScenarioContext) -> None:
         context.init()
-        # bare sections flatten in the AX tree, so the depth probe nests under a heading.
+        # both link groups nest under headings because bare sections flatten.
         duplicate_html = (
             "<!doctype html><title>Snapshot</title><body>"
-            "<section id='links'><a href='/protocol/first'>Same</a>"
-            "<a href='/protocol/second'>Same</a></section>"
+            "<h2 id='links'><a href='/protocol/first'>Same</a>"
+            "<a href='/protocol/second'>Same</a></h2>"
             "<h2>Deep <a href='/protocol/first'>Nested</a></h2>"
             "<a href='/protocol/second'>Outer</a></body>"
         )

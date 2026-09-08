@@ -1223,6 +1223,8 @@ PY
   else
     if ! run_client second "$EVIDENCE_DIR/client/second"; then row8=fail; fi
     if ! assert_report_passed "$EVIDENCE_DIR/client/second/basic/summary.json"; then row8=fail; fi
+    inner_docker inspect "${RUN_ID}-controller" --format '{"state":{{json .State}},"restartCount":{{json .RestartCount}}}' > "$EVIDENCE_DIR/runtime/second-controller-postrun.json" 2>&1 || true
+    inner_docker ps -a --no-trunc > "$EVIDENCE_DIR/runtime/inner-after-second-run.txt" 2>&1 || true
     if ! fixture_observations "$EVIDENCE_DIR/runtime/fixture-observations-final.json"; then
       row8=fail
     elif ! python3 - "$EVIDENCE_DIR/runtime/fixture-observations-final.json" <<'PY'
