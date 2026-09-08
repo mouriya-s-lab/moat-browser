@@ -22,7 +22,7 @@ COPY packages/controller/tsconfig.json packages/controller/tsconfig.json
 COPY packages/types/package.json packages/types/package.json
 COPY packages/types/tsconfig.json packages/types/tsconfig.json
 COPY packages/e2e/package.json packages/e2e/package.json
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --linker hoisted
 
 COPY packages/types/src packages/types/src
 RUN bun run --cwd packages/types build
