@@ -842,6 +842,36 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             return;
         }
 
+        // Runtime navigation and init-script lifecycle responses
+        if action == Some("addinitscript")
+            && data.get("added").and_then(|v| v.as_bool()) == Some(true)
+        {
+            let identifier = data
+                .get("identifier")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            println!(
+                "{} Init script registered: {}",
+                color::success_indicator(),
+                identifier
+            );
+            return;
+        }
+        if action == Some("removeinitscript")
+            && data.get("removed").and_then(|v| v.as_bool()) == Some(true)
+        {
+            let identifier = data
+                .get("identifier")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            println!(
+                "{} Init script removed: {}",
+                color::success_indicator(),
+                identifier
+            );
+            return;
+        }
+
         // Informational note
         if let Some(note) = data.get("note").and_then(|v| v.as_str()) {
             println!("{}", note);

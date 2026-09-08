@@ -30,6 +30,23 @@ describe("wireRequestSchema — valid requests", () => {
       command: { action: "navigate", url: "https://example.com" },
     });
   });
+  test("command — pushstate", () => {
+    const command = { action: "pushstate", url: "/router" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — addinitscript", () => {
+    const command = { action: "addinitscript", script: "window.__moat_init = 42" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — removeinitscript", () => {
+    const command = { action: "removeinitscript", identifier: "init-opaque" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
 
   test("command — getbyrole with subaction", () => {
     const result = wireRequestSchema({
