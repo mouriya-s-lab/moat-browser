@@ -679,6 +679,23 @@ import socket
 with socket.create_connection(('127.0.0.1', ${CONTROLLER_HOST_PORT}), 3):
     pass
 PY"
+  wait_for "Controller WS" 90 bash -c "python3 - <<'PY'
+import socket
+s = socket.create_connection(('127.0.0.1', ${CONTROLLER_HOST_PORT}), 3)
+s.settimeout(3)
+s.sendall(b'GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')
+data = b''
+while b'\r\n' not in data:
+    chunk = s.recv(4096)
+    if not chunk:
+        break
+    data += chunk
+status = data.split(b'\r\n', 1)[0].decode('latin1')
+if '101' not in status:
+    raise SystemExit('expected 101 Switching Protocols, got: ' + status)
+PY"
+  inner_docker inspect "${RUN_ID}-controller" --format '{"state":{{json .State}},"restartCount":{{json .RestartCount}}}' > "$LOG_DIR/controller-${idle_timeout}-poststart.json" 2>&1 || true
+  inner_docker logs "${RUN_ID}-controller" > "$LOG_DIR/controller-${idle_timeout}-poststart.log" 2>&1 || true
   runtime_identity "${RUN_ID}-controller" "$EVIDENCE_DIR/runtime/controller-${idle_timeout}.json"
 }
 

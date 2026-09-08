@@ -920,9 +920,10 @@ class ReplayRunner:
         )
         context.expect(context.eval(expression) is True, "226 DOM probe installation must complete")
 
-    def _type_and_check_delay(self, context: ScenarioContext, selector: str, value: str) -> list[dict[str, JSONValue]]:
-        context.cli("main", ["type", selector, value, "--clear", "--delay", "300"])
-        context.expect(context.value(selector) == value, "type clear/delay must produce requested final value", context.value(selector))
+    def _type_and_check_delay(self, context: ScenarioContext, target: str, value: str, *, check_selector: str | None = None) -> list[dict[str, JSONValue]]:
+        check = check_selector or target
+        context.cli("main", ["type", target, value, "--clear", "--delay", "300"])
+        context.expect(context.value(check) == value, "type clear/delay must produce requested final value", context.value(check))
         events = self._eval_json(context, "document.body.dataset.inputTimes")
         context.expect(isinstance(events, list), "fixture inputTimes must be JSON event list", events)
         recent = [event for event in events if isinstance(event, dict) and event.get("value")]
@@ -946,7 +947,7 @@ class ReplayRunner:
         ref_match = re.search(r"(@e\d+)\s+textbox\s+\"Name\"", snapshot)
         context.expect(ref_match is not None, "snapshot must expose Name textbox reference", snapshot)
         ref = ref_match.group(1) if ref_match else ""
-        ref_events = self._type_and_check_delay(context, ref, "xy")
+        ref_events = self._type_and_check_delay(context, ref, "xy", check_selector="#input")
         context.expect(self.target_url() in snapshot, "snapshot --urls must show absolute target URL", snapshot)
         rooted = context.data(context.cli("main", ["snapshot", "-i", "--urls", "-s", "body"]))["snapshot"]
         context.expect(self.target_url() in rooted, "rooted snapshot must retain absolute target URL", rooted)
@@ -1014,12 +1015,12 @@ class ReplayRunner:
 
     def row_226_snapshot_roots(self, context: ScenarioContext) -> None:
         context.init()
-        # Bare sections flatten in the AX tree, so nest the depth probe link in list/listitem.
+        # bare sections flatten in the AX tree, so the depth probe nests under a heading.
         duplicate_html = (
             "<!doctype html><title>Snapshot</title><body>"
             "<section id='links'><a href='/protocol/first'>Same</a>"
             "<a href='/protocol/second'>Same</a></section>"
-            "<ul aria-label='Deep'><li><a href='/protocol/first'>Nested</a></li></ul>"
+            "<h2>Deep <a href='/protocol/first'>Nested</a></h2>"
             "<a href='/protocol/second'>Outer</a></body>"
         )
         context.open(self.fixture_root())

@@ -263,6 +263,11 @@ pub fn load_config(args: &[String]) -> Result<Config, String> {
         let path_str = maybe_path.ok_or_else(|| format!("{} requires a file path", source))?;
         let path = PathBuf::from(&path_str);
         if !path.exists() {
+            if source == "--config" {
+                // --config is rejected later by the unsupported gate; fall through
+                // with defaults so the gate runs instead of hard-erroring here.
+                return Ok(Config::default());
+            }
             return Err(format!("config file not found: {}", path_str));
         }
         return read_config_file(&path)
@@ -1351,9 +1356,10 @@ mod tests {
 
     #[test]
     fn test_load_config_error_nonexistent_file() {
+        // Missing --config files fall through with defaults so the later
+        // unsupported gate can reject --config explicitly.
         let result = load_config(&args("--config /nonexistent/config.json open"));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("config file not found"));
+        assert!(result.is_ok());
     }
 
     #[test]
