@@ -925,12 +925,12 @@ reset_second_runtime() {
   fi
   printf '%s\n' "$old_network" > "$EVIDENCE_DIR/runtime/second-old-network-removed.txt"
   PROFILE_SOURCE_PATH="/data/profile-second"
-  EMPTY_PROFILE_PATH="/data/empty-second"
+  EMPTY_PROFILE_PATH="/data/empty"
   PROFILES_WORK_PATH="/data/profiles-second"
   NETWORK_NAME="${RUN_ID}-second"
   export PROFILE_SOURCE_PATH EMPTY_PROFILE_PATH PROFILES_WORK_PATH NETWORK_NAME
   host_docker exec "$DIND_NAME" sh -c \
-    'rm -rf /data/profile-second /data/empty-second /data/profiles-second && mkdir -p /data/profile-second /data/empty-second /data/profiles-second && chmod 0777 /data/profile-second /data/empty-second /data/profiles-second && touch /data/profile-second/.clean-container-profile /data/empty-second/.clean-container-empty'
+    'rm -rf /data/profile-second /data/empty /data/profiles-second && mkdir -p /data/profile-second /data/empty /data/profiles-second && chmod 0777 /data/profile-second /data/empty /data/profiles-second && touch /data/profile-second/.clean-container-profile /data/empty/.clean-container-empty'
   inner_docker network create --label "moat.clean235.run=${RUN_ID}" "$NETWORK_NAME" >/dev/null
   start_fixture
   start_controller 600000
