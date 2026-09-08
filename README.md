@@ -575,13 +575,17 @@ moat disconnect
 **配置**：
 
 ```bash
+# 单次调用覆盖 Controller，不写入配置或 session
+moat --controller "ws://browser.mouriya.lan:3000" init --profile default
+
+# 默认 Controller
 export MOAT_CONTROLLER="ws://browser.mouriya.lan:3000"
 export MOAT_PROFILE="default"
 
 # 或 ~/.moat/config.json
 { "controller": "ws://browser.mouriya.lan:3000", "profile": "default" }
 
-# 优先级：CLI flag > 环境变量 > 配置文件
+# 优先级：本次 --controller > 非空 MOAT_CONTROLLER > 配置文件 controller
 ```
 
 ### 9.6 增强（来自 opencli / CLI-Anything）

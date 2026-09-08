@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead};
 
 use crate::color;
-use crate::flags::Flags;
+use crate::flags::{ControllerOverride, Flags};
 use crate::validation::{is_valid_session_name, session_name_error};
 
 /// Error type for command parsing with contextual information
@@ -2364,6 +2364,7 @@ mod tests {
             extensions: Vec::new(),
             cdp: None,
             profile: None,
+            controller: ControllerOverride::Unspecified,
             state: None,
             proxy: None,
             proxy_bypass: None,

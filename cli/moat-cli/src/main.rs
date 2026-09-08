@@ -18,32 +18,42 @@ use std::process::exit;
 
 use commands::{parse_command, ParseError};
 use connection::send_command;
-use flags::{clean_args, parse_flags};
+use flags::{clean_args, parse_flags, ControllerOverride};
 use fork_features::{print_command_help, print_help, unsupported_command, unsupported_flag};
 use output::{print_response_with_opts, OutputOptions};
 
 use moat_sdk::MoatClient;
 
-fn controller_url() -> Result<String, String> {
-    match env::var("MOAT_CONTROLLER") {
-        Ok(val) if !val.is_empty() => return Ok(val),
-        _ => {}
-    }
-    {
-        let home = dirs::home_dir().ok_or("no home dir")?;
-        let config_path = home.join(".moat").join("config.json");
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-            let config: serde_json::Value =
-                serde_json::from_str(&content).map_err(|e| e.to_string())?;
-            config
-                .get("controller")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .ok_or_else(|| "no 'controller' field in config".into())
-        } else {
-            Err("MOAT_CONTROLLER not set and ~/.moat/config.json not found".into())
+fn controller_url(controller: &ControllerOverride) -> Result<String, String> {
+    match controller {
+        ControllerOverride::Url(url) => return Ok(url.clone()),
+        ControllerOverride::MissingValue => return Err("Usage: moat --controller <url>".into()),
+        ControllerOverride::EmptyValue => {
+            return Err("--controller requires a non-empty URL".into());
         }
+        ControllerOverride::Unspecified => {}
+    }
+
+    if let Ok(value) = env::var("MOAT_CONTROLLER") {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let config_path = home.join(".moat").join("config.json");
+    if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        let config: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        config
+            .get("controller")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(String::from)
+            .ok_or_else(|| "no non-empty 'controller' field in ~/.moat/config.json".into())
+    } else {
+        Err("MOAT_CONTROLLER not set and ~/.moat/config.json not found".into())
     }
 }
 
@@ -69,7 +79,11 @@ fn error_type(message: &str) -> &'static str {
         "missing_arguments"
     } else if message.contains("Invalid JSON") || message.contains("invalid_value") {
         "invalid_input"
-    } else if message.contains("MOAT_CONTROLLER") || message.contains("no home dir") {
+    } else if message.contains("--controller")
+        || message.contains("MOAT_CONTROLLER")
+        || message.contains("no home dir")
+        || message.contains("controller")
+    {
         "configuration_error"
     } else {
         "command_failed"
@@ -119,6 +133,20 @@ async fn main() {
         print_version();
         return;
     }
+    let controller_override_error = match &flags.controller {
+        ControllerOverride::MissingValue => Some("Usage: moat --controller <url>"),
+        ControllerOverride::EmptyValue => Some("--controller requires a non-empty URL"),
+        ControllerOverride::Url(_) | ControllerOverride::Unspecified => None,
+    };
+    if let Some(message) = controller_override_error {
+        if flags.json {
+            print_json_error(message);
+        } else {
+            eprintln!("{} {}", color::error_indicator(), message);
+        }
+        exit(78);
+    }
+
 
     if clean.is_empty() {
         print_help();
@@ -159,10 +187,14 @@ async fn main() {
                 }
                 exit(1);
             }
-            let url = match controller_url() {
+            let url = match controller_url(&flags.controller) {
                 Ok(u) => u,
                 Err(e) => {
-                    eprintln!("{} {}", color::error_indicator(), e);
+                    if flags.json {
+                        print_json_error(&e);
+                    } else {
+                        eprintln!("{} {}", color::error_indicator(), e);
+                    }
                     exit(78);
                 }
             };
@@ -170,6 +202,7 @@ async fn main() {
                 .iter()
                 .position(|a| a == "--profile")
                 .and_then(|i| args.get(i + 1))
+                .filter(|value| !value.starts_with("--"))
                 .map(String::as_str);
 
             match MoatClient::init(&url, profile).await {
@@ -245,10 +278,14 @@ async fn main() {
 
         // destroy: deregister session, destroy container
         "disconnect" | "destroy" | "close-session" => {
-            let url = match controller_url() {
+            let url = match controller_url(&flags.controller) {
                 Ok(u) => u,
                 Err(e) => {
-                    eprintln!("{} {}", color::error_indicator(), e);
+                    if flags.json {
+                        print_json_error(&e);
+                    } else {
+                        eprintln!("{} {}", color::error_indicator(), e);
+                    }
                     exit(78);
                 }
             };
@@ -291,7 +328,8 @@ async fn main() {
         "status" => {
             match moat_sdk::session::read_session_id() {
                 Ok(Some(id)) => {
-                    let url = controller_url().unwrap_or_else(|_| "(not set)".into());
+                    let url = controller_url(&ControllerOverride::Unspecified)
+                        .unwrap_or_else(|_| "(not set)".into());
                     if flags.json {
                         println!(
                             "{}",
@@ -392,7 +430,7 @@ async fn main() {
 
     // ─── Send command to Controller via SDK ───
 
-    let url = match controller_url() {
+    let url = match controller_url(&flags.controller) {
         Ok(u) => u,
         Err(e) => {
             if flags.json {
@@ -461,7 +499,7 @@ async fn run_batch(flags: &flags::Flags) {
         }
     };
 
-    let url = match controller_url() {
+    let url = match controller_url(&flags.controller) {
         Ok(u) => u,
         Err(e) => {
             if flags.json {

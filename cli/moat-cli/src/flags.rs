@@ -225,13 +225,30 @@ fn extract_config_path(args: &[String]) -> Option<Option<String>> {
         if args[i] == "--config" {
             return Some(args.get(i + 1).cloned());
         }
-        if FLAGS_WITH_VALUE.contains(&args[i].as_str()) {
+        if args[i] == "--controller" {
+            if args
+                .get(i + 1)
+                .is_some_and(|value| !value.starts_with('-'))
+            {
+                i += 1;
+            }
+        } else if FLAGS_WITH_VALUE.contains(&args[i].as_str()) {
             i += 1;
         }
         i += 1;
     }
     None
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ControllerOverride {
+    #[default]
+    Unspecified,
+    Url(String),
+    MissingValue,
+    EmptyValue,
+}
+
 
 pub fn load_config(args: &[String]) -> Result<Config, String> {
     let explicit = extract_config_path(args)
@@ -275,6 +292,7 @@ pub struct Flags {
     pub cdp: Option<String>,
     pub extensions: Vec<String>,
     pub profile: Option<String>,
+    pub controller: ControllerOverride,
     pub state: Option<String>,
     pub proxy: Option<String>,
     pub proxy_bypass: Option<String>,
@@ -339,7 +357,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
     } else {
         config.extensions.unwrap_or_default()
     };
-
     let mut flags = Flags {
         json: env_var_is_truthy("AGENT_BROWSER_JSON") || config.json.unwrap_or(false),
         headed: env_var_is_truthy("AGENT_BROWSER_HEADED") || config.headed.unwrap_or(false),
@@ -355,6 +372,7 @@ pub fn parse_flags(args: &[String]) -> Flags {
         cdp: config.cdp,
         extensions,
         profile: env::var("AGENT_BROWSER_PROFILE").ok().or(config.profile),
+        controller: ControllerOverride::default(),
         state: env::var("AGENT_BROWSER_STATE").ok().or(config.state),
         proxy: env::var("AGENT_BROWSER_PROXY")
             .ok()
@@ -518,11 +536,27 @@ pub fn parse_flags(args: &[String]) -> Flags {
                     i += 1;
                 }
             }
+            "--controller" => {
+                flags.controller = match args.get(i + 1) {
+                    None => ControllerOverride::MissingValue,
+                    Some(value) if value.starts_with('-') => ControllerOverride::MissingValue,
+                    Some(value) if value.trim().is_empty() => {
+                        i += 1;
+                        ControllerOverride::EmptyValue
+                    }
+                    Some(value) => {
+                        i += 1;
+                        ControllerOverride::Url(value.clone())
+                    }
+                };
+            }
             "--profile" => {
                 if let Some(s) = args.get(i + 1) {
-                    flags.profile = Some(s.clone());
-                    flags.cli_profile = true;
-                    i += 1;
+                    if !s.starts_with("--") {
+                        flags.profile = Some(s.clone());
+                        flags.cli_profile = true;
+                        i += 1;
+                    }
                 }
             }
             "--state" => {
@@ -728,7 +762,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
 
 pub fn clean_args(args: &[String]) -> Vec<String> {
     let mut result = Vec::new();
-    let mut skip_next = false;
 
     // Boolean flags that optionally take true/false
     const GLOBAL_BOOL_FLAGS: &[&str] = &[
@@ -743,7 +776,7 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
         "--confirm-interactive",
         "--no-auto-dialog",
     ];
-    // Global flags that always take a value (need to skip the next arg too)
+    // Global flags that always take a value.
     const GLOBAL_FLAGS_WITH_VALUE: &[&str] = &[
         "--session",
         "--headers",
@@ -777,14 +810,21 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        if skip_next {
-            skip_next = false;
+        if arg == "--controller" {
             i += 1;
+            if args
+                .get(i)
+                .is_some_and(|value| !value.starts_with('-'))
+            {
+                i += 1;
+            }
             continue;
         }
         if GLOBAL_FLAGS_WITH_VALUE.contains(&arg.as_str()) {
-            skip_next = true;
             i += 1;
+            if i < args.len() {
+                i += 1;
+            }
             continue;
         }
         if GLOBAL_BOOL_FLAGS.contains(&arg.as_str()) {
@@ -867,6 +907,57 @@ mod tests {
         let flags = parse_flags(&args("open example.com"));
         assert!(flags.headers.is_none());
     }
+    #[test]
+    fn test_parse_controller_override_and_clean_args() {
+        let input = vec![
+            "init".to_string(),
+            "--profile".to_string(),
+            "test".to_string(),
+            "--controller".to_string(),
+            "ws://live.example".to_string(),
+        ];
+        let flags = parse_flags(&input);
+        assert_eq!(
+            flags.controller,
+            ControllerOverride::Url("ws://live.example".to_string())
+        );
+        assert_eq!(clean_args(&input), vec!["init"]);
+    }
+
+    #[test]
+    fn test_parse_controller_missing_value_keeps_next_flag() {
+        let input = vec![
+            "init".to_string(),
+            "--controller".to_string(),
+            "--profile".to_string(),
+            "test".to_string(),
+        ];
+        let flags = parse_flags(&input);
+        assert_eq!(flags.controller, ControllerOverride::MissingValue);
+        assert_eq!(flags.profile.as_deref(), Some("test"));
+        assert_eq!(clean_args(&input), vec!["init"]);
+    }
+    #[test]
+    fn test_parse_controller_short_flag_is_missing_value() {
+        let input = args("init --controller -j");
+        let flags = parse_flags(&input);
+        assert_eq!(flags.controller, ControllerOverride::MissingValue);
+        assert_eq!(clean_args(&input), vec!["init", "-j"]);
+    }
+
+
+    #[test]
+    fn test_parse_controller_empty_value() {
+        let input = vec![
+            "init".to_string(),
+            "--controller".to_string(),
+            String::new(),
+        ];
+        let flags = parse_flags(&input);
+        assert_eq!(flags.controller, ControllerOverride::EmptyValue);
+        assert_eq!(clean_args(&input), vec!["init"]);
+    }
+
 
     #[test]
     fn test_clean_args_removes_headers() {
