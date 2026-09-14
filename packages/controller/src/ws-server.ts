@@ -5,7 +5,7 @@ import {
   type BrowserCommand,
   type ContentBoundary,
   type ControllerError,
-  type WireErrorType,
+  type WireFailure,
   type WireRequest,
   type WireResponse,
   ErrorCode,
@@ -30,8 +30,9 @@ function resolveProfilePath(
   if (path.isAbsolute(profile)) return profile;
   return path.join(path.dirname(defaultSource), profile);
 }
-
 // ─── errorToWireResponse (§11.2) ───
+
+type CleanupStage = "command" | "cleanup";
 
 function formatError(error: ControllerError): string {
   switch (error._tag) {
@@ -57,38 +58,50 @@ function formatError(error: ControllerError): string {
       return `Command failed: ${error.message}`;
     case "ValidationFailed":
       return `Validation failed: ${error.message}`;
-    default:
-      return exhaustive(error);
   }
+  return exhaustive(error);
 }
-function wireErrorType(error: ControllerError): WireErrorType {
+
+function wireFailure(error: ControllerError, stage: CleanupStage = "command"): WireFailure {
   switch (error._tag) {
     case "SessionNotFound":
     case "SessionExpired":
-      return "target_not_found";
+      return { errorType: "target_not_found" };
     case "SessionNotReady":
+      return { errorType: "command_failed", cause: "container_creation" };
     case "ContainerCreateFailed":
+    case "ProfileCopyFailed":
+      return {
+        errorType: "command_failed",
+        cause: stage === "cleanup" ? "cleanup" : "container_creation",
+      };
     case "CdpUnreachable":
     case "CdpDisconnected":
-    case "ProfileCopyFailed":
     case "ElementNotFound":
     case "Timeout":
     case "CommandFailed":
     case "ValidationFailed":
-      return "command_failed";
-    default:
-      return exhaustive(error);
+      return { errorType: "command_failed", cause: stage === "cleanup" ? "cleanup" : "cdp" };
   }
+  return exhaustive(error);
 }
 
-function errorToWireResponse(sessionId: string, error: ControllerError): WireResponse {
+// The response type itself carries the error-type/cause invariant; callers spread
+// `wireFailure` directly so adding a ControllerError variant fails every mapping
+// site at compile time.
+
+function errorToWireResponse(
+  sessionId: string,
+  error: ControllerError,
+  stage: CleanupStage = "command",
+): WireResponse {
   return {
     type: "command_result",
     sessionId,
     success: false,
     error: formatError(error),
-    errorType: wireErrorType(error),
     code: ErrorCode[error._tag],
+    ...wireFailure(error, stage),
   };
 }
 
@@ -248,15 +261,21 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     if (destroyResult._tag === "Ok" && closeFailure) {
       result = { _tag: "Err", error: closeFailure };
     }
+    let failureDetails = "";
     if (result._tag === "Ok") {
       sessionContainers.delete(sessionId);
+    } else {
+      const failure = wireFailure(result.error, "cleanup");
+      failureDetails = ` error=${formatError(result.error)} errorType=${failure.errorType}${
+        failure.errorType === "command_failed" ? ` cause=${failure.cause}` : ""
+      }`;
     }
     console.log(
       `[cleanup-result] owner=${record.owner} session=${sessionId} container=${
         record.containerId ?? "unknown"
       } operation=${record.operationId} trigger=${record.trigger} outcome=${
         result._tag === "Ok" ? "success" : "failed"
-      }${result._tag === "Err" ? ` error=${formatError(result.error)}` : ""}`,
+      }${failureDetails}`,
     );
     return result;
   }
@@ -329,8 +348,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         type: "register_result",
         success: false,
         error: formatError(regResult.error),
-        errorType: wireErrorType(regResult.error),
         code: ErrorCode[regResult.error._tag],
+        ...wireFailure(regResult.error),
       };
     }
     const sessionId = regResult.value;
@@ -348,8 +367,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         type: "register_result",
         success: false,
         error: formatError(containerResult.error),
-        errorType: wireErrorType(containerResult.error),
         code: ErrorCode[containerResult.error._tag],
+        ...wireFailure(containerResult.error),
       };
     }
 
@@ -373,12 +392,16 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         );
       }
       registry.deregister(sessionId, false);
+      const cdpError: ControllerError = {
+        _tag: "CdpUnreachable",
+        containerId,
+      };
       return {
         type: "register_result",
         success: false,
         error: `CDP connection failed: ${e instanceof Error ? e.message : String(e)}`,
-        errorType: "command_failed",
         code: ErrorCode.CdpUnreachable,
+        ...wireFailure(cdpError),
       };
     }
 
@@ -455,16 +478,18 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     };
   }
 
-  // ─── deregister ───
-
-  function deregisterErrorResponse(sessionId: string, error: ControllerError): WireResponse {
+  function deregisterErrorResponse(
+    sessionId: string,
+    error: ControllerError,
+    stage: CleanupStage = "command",
+  ): WireResponse {
     return {
       type: "deregister_result",
       sessionId,
       success: false,
       error: formatError(error),
-      errorType: wireErrorType(error),
       code: ErrorCode[error._tag],
+      ...wireFailure(error, stage),
     };
   }
 
@@ -488,7 +513,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     const cleanupResult = await cleanup;
     logSessionActivity({ _tag: "Deregister", sessionId });
     if (cleanupResult._tag === "Err") {
-      return deregisterErrorResponse(sessionId, cleanupResult.error);
+      return deregisterErrorResponse(sessionId, cleanupResult.error, "cleanup");
     }
     return { type: "deregister_result", sessionId, success: true };
   }

@@ -344,7 +344,25 @@ export type ControllerError =
   | { readonly _tag: "CommandFailed"; readonly message: string }
   | { readonly _tag: "ValidationFailed"; readonly message: string };
 
+export type CommandFailureCause =
+  | { readonly _tag: "container_creation" }
+  | { readonly _tag: "cdp" }
+  | { readonly _tag: "cleanup" }
+  | { readonly _tag: "transport" };
+
+export type CommandFailureCauseTag = CommandFailureCause["_tag"];
+
 export type WireErrorType = "target_not_found" | "command_failed";
+
+export type WireFailure =
+  | {
+      readonly errorType: "target_not_found";
+      readonly cause?: never;
+    }
+  | {
+      readonly errorType: "command_failed";
+      readonly cause: CommandFailureCauseTag;
+    };
 
 // ─── SessionState ───
 
@@ -575,13 +593,12 @@ export type WireResponse =
       readonly success: true;
       readonly sessionId: string;
     }
-  | {
+  | ({
       readonly type: "register_result";
       readonly success: false;
       readonly error: string;
-      readonly errorType?: WireErrorType;
       readonly code: number;
-    }
+    } & WireFailure)
   | {
       readonly type: "command_result";
       readonly sessionId: string;
@@ -589,22 +606,25 @@ export type WireResponse =
       readonly data: CommandResultData;
       readonly boundary?: ContentBoundary;
     }
-  | {
+  | ({
       readonly type: "command_result";
       readonly sessionId: string;
       readonly success: false;
       readonly error: string;
-      readonly errorType?: WireErrorType;
       readonly code: number;
-    }
+    } & WireFailure)
   | {
       readonly type: "deregister_result";
       readonly sessionId: string;
-      readonly success: boolean;
-      readonly error?: string;
-      readonly errorType?: WireErrorType;
-      readonly code?: number;
-    };
+      readonly success: true;
+    }
+  | ({
+      readonly type: "deregister_result";
+      readonly sessionId: string;
+      readonly success: false;
+      readonly error: string;
+      readonly code: number;
+    } & WireFailure);
 
 // ─── arktype schemas ───
 

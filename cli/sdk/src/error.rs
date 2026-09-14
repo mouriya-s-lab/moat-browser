@@ -1,20 +1,48 @@
 use std::fmt;
 
+use crate::wire::CommandFailureCause;
+
 #[derive(Debug)]
 pub enum SdkError {
     NoSession,
     SessionAlreadyActive { session_id: String },
     ConnectionFailed(String),
     WebSocket(String),
-    RegisterFailed { error: String, code: u32 },
-    CommandFailed { error: String, code: u32 },
+    RegisterFailed {
+        error: String,
+        code: u32,
+        error_type: Option<String>,
+        cause: Option<CommandFailureCause>,
+    },
+    CommandFailed {
+        error: String,
+        code: u32,
+        cause: CommandFailureCause,
+    },
     DeregisterFailed {
         error: String,
         code: u32,
         error_type: Option<String>,
+        cause: Option<CommandFailureCause>,
     },
     SessionFileError(String),
     ConfigError(String),
+}
+
+impl SdkError {
+    pub fn command_failure_cause(&self) -> Option<CommandFailureCause> {
+        match self {
+            Self::ConnectionFailed(_) | Self::WebSocket(_) => {
+                Some(CommandFailureCause::Transport)
+            }
+            Self::RegisterFailed { cause, .. } | Self::DeregisterFailed { cause, .. } => *cause,
+            Self::CommandFailed { cause, .. } => Some(*cause),
+            Self::NoSession => None,
+            Self::SessionAlreadyActive { .. }
+            | Self::SessionFileError(_)
+            | Self::ConfigError(_) => Some(CommandFailureCause::Transport),
+        }
+    }
 }
 
 impl fmt::Display for SdkError {
@@ -29,16 +57,17 @@ impl fmt::Display for SdkError {
             }
             Self::ConnectionFailed(msg) => write!(f, "Connection failed: {}", msg),
             Self::WebSocket(msg) => write!(f, "WebSocket error: {}", msg),
-            Self::RegisterFailed { error, code } => {
+            Self::RegisterFailed { error, code, .. } => {
                 write!(f, "Register failed (code {}): {}", code, error)
             }
-            Self::CommandFailed { error, code } => {
+            Self::CommandFailed { error, code, .. } => {
                 write!(f, "Command failed (code {}): {}", code, error)
             }
             Self::DeregisterFailed {
                 error,
                 code,
                 error_type,
+                ..
             } => {
                 if let Some(error_type) = error_type {
                     write!(f, "Deregister failed ({error_type}, code {code}): {error}")

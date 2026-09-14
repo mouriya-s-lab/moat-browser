@@ -104,7 +104,6 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "pdf" => "pdf [output-path]",
         "snapshot" => "snapshot [-i] [-c] [-d <depth>] [-s <selector>]",
         "eval" => "eval <javascript> [selector]",
-        "close" | "quit" | "exit" => "close",
         "get" => "get <url|title|text|html|value|attr|count|box|styles> [argument]",
         "is" => "is <visible|enabled|checked> <selector>",
         "find" => "find <role|text|label|placeholder|alt|title|testid|first|last|nth> ...",
