@@ -2475,6 +2475,7 @@ Snapshot Diff:
   later invocations compare against that session's previous snapshot.
 
   A first invocation reports baseline initialization, not a comparison result.
+
 Screenshot Diff:
 
   Usage: agent-browser diff screenshot --baseline <file> [options]
@@ -2885,6 +2886,7 @@ fn print_snapshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
         );
     }
 }
+
 fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
     let mismatch = data
         .get("mismatchPercentage")
@@ -2911,10 +2913,16 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
             mismatch
         );
     }
-    if let Some(diff_path) = data.get("diffPath").and_then(|v| v.as_str()) {
-        println!("  Diff image: {}", color::green(diff_path));
-    } else {
-        println!("  No diff image generated");
+    let output_requested = data
+        .get("outputPath")
+        .and_then(|v| v.as_str())
+        .is_some();
+    if output_requested {
+        if let Some(diff_path) = data.get("diffPath").and_then(|v| v.as_str()) {
+            println!("  Diff image: {}", color::green(diff_path));
+        } else {
+            println!("  No diff image generated");
+        }
     }
     let total = data
         .get("totalPixels")

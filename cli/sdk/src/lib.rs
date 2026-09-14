@@ -526,6 +526,7 @@ impl MoatClient {
             "differentPixels": result.different_pixels,
             "diffPath": diff_path,
             "diffImageGenerated": diff_image_generated,
+            "outputPath": requested_path,
             "dimensionMismatch": result.dimension_mismatch,
         })))
     }
