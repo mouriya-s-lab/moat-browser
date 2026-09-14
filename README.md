@@ -497,6 +497,9 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 `PROFILE_REGISTRY` 覆盖。注册来源不存在或越出受控目录时，该名称会以
 `invalid_value` 拒绝；不会按名称推导 `/data/<name>`，也不会自动创建目录。
 
+`PROFILE_REGISTRY` 若不是合法 JSON 对象或包含非法条目，Controller 会在启动时
+失败，而不会静默退化为空注册表。
+
 **与 agent-browser 的行为差异**：
 
 | 命令 | agent-browser 行为 | moat 行为 |

@@ -86,6 +86,9 @@ path-shaped, unregistered, unavailable, or out-of-scope profile is rejected
 before session creation with `errorType: "invalid_value"`; the Controller
 does not infer `/data/<name>` or create missing profiles.
 
+Malformed `PROFILE_REGISTRY` configuration makes the Controller fail at
+startup; it is never silently treated as an empty registry.
+
 ## Interaction model
 
 Prefer semantic locators over snapshots:
