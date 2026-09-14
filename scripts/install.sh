@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly REPO="Mouriya-Emma/moat-browser"
+readonly REPO="moat-lab/moat-browser"
 readonly BIN="moat-x86_64-linux"
 readonly INSTALL_DIR="${MOAT_INSTALL_DIR:-/usr/local/bin}"
 

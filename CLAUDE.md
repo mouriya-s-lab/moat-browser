@@ -16,8 +16,8 @@
 
 ## Issues
 
-- Tracked in: `Mouriya-Emma/moat-browser`
-- 旧 issue (#71-#78) 已全部关闭，新 issue 待按更新后的路线图重建
+- Tracked in: `moat-lab/moat-browser`（`Mouriya-Emma/moat-browser` 是 transfer 前的旧名，仅靠 GitHub redirect 可达，不要再用）
+- 当前 open 树：umbrella #237（dogfood 审计 51 项交互可信度缺陷）+ child #238–#252；umbrella #224 + child #225–#228（CLI 与 upstream 对齐）
 
 ## Tech Stack
 
