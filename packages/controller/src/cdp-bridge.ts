@@ -1401,7 +1401,13 @@ export async function executeCommand(
       case "nth": {
         const loc = scope.locator(command.selector);
         const count = await loc.count();
-        if (!Number.isInteger(command.index) || command.index < 0 || command.index >= count) {
+        const index = command.index === -1 ? count - 1 : command.index;
+        if (
+          !Number.isInteger(command.index)
+          || command.index < -1
+          || index < 0
+          || index >= count
+        ) {
           return err({ _tag: "ElementNotFound", selector: command.selector });
         }
         if (command.subaction === undefined) {
@@ -1409,7 +1415,7 @@ export async function executeCommand(
           return ok(result);
         }
 
-        const target = loc.nth(command.index);
+        const target = loc.nth(index);
         if (command.subaction === "click") {
           await target.click();
         } else if (command.subaction === "fill" && command.value) {
