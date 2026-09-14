@@ -938,7 +938,7 @@ wire 协议是严格的 request-response 模式（不是 pub-sub）。每条请�
 
 ## 10. register 全链路
 
-注册请求先取得共享准入 reservation，再进入 Session Registry；容量拒绝在 profile copy、Docker create/start 和 CDP 连接之前返回。
+注册请求先预检 profile，再取得共享准入 reservation；容量拒绝在 Docker create/start 和 CDP 连接之前返回，且 profile 或容量拒绝都不产生残留。
 
 ```mermaid
 flowchart TD
