@@ -130,18 +130,20 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "tap" => "tap <selector>",
         "swipe" => "swipe <up|down|left|right> [distance]",
         "diff" => {
-            println!(
-                "moat diff\n\nUsage: moat diff <snapshot|screenshot|url> ...\n\n\
-                 Without --baseline, `diff snapshot` initializes this session's baseline on the\n\
-                 first invocation and reports that initialization instead of a comparison; later\n\
-                 invocations compare against the previous snapshot.\n\
-                 `diff screenshot` reports a diff image only when --output is given and a diff\n\
-                 image was actually written.\n\
-                 `diff url` compares in a temporary tab and restores the calling page.\n\n\
-                 This command runs against the active Controller-managed session.\n\
-                 Options: --json emits exactly one JSON value. Run `moat --help` for global options."
+            return Some(
+                concat!(
+                    "moat diff\n\nUsage: moat diff <snapshot|screenshot|url> ...\n\n",
+                    "Without --baseline, `diff snapshot` initializes this session's baseline on the\n",
+                    "first invocation and reports that initialization instead of a comparison; later\n",
+                    "invocations compare against the previous snapshot.\n",
+                    "`diff screenshot` reports a diff image only when --output is given and a diff\n",
+                    "image was actually written.\n",
+                    "`diff url` compares in a temporary tab and restores the calling page.\n\n",
+                    "This command runs against the active Controller-managed session.\n",
+                    "Options: --json emits exactly one JSON value. Run `moat --help` for global options.",
+                )
+                .to_string(),
             );
-            return true;
         }
         "batch" => "batch  # reads a JSON command array from stdin",
         "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "device" | "install"
