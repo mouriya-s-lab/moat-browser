@@ -336,14 +336,12 @@ fn validate_wire_failure(
         (Some("command_failed"), None) => {
             Err(protocol_error("command_failed response missing cause"))
         }
-        (
-            Some("target_not_found" | "invalid_value" | "missing_arguments" | "unsupported_in_moat"),
-            None,
-        ) => Ok(None),
-        (Some(error_type), _) => Err(protocol_error(format!(
-            "invalid wire failure shape for errorType={error_type}"
+        (Some(_), None) => Ok(None),
+        (Some(error_type), Some(_)) => Err(protocol_error(format!(
+            "wire failure cause is only valid for errorType=command_failed (got {error_type})"
         ))),
-        (None, _) => Err(protocol_error("wire failure missing errorType")),
+        (None, Some(_)) => Err(protocol_error("wire failure has cause but missing errorType")),
+        (None, None) => Err(protocol_error("wire failure missing errorType")),
     }
 }
 
