@@ -1,8 +1,12 @@
 import { execFile as execFileCb } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { readFile } from "node:fs/promises";
+import { realpath, readFile, stat } from "node:fs/promises";
+import { isAbsolute, relative, sep } from "node:path";
 import { promisify } from "node:util";
-import type { ControllerError } from "@moat-browser/types";
+import type {
+  ControllerError,
+  ProfileUnavailableReason,
+} from "@moat-browser/types";
 
 const execFile = promisify(execFileCb);
 
@@ -34,6 +38,8 @@ export type DockerFetch = (path: string, init?: RequestInit) => Promise<Response
 
 export type ContainerManagerConfig = {
   readonly profileSource: string;
+  readonly profileRegistry: ProfileRegistry;
+  readonly profileStoreRoot: string;
   readonly profilesWork: string;
   readonly profilesHostPath: string;
   readonly dockerNetwork: string;
@@ -42,6 +48,141 @@ export type ContainerManagerConfig = {
   readonly owner: string;
   readonly dockerFetch?: DockerFetch;
 };
+// ─── Trusted profile registry ───
+
+export type ProfileRegistry = Readonly<Record<string, string>>;
+
+export type ProfileRegistryConfigError = {
+  readonly _tag: "InvalidProfileRegistry";
+  readonly message: string;
+};
+
+/**
+ * Profile names are identifiers, never filesystem paths. Keep this check
+ * intentionally small: the allowlist lookup below remains the authority for
+ * which identifiers are actually available.
+ */
+export function isValidProfileName(profile: string): boolean {
+  return (
+    profile.length > 0 &&
+    profile !== "." &&
+    profile !== ".." &&
+    !isAbsolute(profile) &&
+    !profile.includes("/") &&
+    !profile.includes("\\") &&
+    !profile.includes("\u0000")
+  );
+}
+
+/**
+ * Parse the operator-owned PROFILE_REGISTRY JSON object. `default` is
+ * reserved for PROFILE_SOURCE and cannot be overridden by this mapping.
+ */
+export function parseProfileRegistry(
+  raw: string | undefined,
+): Result<ProfileRegistry, ProfileRegistryConfigError> {
+  if (!raw || raw.trim().length === 0) return Ok({});
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return Err({
+      _tag: "InvalidProfileRegistry",
+      message: "PROFILE_REGISTRY must be a JSON object mapping profile names to absolute paths",
+    });
+  }
+  if (!isRecord(parsed) || Array.isArray(parsed)) {
+    return Err({
+      _tag: "InvalidProfileRegistry",
+      message: "PROFILE_REGISTRY must be a JSON object mapping profile names to absolute paths",
+    });
+  }
+
+  const entries: Array<readonly [string, string]> = [];
+  for (const [name, source] of Object.entries(parsed)) {
+    if (
+      name === "default" ||
+      !isValidProfileName(name) ||
+      typeof source !== "string" ||
+      !isAbsolute(source)
+    ) {
+      return Err({
+        _tag: "InvalidProfileRegistry",
+        message: "PROFILE_REGISTRY contains an invalid profile name or source",
+      });
+    }
+    entries.push([name, source]);
+  }
+  return Ok(Object.fromEntries(entries));
+}
+
+type ProfileResolutionConfig = Pick<
+  ContainerManagerConfig,
+  "profileSource" | "profileRegistry" | "profileStoreRoot"
+>;
+
+/**
+ * Resolve and preflight a requested profile before allocating a session.
+ * Only the operator-owned map can supply a non-default source. Canonicalizing
+ * both the source and trusted root prevents a configured symlink from escaping
+ * the profile store.
+ */
+export async function resolveProfilePath(
+  profile: string | undefined,
+  config: ProfileResolutionConfig,
+): Promise<Result<string, ControllerError>> {
+  const profileName = profile ?? "default";
+  if (!isValidProfileName(profileName)) {
+    return unavailableProfile(profileName, "invalid_name");
+  }
+
+  let source: string | undefined;
+  if (profileName === "default") {
+    source = config.profileSource;
+  } else if (Object.hasOwn(config.profileRegistry, profileName)) {
+    source = config.profileRegistry[profileName];
+  } else {
+    return unavailableProfile(profileName, "not_registered");
+  }
+
+  const canonicalSource = await canonicalDirectory(source);
+  if (!canonicalSource) {
+    return unavailableProfile(profileName, "source_unavailable");
+  }
+
+  if (profileName !== "default") {
+    const canonicalRoot = await canonicalDirectory(config.profileStoreRoot);
+    if (!canonicalRoot || !isWithin(canonicalRoot, canonicalSource)) {
+      return unavailableProfile(profileName, "source_unavailable");
+    }
+  }
+
+  return Ok(canonicalSource);
+}
+
+function unavailableProfile(
+  profile: string,
+  reason: ProfileUnavailableReason,
+): Result<never, ControllerError> {
+  return Err({ _tag: "ProfileUnavailable", profile, reason });
+}
+
+async function canonicalDirectory(source: string): Promise<string | undefined> {
+  try {
+    const canonical = await realpath(source);
+    const metadata = await stat(canonical);
+    return metadata.isDirectory() ? canonical : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const child = relative(root, candidate);
+  return child === "" || (!child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute(child));
+}
+
 
 // ─── Labels ───
 

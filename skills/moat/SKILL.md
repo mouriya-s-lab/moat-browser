@@ -41,7 +41,9 @@ Controller selection priority is `--controller` > non-empty
 
 ## Session lifecycle
 
-Start a session before issuing browser commands:
+Start a session before issuing browser commands. `--profile` accepts only a
+profile name registered by the Controller; it never accepts a local or
+Controller filesystem path:
 
 ```bash
 moat connect
@@ -69,6 +71,23 @@ registration and the existing session remains active.
 handle and the Controller URL resolved for this invocation, but does not probe
 remote Controller health. An explicit `--controller` is shown for that
 invocation only and is not persisted.
+
+The Controller operator registers additional names with its trusted
+configuration (not through a client request). Sources must be mounted
+directories inside `PROFILE_STORE` (which defaults to `PROFILES_WORK`):
+
+```bash
+PROFILE_STORE=/data/profiles
+PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
+```
+
+`default` is reserved for `PROFILE_SOURCE` and cannot be overridden. A
+path-shaped, unregistered, unavailable, or out-of-scope profile is rejected
+before session creation with `errorType: "invalid_value"`; the Controller
+does not infer `/data/<name>` or create missing profiles.
+
+Malformed `PROFILE_REGISTRY` configuration makes the Controller fail at
+startup; it is never silently treated as an empty registry.
 
 ## Interaction model
 

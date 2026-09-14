@@ -13,23 +13,18 @@ import {
   wireRequestSchema,
 } from "@moat-browser/types";
 import { type } from "arktype";
-import type { ContainerManager, Result as ContainerResult } from "./container-manager.js";
+import type {
+  ContainerManager,
+  Result as ContainerResult,
+} from "./container-manager.js";
+import {
+  resolveProfilePath,
+} from "./container-manager.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { RefStore } from "./ref-store.js";
 import { clearSessionRuntimeState, connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js";
 import type { ControllerConfig } from "./index.js";
-import path from "node:path";
 
-// ─── Profile path resolution ───
-
-function resolveProfilePath(
-  profile: string | undefined,
-  defaultSource: string,
-): string {
-  if (!profile || profile === "default") return defaultSource;
-  if (path.isAbsolute(profile)) return profile;
-  return path.join(path.dirname(defaultSource), profile);
-}
 // ─── errorToWireResponse (§11.2) ───
 
 type CleanupStage = "command" | "cleanup";
@@ -50,6 +45,19 @@ function formatError(error: ControllerError): string {
       return `CDP disconnected for container ${error.containerId}`;
     case "ProfileCopyFailed":
       return `Profile copy failed: ${error.message}`;
+    case "ProfileUnavailable": {
+      const reason = error.reason;
+      switch (reason) {
+        case "invalid_name":
+          return "Profile name is invalid; choose a registered profile name";
+        case "not_registered":
+          return "Profile name is not registered; choose a configured profile name";
+        case "source_unavailable":
+          return "Configured profile is unavailable; choose another registered profile name";
+        default:
+          return exhaustive(reason);
+      }
+    }
     case "ElementNotFound":
       return `Element not found${error.selector ? `: ${error.selector}` : ""}`;
     case "Timeout":
@@ -67,6 +75,8 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
     case "SessionNotFound":
     case "SessionExpired":
       return { errorType: "target_not_found" };
+    case "ProfileUnavailable":
+      return { errorType: "invalid_value" };
     case "SessionNotReady":
       return { errorType: "command_failed", cause: "container_creation" };
     case "ContainerCreateFailed":
@@ -341,7 +351,20 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
   async function handleRegister(
     profile?: string,
   ): Promise<WireResponse> {
-    // Step 1: SessionRegistry.register()
+    // Resolve and preflight the configured source before allocating a session.
+    const profileResult = await resolveProfilePath(profile, config);
+    if (profileResult._tag === "Err") {
+      return {
+        type: "register_result",
+        success: false,
+        error: formatError(profileResult.error),
+        code: ErrorCode[profileResult.error._tag],
+        ...wireFailure(profileResult.error),
+      };
+    }
+    const profilePath = profileResult.value;
+
+    // SessionRegistry.register() is the first mutating step.
     const regResult = registry.register(profile);
     if (regResult._tag === "Err") {
       return {
@@ -354,9 +377,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
     const sessionId = regResult.value;
 
-    // Step 2: ContainerManager.create() — transition through states
-    const profilePath = resolveProfilePath(profile, config.profileSource);
-
+    // ContainerManager.create() — transition through states
     registry.transition(sessionId, { _tag: "CreatingContainer", profilePath });
 
     const containerResult = await containerManager.create(sessionId, profilePath);

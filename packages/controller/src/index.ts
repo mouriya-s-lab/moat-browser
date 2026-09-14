@@ -1,6 +1,11 @@
 import { WebSocketServer } from "ws";
+import {
+  createContainerManager,
+  parseProfileRegistry,
+  resolveControllerOwner,
+  type ProfileRegistry,
+} from "./container-manager.js";
 import { createSessionRegistry } from "./session-registry.js";
-import { createContainerManager, resolveControllerOwner } from "./container-manager.js";
 import { createRefStore } from "./ref-store.js";
 import { createWsHandler } from "./ws-server.js";
 
@@ -9,6 +14,8 @@ import { createWsHandler } from "./ws-server.js";
 export type ControllerConfig = {
   readonly port: number;
   readonly profileSource: string;
+  readonly profileRegistry: ProfileRegistry;
+  readonly profileStoreRoot: string;
   readonly profilesWork: string;
   readonly profilesHostPath: string;
   readonly dockerNetwork: string;
@@ -21,7 +28,16 @@ export type ControllerConfig = {
 
 async function loadConfig(): Promise<ControllerConfig> {
   const port = parseInt(process.env.PORT ?? "3000", 10);
+  const profileSource = process.env.PROFILE_SOURCE ?? "/data/profile";
+  const profilesWork = process.env.PROFILES_WORK ?? "/data/profiles";
+  const profileStoreRoot = process.env.PROFILE_STORE ?? profilesWork;
   const dockerNetwork = process.env.DOCKER_NETWORK ?? "moat";
+  const profileRegistryResult = parseProfileRegistry(process.env.PROFILE_REGISTRY);
+  if (profileRegistryResult._tag === "Err") {
+    console.error(`[profile-config] ${profileRegistryResult.error.message}`);
+    process.exit(78);
+  }
+
   const ownerResult = await resolveControllerOwner(process.env.CONTROLLER_OWNER);
   if (ownerResult._tag === "Err") {
     console.error(`[controller-owner] ${ownerResult.error.message}`);
@@ -30,9 +46,11 @@ async function loadConfig(): Promise<ControllerConfig> {
 
   return {
     port,
-    profileSource: process.env.PROFILE_SOURCE ?? "/data/profile",
-    profilesWork: process.env.PROFILES_WORK ?? "/data/profiles",
-    profilesHostPath: process.env.PROFILES_HOST_PATH ?? process.env.PROFILES_WORK ?? "/data/profiles",
+    profileSource,
+    profileRegistry: profileRegistryResult.value,
+    profileStoreRoot,
+    profilesWork,
+    profilesHostPath: process.env.PROFILES_HOST_PATH ?? profilesWork,
     dockerNetwork,
     agentChromeImage: process.env.AGENT_CHROME_IMAGE ?? "agent-chrome:latest",
     sessionIdleTimeout: parseInt(process.env.SESSION_IDLE_TIMEOUT ?? "600000", 10),
@@ -48,6 +66,8 @@ const config = await loadConfig();
 
 const containerManager = createContainerManager({
   profileSource: config.profileSource,
+  profileRegistry: config.profileRegistry,
+  profileStoreRoot: config.profileStoreRoot,
   profilesWork: config.profilesWork,
   profilesHostPath: config.profilesHostPath,
   dockerNetwork: config.dockerNetwork,

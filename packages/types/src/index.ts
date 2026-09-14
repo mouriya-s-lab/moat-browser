@@ -329,8 +329,11 @@ export type CommandResultData =
   | BooleanResult
   | BatchResult;
 
-// ─── ControllerError ───
+// ─── Profile errors ───
 
+export type ProfileUnavailableReason = "invalid_name" | "not_registered" | "source_unavailable";
+
+// ─── ControllerError ───
 export type ControllerError =
   | { readonly _tag: "SessionNotFound"; readonly sessionId: string }
   | { readonly _tag: "SessionExpired"; readonly sessionId: string; readonly reason: string }
@@ -339,6 +342,11 @@ export type ControllerError =
   | { readonly _tag: "CdpUnreachable"; readonly containerId: string }
   | { readonly _tag: "CdpDisconnected"; readonly containerId: string }
   | { readonly _tag: "ProfileCopyFailed"; readonly message: string }
+  | {
+      readonly _tag: "ProfileUnavailable";
+      readonly profile: string;
+      readonly reason: ProfileUnavailableReason;
+    }
   | { readonly _tag: "ElementNotFound"; readonly selector?: string }
   | { readonly _tag: "Timeout"; readonly operation: string }
   | { readonly _tag: "CommandFailed"; readonly message: string }
@@ -352,11 +360,15 @@ export type CommandFailureCause =
 
 export type CommandFailureCauseTag = CommandFailureCause["_tag"];
 
-export type WireErrorType = "target_not_found" | "command_failed";
+export type WireErrorType = "target_not_found" | "invalid_value" | "command_failed";
 
 export type WireFailure =
   | {
       readonly errorType: "target_not_found";
+      readonly cause?: never;
+    }
+  | {
+      readonly errorType: "invalid_value";
       readonly cause?: never;
     }
   | {
@@ -390,6 +402,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   CdpUnreachable: 81,
   CdpDisconnected: 81,
   ProfileCopyFailed: 82,
+  ProfileUnavailable: 2,
   ElementNotFound: 66,
   Timeout: 75,
   CommandFailed: 1,
