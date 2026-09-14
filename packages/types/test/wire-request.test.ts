@@ -194,8 +194,8 @@ describe("exhaustive", () => {
 });
 
 describe("ErrorCode", () => {
-  test("maps all 11 ControllerError tags", () => {
-    expect(Object.keys(ErrorCode)).toHaveLength(11);
+  test("maps all 12 ControllerError tags", () => {
+    expect(Object.keys(ErrorCode)).toHaveLength(12);
     expect(ErrorCode.SessionNotFound).toBe(77);
     expect(ErrorCode.SessionExpired).toBe(83);
     expect(ErrorCode.ContainerCreateFailed).toBe(80);
@@ -206,6 +206,7 @@ describe("ErrorCode", () => {
     expect(ErrorCode.Timeout).toBe(75);
     expect(ErrorCode.CommandFailed).toBe(1);
     expect(ErrorCode.ValidationFailed).toBe(2);
+    expect(ErrorCode.CapacityExceeded).toBe(84);
   });
 });
 

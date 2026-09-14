@@ -450,7 +450,9 @@ POST /containers/create
   "HostConfig": {
     "Binds": ["/data/profiles/agent-<id>:/data/profile"],
     "NetworkMode": "moat",
-    "ShmSize": 2147483648
+    "ShmSize": 2147483648,
+    "Memory": 402653184,
+    "MemorySwap": 402653184
   }
 }
 ```
@@ -465,6 +467,8 @@ POST /containers/<id>/start
 GET /containers/<id>/json
 → .NetworkSettings.Networks.moat.IPAddress
 ```
+
+每个 agent-chrome 的 cgroup 内存上限固定为 384 MiB，且 `MemorySwap` 与 `Memory` 相同，避免浏览器 session 在共享宿主上无限增长。该限制与共享准入总额 N=5 配套，不把稳态均值当作任意负载的安全证明。
 
 **停止 + 删除**：
 ```

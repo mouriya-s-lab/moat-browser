@@ -353,7 +353,16 @@ export type ControllerError =
   | { readonly _tag: "StaleReference"; readonly ref: string; readonly reason: RefStaleReason }
   | { readonly _tag: "Timeout"; readonly operation: string }
   | { readonly _tag: "CommandFailed"; readonly message: string }
-  | { readonly _tag: "ValidationFailed"; readonly message: string };
+  | { readonly _tag: "ValidationFailed"; readonly message: string }
+  | {
+      readonly _tag: "CapacityExceeded";
+      readonly owner: string;
+      readonly current: number;
+      readonly limit: number;
+      readonly ownerCurrent: number;
+      readonly ownerLimit: number;
+      readonly retryCondition: string;
+    };
 
 export type CommandFailureCause =
   | { readonly _tag: "container_creation" }
@@ -363,7 +372,7 @@ export type CommandFailureCause =
 
 export type CommandFailureCauseTag = CommandFailureCause["_tag"];
 
-export type WireErrorType = "target_not_found" | "invalid_value" | "command_failed";
+export type WireErrorType = "target_not_found" | "invalid_value" | "command_failed" | "capacity_exceeded";
 
 export type WireFailure =
   | {
@@ -377,6 +386,16 @@ export type WireFailure =
   | {
       readonly errorType: "command_failed";
       readonly cause: CommandFailureCauseTag;
+    }
+  | {
+      readonly errorType: "capacity_exceeded";
+      readonly cause?: never;
+      readonly owner: string;
+      readonly current: number;
+      readonly limit: number;
+      readonly ownerCurrent: number;
+      readonly ownerLimit: number;
+      readonly retryCondition: string;
     };
 
 // ─── SessionState ───
@@ -411,6 +430,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   Timeout: 75,
   CommandFailed: 1,
   ValidationFailed: 2,
+  CapacityExceeded: 84,
 };
 
 // ─── BrowserCommand ───

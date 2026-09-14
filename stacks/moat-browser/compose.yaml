@@ -55,6 +55,8 @@ services:
       PROFILES_HOST_PATH: /var/lib/moat-browser/profiles
       DOCKER_NETWORK: moat
       AGENT_CHROME_IMAGE: registry.237575.xyz/moat-browser/agent-chrome:${MOAT_BROWSER_VERSION}
+      SESSION_TOTAL_QUOTA: "5"
+      SESSION_QUOTA: "5"
     depends_on:
       - user-chrome
     networks:

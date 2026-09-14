@@ -153,6 +153,14 @@ fn sdk_error_json(error: &SdkError) -> serde_json::Value {
             payload["cause"] = serde_json::to_value(cause).unwrap_or_default();
         }
     }
+    if let Some(capacity) = error.capacity_details() {
+        payload["owner"] = json!(capacity.owner);
+        payload["current"] = json!(capacity.current);
+        payload["limit"] = json!(capacity.limit);
+        payload["ownerCurrent"] = json!(capacity.owner_current);
+        payload["ownerLimit"] = json!(capacity.owner_limit);
+        payload["retryCondition"] = json!(capacity.retry_condition);
+    }
     payload
 }
 

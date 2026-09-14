@@ -7,6 +7,7 @@ import type {
   ControllerError,
   ProfileUnavailableReason,
 } from "@moat-browser/types";
+import type { ExternalAllocation } from "./session-admission.js";
 
 const execFile = promisify(execFileCb);
 
@@ -185,11 +186,11 @@ function isWithin(root: string, candidate: string): boolean {
 
 
 // ─── Labels ───
-
 export const LABEL_ROLE = "moat-browser.role";
 export const LABEL_ROLE_AGENT_CHROME = "agent-chrome";
 export const LABEL_SESSION_ID = "moat-browser.session-id";
 export const LABEL_OWNER = "moat-browser.owner";
+export const AGENT_CHROME_MEMORY_BYTES = 384 * 1024 * 1024;
 
 function ownerPathToken(owner: string): string {
   return Buffer.from(owner, "utf8").toString("base64url");
@@ -295,6 +296,8 @@ export function buildCreateBody(
       Binds: [`${cfg.profilesHostPath}/agent-${ownerPathToken(cfg.owner)}-${sessionId}:/data/profile`],
       NetworkMode: cfg.dockerNetwork,
       ShmSize: 2147483648,
+      Memory: AGENT_CHROME_MEMORY_BYTES,
+      MemorySwap: AGENT_CHROME_MEMORY_BYTES,
     },
   };
 }
@@ -337,13 +340,13 @@ export type ContainerManager = {
   destroy(sessionId: string): Promise<Result<void, ControllerError>>;
   inspect(containerId: string): Promise<Result<ContainerInfo, ControllerError>>;
   reap(): Promise<Result<{ readonly reaped: number }, ControllerError>>;
+  listAllocations(): Promise<Result<ReadonlyArray<ExternalAllocation>, ControllerError>>;
 };
 
 export function createContainerManager(config: ContainerManagerConfig): ContainerManager {
   const dockerFetch = config.dockerFetch ?? defaultDockerFetch;
   const containers = new Map<string, string>(); // sessionId → containerId
-
-  return { create, destroy, inspect, reap };
+  return { create, destroy, inspect, reap, listAllocations };
 
   async function create(
     sessionId: string,
@@ -485,6 +488,12 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       const found = await findContainerIdBySession(sessionId);
       if (found._tag === "Err") return found;
       if (found.value === undefined) {
+        try {
+          await execFile("rm", ["-rf", profileDestination(config.profilesWork, config.owner, sessionId)]);
+        } catch {
+          // A missing container is still reported distinctly; the next
+          // cleanup/retry can remove any profile copy that remains.
+        }
         return Err({ _tag: "SessionNotFound", sessionId });
       }
       containerId = found.value;
@@ -554,6 +563,18 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     }
     return Ok({ reaped });
   }
+
+  async function listAllocations(): Promise<Result<ReadonlyArray<ExternalAllocation>, ControllerError>> {
+    const found = await listAllAgentChromeContainers();
+    if (found._tag === "Err") return found;
+    return Ok(
+      found.value.map((container) => ({
+        containerId: container.id,
+        sessionId: container.sessionId,
+        owner: container.owner,
+      })),
+    );
+  }
   async function findContainerIdBySession(sessionId: string): Promise<Result<string | undefined, ControllerError>> {
     const filters = JSON.stringify({
       label: [
@@ -604,6 +625,42 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
         readonly Labels?: Readonly<Record<string, string>>;
       }>;
       return Ok(body.map((c) => ({ id: c.Id, sessionId: c.Labels?.[LABEL_SESSION_ID] })));
+    } catch (err) {
+      return Err({
+        _tag: "ContainerCreateFailed",
+        message: `Docker list error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  async function listAllAgentChromeContainers(): Promise<
+    Result<
+      ReadonlyArray<{
+        readonly id: string;
+        readonly sessionId: string | undefined;
+        readonly owner: string | undefined;
+      }>,
+      ControllerError
+    >
+  > {
+    const filters = JSON.stringify({ label: [`${LABEL_ROLE}=${LABEL_ROLE_AGENT_CHROME}`] });
+    try {
+      const res = await dockerFetch(`/containers/json?all=true&filters=${encodeURIComponent(filters)}`);
+      if (!res.ok) {
+        const text = await res.text();
+        return Err({ _tag: "ContainerCreateFailed", message: `Docker list failed (${res.status}): ${text}` });
+      }
+      const body = (await res.json()) as ReadonlyArray<{
+        readonly Id: string;
+        readonly Labels?: Readonly<Record<string, string>>;
+      }>;
+      return Ok(
+        body.map((container) => ({
+          id: container.Id,
+          sessionId: container.Labels?.[LABEL_SESSION_ID],
+          owner: container.Labels?.[LABEL_OWNER],
+        })),
+      );
     } catch (err) {
       return Err({
         _tag: "ContainerCreateFailed",

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::wire::CommandFailureCause;
+use crate::wire::{CapacityDetails, CommandFailureCause};
 
 #[derive(Debug)]
 pub enum SdkError {
@@ -13,6 +13,7 @@ pub enum SdkError {
         code: u32,
         error_type: Option<String>,
         cause: Option<CommandFailureCause>,
+        capacity: Option<CapacityDetails>,
     },
     CommandFailed {
         error: String,
@@ -24,6 +25,7 @@ pub enum SdkError {
         code: u32,
         error_type: Option<String>,
         cause: Option<CommandFailureCause>,
+        capacity: Option<CapacityDetails>,
     },
     SessionFileError(String),
     ConfigError(String),
@@ -41,6 +43,15 @@ impl SdkError {
             Self::SessionAlreadyActive { .. }
             | Self::SessionFileError(_)
             | Self::ConfigError(_) => Some(CommandFailureCause::Transport),
+        }
+    }
+
+    pub fn capacity_details(&self) -> Option<&CapacityDetails> {
+        match self {
+            Self::RegisterFailed { capacity, .. } | Self::DeregisterFailed { capacity, .. } => {
+                capacity.as_ref()
+            }
+            _ => None,
         }
     }
 }

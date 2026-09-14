@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use wire::{CommandFailureCause, Response, WireRequest, WireResponse};
+use wire::{CapacityDetails, CommandFailureCause, Response, WireRequest, WireResponse};
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -38,6 +38,12 @@ pub fn local_command(request: &Value) -> Option<Result<Response, SdkError>> {
         error: None,
         error_type: None,
         cause: None,
+        owner: None,
+        current: None,
+        limit: None,
+        owner_current: None,
+        owner_limit: None,
+        retry_condition: None,
         warning: None,
     }))
 }
@@ -336,14 +342,53 @@ fn validate_wire_failure(
         (Some("command_failed"), None) => {
             Err(protocol_error("command_failed response missing cause"))
         }
-        (
-            Some("target_not_found" | "invalid_value" | "missing_arguments" | "unsupported_in_moat"),
-            None,
-        ) => Ok(None),
-        (Some(error_type), _) => Err(protocol_error(format!(
-            "invalid wire failure shape for errorType={error_type}"
+        (Some(_), None) => Ok(None),
+        (Some(error_type), Some(_)) => Err(protocol_error(format!(
+            "wire failure cause is only valid for errorType=command_failed (got {error_type})"
         ))),
-        (None, _) => Err(protocol_error("wire failure missing errorType")),
+        (None, Some(_)) => Err(protocol_error("wire failure has cause but missing errorType")),
+        (None, None) => Err(protocol_error("wire failure missing errorType")),
+    }
+}
+
+fn parse_capacity_details(
+    error_type: Option<&str>,
+    owner: Option<String>,
+    current: Option<u32>,
+    limit: Option<u32>,
+    owner_current: Option<u32>,
+    owner_limit: Option<u32>,
+    retry_condition: Option<String>,
+) -> Result<Option<CapacityDetails>, SdkError> {
+    if error_type != Some("capacity_exceeded") {
+        return Ok(None);
+    }
+    match (
+        owner,
+        current,
+        limit,
+        owner_current,
+        owner_limit,
+        retry_condition,
+    ) {
+        (
+            Some(owner),
+            Some(current),
+            Some(limit),
+            Some(owner_current),
+            Some(owner_limit),
+            Some(retry_condition),
+        ) => Ok(Some(CapacityDetails {
+            owner,
+            current,
+            limit,
+            owner_current,
+            owner_limit,
+            retry_condition,
+        })),
+        _ => Err(protocol_error(
+            "capacity_exceeded response missing quota details",
+        )),
     }
 }
 
@@ -385,14 +430,30 @@ impl MoatClient {
                 error_type,
                 cause,
                 code,
+                owner,
+                current,
+                limit,
+                owner_current,
+                owner_limit,
+                retry_condition,
                 ..
             } => {
                 let cause = validate_wire_failure(error_type.as_deref(), cause)?;
+                let capacity = parse_capacity_details(
+                    error_type.as_deref(),
+                    owner,
+                    current,
+                    limit,
+                    owner_current,
+                    owner_limit,
+                    retry_condition,
+                )?;
                 Err(SdkError::RegisterFailed {
                     error: error.unwrap_or_default(),
                     code: code.unwrap_or(1),
                     error_type,
                     cause,
+                    capacity,
                 })
             }
             _ => Err(SdkError::RegisterFailed {
@@ -400,6 +461,7 @@ impl MoatClient {
                 code: 1,
                 error_type: Some("command_failed".into()),
                 cause: Some(CommandFailureCause::Transport),
+                capacity: None,
             }),
         }
     }
@@ -432,6 +494,12 @@ impl MoatClient {
                 error: None,
                 error_type: None,
                 cause: None,
+                owner: None,
+                current: None,
+                limit: None,
+                owner_current: None,
+                owner_limit: None,
+                retry_condition: None,
                 warning: None,
             });
         }
@@ -473,6 +541,12 @@ impl MoatClient {
                     error: None,
                     error_type: None,
                     cause: None,
+                    owner: None,
+                    current: None,
+                    limit: None,
+                    owner_current: None,
+                    owner_limit: None,
+                    retry_condition: None,
                     warning: None,
                 })
             }
@@ -481,6 +555,12 @@ impl MoatClient {
                 error,
                 error_type,
                 cause,
+                owner,
+                current,
+                limit,
+                owner_current,
+                owner_limit,
+                retry_condition,
                 ..
             } => {
                 let cause = validate_wire_failure(error_type.as_deref(), cause)?;
@@ -490,6 +570,12 @@ impl MoatClient {
                     error,
                     error_type,
                     cause,
+                    owner,
+                    current,
+                    limit,
+                    owner_current,
+                    owner_limit,
+                    retry_condition,
                     warning: None,
                 })
             }
@@ -499,6 +585,12 @@ impl MoatClient {
                 error: Some(error),
                 error_type: Some("command_failed".into()),
                 cause: Some(CommandFailureCause::Transport),
+                owner: None,
+                current: None,
+                limit: None,
+                owner_current: None,
+                owner_limit: None,
+                retry_condition: None,
                 warning: None,
             }),
             _ => Err(protocol_error("unexpected response")),
@@ -534,14 +626,30 @@ impl MoatClient {
                 error_type,
                 cause,
                 code,
+                owner,
+                current,
+                limit,
+                owner_current,
+                owner_limit,
+                retry_condition,
                 ..
             } => {
                 let cause = validate_wire_failure(error_type.as_deref(), cause)?;
+                let capacity = parse_capacity_details(
+                    error_type.as_deref(),
+                    owner,
+                    current,
+                    limit,
+                    owner_current,
+                    owner_limit,
+                    retry_condition,
+                )?;
                 Err(SdkError::DeregisterFailed {
                     error: error.unwrap_or_else(|| "Deregister failed".into()),
                     code: code.unwrap_or(1),
                     error_type,
                     cause,
+                    capacity,
                 })
             }
             WireResponse::Error { error, code } => Err(SdkError::DeregisterFailed {
@@ -549,12 +657,14 @@ impl MoatClient {
                 code,
                 error_type: Some("command_failed".into()),
                 cause: Some(CommandFailureCause::Transport),
+                capacity: None,
             }),
             _ => Err(SdkError::DeregisterFailed {
                 error: "unexpected response".into(),
                 code: 1,
                 error_type: Some("command_failed".into()),
                 cause: Some(CommandFailureCause::Transport),
+                capacity: None,
             }),
         }
     }
@@ -789,6 +899,12 @@ fn success(data: Value) -> Response {
         error: None,
         error_type: None,
         cause: None,
+        owner: None,
+        current: None,
+        limit: None,
+        owner_current: None,
+        owner_limit: None,
+        retry_condition: None,
         warning: None,
     }
 }
