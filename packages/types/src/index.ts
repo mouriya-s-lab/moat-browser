@@ -372,7 +372,7 @@ export type CommandFailureCause =
 
 export type CommandFailureCauseTag = CommandFailureCause["_tag"];
 
-export type WireErrorType = "target_not_found" | "invalid_value" | "command_failed" | "capacity_exceeded";
+export type WireErrorType = "target_not_found" | "invalid_value" | "command_failed" | "capacity_exceeded" | "timeout";
 
 export type WireFailure =
   | {
@@ -381,6 +381,10 @@ export type WireFailure =
     }
   | {
       readonly errorType: "invalid_value";
+      readonly cause?: never;
+    }
+  | {
+      readonly errorType: "timeout";
       readonly cause?: never;
     }
   | {

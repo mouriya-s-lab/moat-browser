@@ -3,6 +3,7 @@ import type { Browser } from "patchright";
 import { randomBytes } from "node:crypto";
 import {
   type BrowserCommand,
+  type CommandResultData,
   type ContentBoundary,
   type ControllerError,
   type WireFailure,
@@ -27,12 +28,110 @@ import {
 } from "./session-admission.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { RefStore } from "./ref-store.js";
-import { clearSessionRuntimeState, connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js";
+import {
+  clearSessionRuntimeState,
+  connectCDP,
+  executeCommand,
+  type CdpConnection,
+  type CommandExecutionOptions,
+} from "./cdp-bridge.js";
 import type { ControllerConfig } from "./index.js";
 
 // ─── errorToWireResponse (§11.2) ───
 
 type CleanupStage = "command" | "cleanup";
+
+const DEFAULT_COMMAND_TIMEOUT_MS = 25_000;
+const REGISTER_TIMEOUT_MS = 45_000;
+const EXPLICIT_TIMEOUT_MIN_MS = 1;
+const EXPLICIT_TIMEOUT_MAX_MS = 120_000;
+
+function timeoutFailure(
+  phase: string,
+  budget: number,
+  sessionId?: string,
+): ControllerError {
+  return {
+    _tag: "Timeout",
+    operation: `${phase} exceeded ${budget}ms${sessionId === undefined ? "" : ` session=${sessionId}`} (result may include partial side effects)`,
+  };
+}
+
+function configuredCommandTimeout(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_COMMAND_TIMEOUT_MS;
+}
+
+function commandRequestedTimeout(command: BrowserCommand): number | undefined {
+  if (
+    command.action === "wait"
+    || command.action === "waitforurl"
+    || command.action === "waitforloadstate"
+    || command.action === "waitforfunction"
+    || command.action === "waitfordownload"
+  ) {
+    return command.timeout;
+  }
+  return undefined;
+}
+
+function commandBudget(
+  command: BrowserCommand,
+  configuredTimeout: number,
+): ContainerResult<number, ControllerError> {
+  const requested = commandRequestedTimeout(command);
+  if (requested === undefined) {
+    return { _tag: "Ok", value: configuredCommandTimeout(configuredTimeout) };
+  }
+  if (
+    !Number.isFinite(requested)
+    || !Number.isInteger(requested)
+    || requested < EXPLICIT_TIMEOUT_MIN_MS
+    || requested > EXPLICIT_TIMEOUT_MAX_MS
+  ) {
+    return {
+      _tag: "Err",
+      error: {
+        _tag: "ValidationFailed",
+        message: `Timeout must be an integer between ${EXPLICIT_TIMEOUT_MIN_MS} and ${EXPLICIT_TIMEOUT_MAX_MS}ms`,
+      },
+    };
+  }
+  return { _tag: "Ok", value: requested };
+}
+
+function withDeadline<T>(
+  start: () => Promise<T>,
+  deadline: number,
+  onTimeout: () => T,
+): Promise<T> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return Promise.resolve(onTimeout());
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (result: T): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(onTimeout()), remaining);
+    let operation: Promise<T>;
+    try {
+      operation = start();
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+      return;
+    }
+    operation.then(finish, (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
 
 function formatError(error: ControllerError): string {
   switch (error._tag) {
@@ -87,7 +186,10 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
     case "StaleReference":
       return { errorType: "target_not_found" };
     case "ProfileUnavailable":
+    case "ValidationFailed":
       return { errorType: "invalid_value" };
+    case "Timeout":
+      return { errorType: "timeout" };
     case "SessionNotReady":
       return { errorType: "command_failed", cause: "container_creation" };
     case "ContainerCreateFailed":
@@ -98,10 +200,7 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
       };
     case "CdpUnreachable":
     case "CdpDisconnected":
-
-    case "Timeout":
     case "CommandFailed":
-    case "ValidationFailed":
       return { errorType: "command_failed", cause: stage === "cleanup" ? "cleanup" : "cdp" };
     case "CapacityExceeded":
       return {
@@ -133,6 +232,16 @@ function errorToWireResponse(
     error: formatError(error),
     code: ErrorCode[error._tag],
     ...wireFailure(error, stage),
+  };
+}
+
+function errorToRegisterResponse(error: ControllerError): WireResponse {
+  return {
+    type: "register_result",
+    success: false,
+    error: formatError(error),
+    code: ErrorCode[error._tag],
+    ...wireFailure(error),
   };
 }
 
@@ -350,7 +459,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
         switch (parsed.type) {
           case "register": {
-            const response = await handleRegister(parsed.profile);
+            const response = await handleRegister(parsed.profile, Date.now() + REGISTER_TIMEOUT_MS);
             ws.send(JSON.stringify(response));
             break;
           }
@@ -362,7 +471,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
           }
 
           case "deregister": {
-            const response = await handleDeregister(parsed.sessionId);
+            const deadline = Date.now() + configuredCommandTimeout(config.commandTimeout);
+            const response = await handleDeregister(parsed.sessionId, deadline);
             ws.send(JSON.stringify(response));
             break;
           }
@@ -418,6 +528,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
     return undefined;
   }
+
   async function destroyForRollback(
     sessionId: string,
   ): Promise<ContainerResult<void, ControllerError>> {
@@ -434,82 +545,184 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
   }
 
+  async function cleanupLateRegistration(
+    sessionId: string,
+    containerId: string,
+    cdp?: CdpConnection,
+  ): Promise<void> {
+    if (cdp) {
+      try {
+        await cdp.browser.close();
+      } catch (error) {
+        console.warn(
+          `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=CDP close failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    await updateAdmissionPhase(sessionId, "cleanup");
+    const destroyResult = await destroyForRollback(sessionId);
+    const releaseError = await releaseAfterCleanup(sessionId, destroyResult);
+    if (destroyResult._tag === "Ok" && !releaseError) {
+      sessionContainers.delete(sessionId);
+    }
+    if (destroyResult._tag === "Err") {
+      console.warn(
+        `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=${formatError(
+          destroyResult.error,
+        )}`,
+      );
+    }
+    if (releaseError) {
+      console.warn(
+        `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=${formatError(
+          releaseError,
+        )}`,
+      );
+    }
+    registry.deregister(sessionId, false);
+  }
 
+  function registerTimeoutResponse(phase: string, sessionId?: string): WireResponse {
+    const error = timeoutFailure(`register phase=${phase}`, REGISTER_TIMEOUT_MS, sessionId);
+    console.warn(
+      `[timeout] phase=register/${phase} budget=${REGISTER_TIMEOUT_MS}ms session=${sessionId ?? "pending"} result=unknown`,
+    );
+    return errorToRegisterResponse(error);
+  }
   async function handleRegister(
     profile?: string,
+    deadline = Date.now() + REGISTER_TIMEOUT_MS,
   ): Promise<WireResponse> {
-    // Resolve and preflight the configured source before allocating a session.
-    const profileResult = await resolveProfilePath(profile, config);
+    const profileTimeout = timeoutFailure("register phase=profile", REGISTER_TIMEOUT_MS);
+    const profileResult = await withDeadline(
+      () => resolveProfilePath(profile, config),
+      deadline,
+      () => ({ _tag: "Err", error: profileTimeout }) as ContainerResult<string, ControllerError>,
+    );
     if (profileResult._tag === "Err") {
-      return {
-        type: "register_result",
-        success: false,
-        error: formatError(profileResult.error),
-        code: ErrorCode[profileResult.error._tag],
-        ...wireFailure(profileResult.error),
-      };
+      return profileResult.error === profileTimeout
+        ? registerTimeoutResponse("profile")
+        : errorToRegisterResponse(profileResult.error);
     }
     const profilePath = profileResult.value;
 
+    if (deadline <= Date.now()) return registerTimeoutResponse("admission");
     // Reserve before touching Docker. The reservation is shared across
     // controller processes through the admission store and remains occupied
     // until cleanup reaches a terminal state.
-    const admissionResult = await admission.reserve();
+    const admissionPromise = admission.reserve();
+    const admissionTimeout = timeoutFailure("register phase=admission", REGISTER_TIMEOUT_MS);
+    const admissionResult = await withDeadline(
+      () => admissionPromise,
+      deadline,
+      () => ({ _tag: "Err", error: admissionTimeout }) as ContainerResult<
+        { readonly sessionId: string },
+        ControllerError
+      >,
+    );
     if (admissionResult._tag === "Err") {
+      if (admissionResult.error === admissionTimeout) {
+        void admissionPromise.then(
+          (lateResult) => {
+            if (lateResult._tag !== "Ok") return;
+            void admission.release(lateResult.value.sessionId).then((releaseResult) => {
+              if (releaseResult._tag === "Err") {
+                console.warn(
+                  `[admission-release-failed] owner=${config.controllerOwner} session=${lateResult.value.sessionId} error=${formatError(
+                    releaseResult.error,
+                  )}`,
+                );
+              }
+            }).catch((error) => {
+              console.warn(
+                `[admission-release-failed] owner=${config.controllerOwner} session=${lateResult.value.sessionId} error=${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            });
+          },
+          (error) => console.warn(
+            `[admission-release-failed] owner=${config.controllerOwner} session=pending error=${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+        );
+        return registerTimeoutResponse("admission");
+      }
       if (admissionResult.error._tag === "CapacityExceeded") {
         console.warn(
           `[capacity-rejected] owner=${admissionResult.error.owner} current=${admissionResult.error.current}/${admissionResult.error.limit} ownerCurrent=${admissionResult.error.ownerCurrent}/${admissionResult.error.ownerLimit}`,
         );
       }
-      return {
-        type: "register_result",
-        success: false,
-        error: formatError(admissionResult.error),
-        code: ErrorCode[admissionResult.error._tag],
-        ...wireFailure(admissionResult.error),
-      };
+      return errorToRegisterResponse(admissionResult.error);
     }
     const sessionId = admissionResult.value.sessionId;
 
     const regResult = registry.register(profile, sessionId);
     if (regResult._tag === "Err") {
       await admission.release(sessionId);
-      return {
-        type: "register_result",
-        success: false,
-        error: formatError(regResult.error),
-        code: ErrorCode[regResult.error._tag],
-        ...wireFailure(regResult.error),
-      };
+      return errorToRegisterResponse(regResult.error);
     }
 
     // ContainerManager.create() — transition through states
     registry.transition(sessionId, { _tag: "CreatingContainer", profilePath });
     await updateAdmissionPhase(sessionId, "creating");
 
-    const containerResult = await containerManager.create(sessionId, profilePath);
+    const containerPromise = containerManager.create(sessionId, profilePath);
+    const containerTimeout = timeoutFailure("register phase=container_creation", REGISTER_TIMEOUT_MS, sessionId);
+    const containerResult = await withDeadline(
+      () => containerPromise,
+      deadline,
+      () => ({ _tag: "Err", error: containerTimeout }) as ContainerResult<
+        { readonly containerId: string; readonly ip: string; readonly cdpPort: number },
+        ControllerError
+      >,
+    );
     if (containerResult._tag === "Err") {
+      if (containerResult.error === containerTimeout) {
+        void updateAdmissionPhase(sessionId, "cleanup");
+        registry.deregister(sessionId, false);
+        void containerPromise.then(
+          (lateResult) => {
+            if (lateResult._tag === "Ok") {
+              void cleanupLateRegistration(sessionId, lateResult.value.containerId);
+            }
+          },
+          (error) => console.warn(
+            `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} operation=register-timeout trigger=register outcome=failed error=${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+        );
+        return registerTimeoutResponse("container_creation", sessionId);
+      }
       const destroyResult = await destroyForRollback(sessionId);
       await releaseAfterCleanup(sessionId, destroyResult);
       registry.deregister(sessionId, false);
-      return {
-        type: "register_result",
-        success: false,
-        error: formatError(containerResult.error),
-        code: ErrorCode[containerResult.error._tag],
-        ...wireFailure(containerResult.error),
-      };
+      return errorToRegisterResponse(containerResult.error);
     }
 
     const { containerId, ip } = containerResult.value;
     sessionContainers.set(sessionId, containerId);
+    if (deadline <= Date.now()) {
+      registry.deregister(sessionId, false);
+      void cleanupLateRegistration(sessionId, containerId);
+      return registerTimeoutResponse("container_creation", sessionId);
+    }
     registry.transition(sessionId, { _tag: "ConnectingCDP", containerId });
     await updateAdmissionPhase(sessionId, "connecting");
 
     // Step 3: CdpBridge.connect()
-    let cdp: CdpConnection;
+    const cdpPromise = connectCdp(`http://${ip}:9222`);
+    let cdp: CdpConnection | null;
     try {
-      cdp = await connectCdp(`http://${ip}:9222`);
+      cdp = await withDeadline(
+        () => cdpPromise,
+        deadline,
+        () => null,
+      );
     } catch (e) {
       // Rollback: destroy container + deregister without invoking cleanup hooks.
       const destroyResult = await destroyForRollback(sessionId);
@@ -533,6 +746,23 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         code: ErrorCode.CdpUnreachable,
         ...wireFailure(cdpError),
       };
+    }
+    if (cdp === null) {
+      registry.deregister(sessionId, false);
+      void cdpPromise.then(
+        (lateCdp) => void cleanupLateRegistration(sessionId, containerId, lateCdp),
+        (error) => console.warn(
+          `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      );
+      return registerTimeoutResponse("cdp", sessionId);
+    }
+    if (deadline <= Date.now()) {
+      registry.deregister(sessionId, false);
+      void cleanupLateRegistration(sessionId, containerId, cdp);
+      return registerTimeoutResponse("cdp", sessionId);
     }
 
     // Step 4: Transition to Active
@@ -563,9 +793,16 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
   ): Promise<WireResponse> {
     logSessionActivity({ _tag: "Command", sessionId, action: command.action });
 
+    const budgetResult = commandBudget(command, config.commandTimeout);
+    if (budgetResult._tag === "Err") {
+      return errorToWireResponse(sessionId, budgetResult.error);
+    }
+    const budget = budgetResult.value;
+    const deadline = Date.now() + budget;
+
     // close → deregister
     if (command.action === "close") {
-      return handleDeregister(sessionId);
+      return handleDeregister(sessionId, deadline, budget);
     }
 
     // Verify session is active
@@ -584,8 +821,19 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
 
     registry.touchActivity(sessionId);
-
-    const result = await runCommand(cdp.context, command, refStore, sessionId);
+    const options: CommandExecutionOptions = { deadline, budget };
+    const result = await withDeadline(
+      () => runCommand(cdp.context, command, refStore, sessionId, options),
+      deadline,
+      () => {
+        const error = timeoutFailure(`command phase=cdp action=${command.action}`, budget, sessionId);
+        console.warn(
+          `[timeout] phase=command/cdp action=${command.action} budget=${budget}ms session=${sessionId} result=unknown`,
+        );
+        void cdp.browser.close().catch(() => {});
+        return { _tag: "Err", error } as ContainerResult<CommandResultData, ControllerError>;
+      },
+    );
     if (result._tag === "Err") {
       return errorToWireResponse(sessionId, result.error);
     }
@@ -626,6 +874,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
   async function handleDeregister(
     sessionId: string,
+    deadline = Date.now() + configuredCommandTimeout(config.commandTimeout),
+    budget = configuredCommandTimeout(config.commandTimeout),
   ): Promise<WireResponse> {
     const state = registry.get(sessionId);
     if (!state) {
@@ -641,9 +891,19 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       return deregisterErrorResponse(sessionId, deregResult.error);
     }
 
-    const cleanupResult = await cleanup;
+    const cleanupTimeout = timeoutFailure("deregister phase=cleanup", budget, sessionId);
+    const cleanupResult = await withDeadline(
+      () => cleanup,
+      deadline,
+      () => ({ _tag: "Err", error: cleanupTimeout }) as ContainerResult<void, ControllerError>,
+    );
     logSessionActivity({ _tag: "Deregister", sessionId });
     if (cleanupResult._tag === "Err") {
+      if (cleanupResult.error === cleanupTimeout) {
+        console.warn(
+          `[timeout] phase=deregister/cleanup budget=${budget}ms session=${sessionId} result=unknown`,
+        );
+      }
       return deregisterErrorResponse(sessionId, cleanupResult.error, "cleanup");
     }
     return { type: "deregister_result", sessionId, success: true };

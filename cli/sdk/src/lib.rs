@@ -7,13 +7,72 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use error::SdkError;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use std::future::Future;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::{timeout_at, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use wire::{CapacityDetails, CommandFailureCause, Response, WireRequest, WireResponse};
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+const DEFAULT_SERVER_COMMAND_BUDGET_MS: u64 = 25_000;
+const REGISTER_SERVER_BUDGET_MS: u64 = 45_000;
+const CLIENT_GRACE_MS: u64 = 5_000;
+const MAX_EXPLICIT_COMMAND_BUDGET_MS: u64 = 120_000;
+
+#[derive(Clone, Copy)]
+struct ClientDeadline {
+    at: Instant,
+    server_budget_ms: u64,
+}
+
+impl ClientDeadline {
+    fn new(server_budget_ms: u64) -> Self {
+        let total_ms = server_budget_ms.saturating_add(CLIENT_GRACE_MS);
+        Self {
+            at: Instant::now() + Duration::from_millis(total_ms),
+            server_budget_ms,
+        }
+    }
+}
+
+fn client_timeout(deadline: ClientDeadline, operation: &'static str) -> SdkError {
+    SdkError::Timeout {
+        operation: operation.into(),
+        budget_ms: Some(deadline.server_budget_ms),
+    }
+}
+
+async fn with_client_deadline<T, F>(
+    deadline: ClientDeadline,
+    operation: &'static str,
+    future: F,
+) -> Result<T, SdkError>
+where
+    F: Future<Output = Result<T, SdkError>>,
+{
+    match timeout_at(deadline.at, future).await {
+        Ok(result) => result,
+        Err(_) => Err(client_timeout(deadline, operation)),
+    }
+}
+
+fn command_server_budget(request: &Value) -> u64 {
+    let action = request.get("action").and_then(Value::as_str);
+    let is_wait = matches!(
+        action,
+        Some("wait" | "waitforurl" | "waitforloadstate" | "waitforfunction" | "waitfordownload")
+    );
+    if !is_wait {
+        return DEFAULT_SERVER_COMMAND_BUDGET_MS;
+    }
+    request
+        .get("timeout")
+        .and_then(Value::as_u64)
+        .filter(|value| (1..=MAX_EXPLICIT_COMMAND_BUDGET_MS).contains(value))
+        .unwrap_or(DEFAULT_SERVER_COMMAND_BUDGET_MS)
+}
 
 pub fn local_command(request: &Value) -> Option<Result<Response, SdkError>> {
     let action = request.get("action").and_then(Value::as_str)?;
@@ -399,18 +458,22 @@ impl MoatClient {
         if let Some(session_id) = session::read_session_id()? {
             return Err(SdkError::SessionAlreadyActive { session_id });
         }
-        let (mut ws, _) = connect_async(url)
-            .await
-            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+        let deadline = ClientDeadline::new(REGISTER_SERVER_BUDGET_MS);
+        let profile = profile.map(String::from);
+        let resp = with_client_deadline(deadline, "register", async {
+            let (mut ws, _) = connect_async(url)
+                .await
+                .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
 
-        let req = WireRequest::Register {
-            profile: profile.map(String::from),
-        };
-        send_json(&mut ws, &req).await?;
-        let resp = recv_json(&mut ws).await?;
+            let req = WireRequest::Register { profile };
+            send_json(&mut ws, &req).await?;
+            let resp = recv_json(&mut ws, deadline).await?;
 
-        // Close ws — session lives server-side, not tied to this connection
-        let _ = ws.close(None).await;
+            // Close ws — session lives server-side, not tied to this connection.
+            let _ = ws.close(None).await;
+            Ok(resp)
+        })
+        .await?;
 
         match resp {
             WireResponse::RegisterResult {
@@ -482,7 +545,21 @@ impl MoatClient {
         self.command_remote(request).await
     }
 
-    async fn command_remote(&self, mut request: Value) -> Result<Response, SdkError> {
+    async fn command_remote(&self, request: Value) -> Result<Response, SdkError> {
+        let deadline = ClientDeadline::new(command_server_budget(&request));
+        with_client_deadline(
+            deadline,
+            "command",
+            self.command_remote_inner(request, deadline),
+        )
+        .await
+    }
+
+    async fn command_remote_inner(
+        &self,
+        mut request: Value,
+        deadline: ClientDeadline,
+    ) -> Result<Response, SdkError> {
         let (screenshot_output, binary_output) = prepare_command(&mut request)?;
 
         // close → deregister
@@ -513,7 +590,7 @@ impl MoatClient {
             command: request,
         };
         send_json(&mut ws, &wire_req).await?;
-        let resp = recv_json(&mut ws).await?;
+        let resp = recv_json(&mut ws, deadline).await?;
 
         let _ = ws.close(None).await;
 
@@ -599,6 +676,16 @@ impl MoatClient {
 
     /// Destroy session — opens ws, sends Deregister, closes ws.
     pub async fn destroy(&self) -> Result<(), SdkError> {
+        let deadline = ClientDeadline::new(DEFAULT_SERVER_COMMAND_BUDGET_MS);
+        with_client_deadline(
+            deadline,
+            "deregister",
+            self.destroy_inner(deadline),
+        )
+        .await
+    }
+
+    async fn destroy_inner(&self, deadline: ClientDeadline) -> Result<(), SdkError> {
         let (mut ws, _) = connect_async(&self.url)
             .await
             .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
@@ -607,7 +694,7 @@ impl MoatClient {
             session_id: self.session_id.clone(),
         };
         send_json(&mut ws, &req).await?;
-        let resp = recv_json(&mut ws).await?;
+        let resp = recv_json(&mut ws, deadline).await?;
 
         let _ = ws.close(None).await;
 
@@ -913,8 +1000,15 @@ fn require_success(response: Response) -> Result<Value, SdkError> {
     if response.success {
         Ok(response.data.unwrap_or(Value::Null))
     } else {
+        let error = response.error.unwrap_or_else(|| "command failed".into());
+        if response.error_type.as_deref() == Some("timeout") {
+            return Err(SdkError::Timeout {
+                operation: error,
+                budget_ms: None,
+            });
+        }
         Err(SdkError::CommandFailed {
-            error: response.error.unwrap_or_else(|| "command failed".into()),
+            error,
             code: 1,
             cause: response.cause.unwrap_or(CommandFailureCause::Cdp),
         })
@@ -1662,9 +1756,15 @@ mod tests {
     }
 }
 
-async fn recv_json(ws: &mut WsStream) -> Result<WireResponse, SdkError> {
+async fn recv_json(
+    ws: &mut WsStream,
+    deadline: ClientDeadline,
+) -> Result<WireResponse, SdkError> {
     loop {
-        match ws.next().await {
+        let message = timeout_at(deadline.at, ws.next())
+            .await
+            .map_err(|_| client_timeout(deadline, "receive response"))?;
+        match message {
             Some(Ok(Message::Text(text))) => {
                 return serde_json::from_str(&text)
                     .map_err(|e| SdkError::WebSocket(format!("parse: {} | raw: {}", e, text)));

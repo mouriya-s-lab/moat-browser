@@ -8,6 +8,10 @@ pub enum SdkError {
     SessionAlreadyActive { session_id: String },
     ConnectionFailed(String),
     WebSocket(String),
+    Timeout {
+        operation: String,
+        budget_ms: Option<u64>,
+    },
     RegisterFailed {
         error: String,
         code: u32,
@@ -39,7 +43,7 @@ impl SdkError {
             }
             Self::RegisterFailed { cause, .. } | Self::DeregisterFailed { cause, .. } => *cause,
             Self::CommandFailed { cause, .. } => Some(*cause),
-            Self::NoSession => None,
+            Self::NoSession | Self::Timeout { .. } => None,
             Self::SessionAlreadyActive { .. }
             | Self::SessionFileError(_)
             | Self::ConfigError(_) => Some(CommandFailureCause::Transport),
@@ -68,6 +72,14 @@ impl fmt::Display for SdkError {
             }
             Self::ConnectionFailed(msg) => write!(f, "Connection failed: {}", msg),
             Self::WebSocket(msg) => write!(f, "WebSocket error: {}", msg),
+            Self::Timeout {
+                operation,
+                budget_ms: Some(budget_ms),
+            } => write!(f, "Timeout after {budget_ms}ms: {operation}"),
+            Self::Timeout {
+                operation,
+                budget_ms: None,
+            } => write!(f, "Timeout: {operation}"),
             Self::RegisterFailed { error, code, .. } => {
                 write!(f, "Register failed (code {}): {}", code, error)
             }

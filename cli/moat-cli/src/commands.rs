@@ -70,6 +70,56 @@ pub fn gen_id() -> String {
             % 1000000
     )
 }
+const WAIT_TIMEOUT_MIN_MS: u64 = 1;
+const WAIT_TIMEOUT_MAX_MS: u64 = 120_000;
+
+fn parse_wait_timeout(rest: &[&str]) -> Result<Option<u64>, ParseError> {
+    let mut timeout = None;
+    let mut index = 0;
+    while index < rest.len() {
+        if rest[index] != "--timeout" {
+            index += 1;
+            continue;
+        }
+
+        if timeout.is_some() {
+            return Err(ParseError::InvalidValue {
+                message: "wait accepts only one --timeout value".to_string(),
+                usage: "wait <selector|ms|option> [--timeout <ms>]",
+            });
+        }
+
+        let raw = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+            context: "wait --timeout".to_string(),
+            usage: "wait <selector|ms|option> [--timeout <ms>]",
+        })?;
+        let value = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+            message: format!("Invalid wait timeout '{}'; expected an integer from 1 to 120000ms", raw),
+            usage: "wait <selector|ms|option> [--timeout <ms>]",
+        })?;
+        if !(WAIT_TIMEOUT_MIN_MS..=WAIT_TIMEOUT_MAX_MS).contains(&value) {
+            return Err(ParseError::InvalidValue {
+                message: format!("Wait timeout must be between 1 and 120000ms, got {}", value),
+                usage: "wait <selector|ms|option> [--timeout <ms>]",
+            });
+        }
+        timeout = Some(value);
+        index += 2;
+    }
+    Ok(timeout)
+}
+
+fn first_wait_argument<'a>(rest: &[&'a str]) -> Option<&'a str> {
+    let mut index = 0;
+    while index < rest.len() {
+        if rest[index] == "--timeout" {
+            index += 2;
+            continue;
+        }
+        return Some(rest[index]);
+    }
+    None
+}
 
 pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError> {
     if args.is_empty() {
@@ -360,37 +410,51 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
 
         // === Wait ===
         "wait" => {
-            // Check for --url flag: wait --url "**/dashboard"
+            let timeout = parse_wait_timeout(&rest)?;
+
+            // Check for --url flag: wait --url "**/dashboard" [--timeout ms]
             if let Some(idx) = rest.iter().position(|&s| s == "--url" || s == "-u") {
                 let url = rest
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --url".to_string(),
-                        usage: "wait --url <pattern>",
+                        usage: "wait --url <pattern> [--timeout <ms>]",
                     })?;
-                return Ok(json!({ "id": id, "action": "waitforurl", "url": url }));
+                let mut cmd = json!({ "id": id, "action": "waitforurl", "url": url });
+                if let Some(value) = timeout {
+                    cmd["timeout"] = json!(value);
+                }
+                return Ok(cmd);
             }
 
-            // Check for --load flag: wait --load networkidle
+            // Check for --load flag: wait --load networkidle [--timeout ms]
             if let Some(idx) = rest.iter().position(|&s| s == "--load" || s == "-l") {
                 let state = rest
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --load".to_string(),
-                        usage: "wait --load <state>",
+                        usage: "wait --load <state> [--timeout <ms>]",
                     })?;
-                return Ok(json!({ "id": id, "action": "waitforloadstate", "state": state }));
+                let mut cmd = json!({ "id": id, "action": "waitforloadstate", "state": state });
+                if let Some(value) = timeout {
+                    cmd["timeout"] = json!(value);
+                }
+                return Ok(cmd);
             }
 
-            // Check for --fn flag: wait --fn "window.ready === true"
+            // Check for --fn flag: wait --fn "window.ready === true" [--timeout ms]
             if let Some(idx) = rest.iter().position(|&s| s == "--fn" || s == "-f") {
                 let expr = rest
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --fn".to_string(),
-                        usage: "wait --fn <expression>",
+                        usage: "wait --fn <expression> [--timeout <ms>]",
                     })?;
-                return Ok(json!({ "id": id, "action": "waitforfunction", "expression": expr }));
+                let mut cmd = json!({ "id": id, "action": "waitforfunction", "expression": expr });
+                if let Some(value) = timeout {
+                    cmd["timeout"] = json!(value);
+                }
+                return Ok(cmd);
             }
 
             // Check for --text flag: wait --text "Welcome" [--timeout ms]
@@ -399,52 +463,53 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                     .get(idx + 1)
                     .ok_or_else(|| ParseError::MissingArguments {
                         context: "wait --text".to_string(),
-                        usage: "wait --text <text>",
+                        usage: "wait --text <text> [--timeout <ms>]",
                     })?;
                 let mut cmd = json!({ "id": id, "action": "wait", "text": text });
-                if let Some(t_idx) = rest.iter().position(|&s| s == "--timeout") {
-                    if let Some(Ok(ms)) = rest.get(t_idx + 1).map(|s| s.parse::<u64>()) {
-                        cmd["timeout"] = json!(ms);
-                    }
+                if let Some(value) = timeout {
+                    cmd["timeout"] = json!(value);
                 }
                 return Ok(cmd);
             }
 
             // Check for --download flag: wait --download [path] [--timeout ms]
-            if rest.iter().any(|&s| s == "--download" || s == "-d") {
+            if let Some(download_idx) = rest.iter().position(|&s| s == "--download" || s == "-d") {
                 let mut cmd = json!({ "id": id, "action": "waitfordownload" });
-                // Check for optional path (first non-flag argument after --download)
-                let download_idx = rest
-                    .iter()
-                    .position(|&s| s == "--download" || s == "-d")
-                    .unwrap();
-                if let Some(path) = rest.get(download_idx + 1) {
-                    if !path.starts_with("--") {
-                        cmd["path"] = json!(path);
+                let mut index = download_idx + 1;
+                while index < rest.len() {
+                    if rest[index] == "--timeout" {
+                        index += 2;
+                        continue;
                     }
+                    if !rest[index].starts_with("--") {
+                        cmd["path"] = json!(rest[index]);
+                        break;
+                    }
+                    index += 1;
                 }
-                // Check for optional timeout
-                if let Some(idx) = rest.iter().position(|&s| s == "--timeout") {
-                    if let Some(timeout_str) = rest.get(idx + 1) {
-                        if let Ok(timeout) = timeout_str.parse::<u64>() {
-                            cmd["timeout"] = json!(timeout);
-                        }
-                    }
+                if let Some(value) = timeout {
+                    cmd["timeout"] = json!(value);
                 }
                 return Ok(cmd);
             }
 
-            // Default: selector or timeout
-            if let Some(arg) = rest.first() {
-                if let Ok(timeout) = arg.parse::<u64>() {
-                    Ok(json!({ "id": id, "action": "wait", "timeout": timeout }))
+            // Default: selector or requested wait duration. `--timeout` is
+            // an execution budget and does not change the meaning of a bare
+            // millisecond argument.
+            if let Some(arg) = first_wait_argument(&rest) {
+                let mut cmd = if let Ok(time) = arg.parse::<u64>() {
+                    json!({ "id": id, "action": "wait", "time": time })
                 } else {
-                    Ok(json!({ "id": id, "action": "wait", "selector": arg }))
+                    json!({ "id": id, "action": "wait", "selector": arg })
+                };
+                if let Some(value) = timeout {
+                    cmd["timeout"] = json!(value);
                 }
+                Ok(cmd)
             } else {
                 Err(ParseError::MissingArguments {
                     context: "wait".to_string(),
-                    usage: "wait <selector|ms|--url|--load|--fn|--text>",
+                    usage: "wait <selector|ms|--url|--load|--fn|--text|--download> [--timeout <ms>]",
                 })
             }
         }

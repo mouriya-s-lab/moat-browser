@@ -132,10 +132,19 @@ moat batch
 `moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
 
 For machine-readable failures, inspect `errorType` rather than matching
-`error`: `unsupported_in_moat`, `missing_arguments`, `invalid_value`, and
-`target_not_found` are stable classes. `command_failed` is reserved for
-infrastructure failures with a structured cause; `capacity_exceeded` and
-`timeout` are reserved for their respective bounded-resource contracts.
+`error`: `unsupported_in_moat`, `missing_arguments`, `invalid_value`,
+`target_not_found`, `capacity_exceeded`, and `timeout` are stable classes.
+`command_failed` is reserved for infrastructure failures and always carries a
+structured `cause`.
+
+When choosing a wait budget, agents should omit `--timeout` for the normal
+25s command budget. Use `--timeout <ms>` when the expected condition has a
+known shorter or longer bound; it accepts integer values from `1` through
+`120000`ms and applies to `wait`, `wait --url`, `wait --load`, `wait --fn`,
+and `wait --download`. Session registration has a separate 45s budget and
+does not use this flag. A `timeout` response has no `cause`; treat the result
+as potentially partially applied and inspect state before deciding whether to
+retry.
 
 ## Neko login URL
 
