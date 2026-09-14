@@ -6,8 +6,9 @@ Usage: moat <command> [args] [options]
 Session:
   init | connect               Create a Controller-managed browser session
   status                       Show local session/config; does not probe Controller health
-  disconnect | close-session  Destroy the active session
-  close                        Destroy the active session (command alias)
+  disconnect | destroy | close-session | close
+                               Destroy the active session; failures retain ~/.moat/session
+
 
 Navigation and page actions:
   open <url> | back | forward | reload
@@ -75,7 +76,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "connect" => "connect [--profile <name>] [--controller <url>]",
         "use" => "use <session-id>",
         "status" => "status",
-        "disconnect" | "destroy" | "close-session" => "disconnect",
+        "disconnect" | "destroy" | "close-session" | "close" => "disconnect",
         "open" | "goto" | "navigate" => "open <url> [--headers <json>]",
         "back" => "back",
         "forward" => "forward",
@@ -103,7 +104,6 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "pdf" => "pdf [output-path]",
         "snapshot" => "snapshot [-i] [-c] [-d <depth>] [-s <selector>]",
         "eval" => "eval <javascript> [selector]",
-        "close" | "quit" | "exit" => "close",
         "get" => "get <url|title|text|html|value|attr|count|box|styles> [argument]",
         "is" => "is <visible|enabled|checked> <selector>",
         "find" => "find <role|text|label|placeholder|alt|title|testid|first|last|nth> ...",

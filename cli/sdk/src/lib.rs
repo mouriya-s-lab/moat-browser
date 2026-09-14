@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use wire::{Response, WireRequest, WireResponse};
+use wire::{CommandFailureCause, Response, WireRequest, WireResponse};
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -21,6 +21,7 @@ pub fn local_command(request: &Value) -> Option<Result<Response, SdkError>> {
         return Some(Err(SdkError::CommandFailed {
             error: format!("unsupported_in_moat: {}", reason),
             code: 1,
+            cause: CommandFailureCause::Transport,
         }));
     }
     let result = match action {
@@ -35,6 +36,8 @@ pub fn local_command(request: &Value) -> Option<Result<Response, SdkError>> {
         success: true,
         data: Some(data),
         error: None,
+        error_type: None,
+        cause: None,
         warning: None,
     }))
 }
@@ -60,11 +63,13 @@ fn state_directory() -> Result<PathBuf, SdkError> {
     let home = dirs::home_dir().ok_or_else(|| SdkError::CommandFailed {
         error: "cannot resolve home directory for moat states".into(),
         code: 1,
+        cause: CommandFailureCause::Transport,
     })?;
     let directory = home.join(".moat").join("states");
     std::fs::create_dir_all(&directory).map_err(|e| SdkError::CommandFailed {
         error: format!("create state directory {}: {}", directory.display(), e),
         code: 1,
+        cause: CommandFailureCause::Transport,
     })?;
     Ok(directory)
 }
@@ -88,10 +93,12 @@ fn local_state_list() -> Result<Value, SdkError> {
     for entry in std::fs::read_dir(&directory).map_err(|e| SdkError::CommandFailed {
         error: format!("read state directory {}: {}", directory.display(), e),
         code: 1,
+            cause: CommandFailureCause::Transport,
     })? {
         let entry = entry.map_err(|e| SdkError::CommandFailed {
             error: format!("read state entry: {}", e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
@@ -100,6 +107,7 @@ fn local_state_list() -> Result<Value, SdkError> {
         let metadata = entry.metadata().map_err(|e| SdkError::CommandFailed {
             error: format!("read state metadata {}: {}", path.display(), e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
         let modified = metadata
             .modified()
@@ -127,15 +135,18 @@ fn local_state_show(request: &Value) -> Result<Value, SdkError> {
             .ok_or_else(|| SdkError::CommandFailed {
                 error: "state show requires a filename".into(),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
     let path = state_path(name)?;
     let contents = std::fs::read_to_string(&path).map_err(|e| SdkError::CommandFailed {
         error: format!("read state file {}: {}", path.display(), e),
         code: 1,
+        cause: CommandFailureCause::Transport,
     })?;
     let state: Value = serde_json::from_str(&contents).map_err(|e| SdkError::CommandFailed {
         error: format!("parse state file {}: {}", path.display(), e),
         code: 1,
+        cause: CommandFailureCause::Transport,
     })?;
     let cookies = state
         .get("cookies")
@@ -161,17 +172,20 @@ fn local_state_clear(request: &Value) -> Result<Value, SdkError> {
         for entry in std::fs::read_dir(&directory).map_err(|e| SdkError::CommandFailed {
             error: format!("read state directory {}: {}", directory.display(), e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })? {
             let path = entry
                 .map_err(|e| SdkError::CommandFailed {
                     error: format!("read state entry: {}", e),
                     code: 1,
+                    cause: CommandFailureCause::Transport,
                 })?
                 .path();
             if path.extension().and_then(|value| value.to_str()) == Some("json") {
                 std::fs::remove_file(&path).map_err(|e| SdkError::CommandFailed {
                     error: format!("remove state file {}: {}", path.display(), e),
                     code: 1,
+                    cause: CommandFailureCause::Transport,
                 })?;
                 cleared += 1;
             }
@@ -181,12 +195,14 @@ fn local_state_clear(request: &Value) -> Result<Value, SdkError> {
         std::fs::remove_file(&path).map_err(|e| SdkError::CommandFailed {
             error: format!("remove state file {}: {}", path.display(), e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
         cleared = 1;
     } else {
         return Err(SdkError::CommandFailed {
             error: "state clear requires a state name or --all".into(),
             code: 1,
+            cause: CommandFailureCause::Transport,
         });
     }
     Ok(serde_json::json!({ "cleared": cleared }))
@@ -200,11 +216,13 @@ fn local_state_clean(request: &Value) -> Result<Value, SdkError> {
             .ok_or_else(|| SdkError::CommandFailed {
                 error: "state clean requires --older-than <days>".into(),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
     if days < 0 {
         return Err(SdkError::CommandFailed {
             error: "state clean days cannot be negative".into(),
             code: 1,
+            cause: CommandFailureCause::Transport,
         });
     }
     let directory = state_directory()?;
@@ -214,10 +232,12 @@ fn local_state_clean(request: &Value) -> Result<Value, SdkError> {
     for entry in std::fs::read_dir(&directory).map_err(|e| SdkError::CommandFailed {
         error: format!("read state directory {}: {}", directory.display(), e),
         code: 1,
+            cause: CommandFailureCause::Transport,
     })? {
         let entry = entry.map_err(|e| SdkError::CommandFailed {
             error: e.to_string(),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
@@ -233,6 +253,7 @@ fn local_state_clean(request: &Value) -> Result<Value, SdkError> {
             std::fs::remove_file(&path).map_err(|e| SdkError::CommandFailed {
                 error: format!("remove state file {}: {}", path.display(), e),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
             cleaned += 1;
         }
@@ -247,6 +268,7 @@ fn local_state_rename(request: &Value) -> Result<Value, SdkError> {
         .ok_or_else(|| SdkError::CommandFailed {
             error: "state rename requires an old name".into(),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
     let new_name = request
         .get("newName")
@@ -254,6 +276,7 @@ fn local_state_rename(request: &Value) -> Result<Value, SdkError> {
         .ok_or_else(|| SdkError::CommandFailed {
             error: "state rename requires a new name".into(),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
     let old_path = state_path(old_name)?;
     let new_path = state_directory()?.join(format!("{}.json", new_name.trim_end_matches(".json")));
@@ -265,6 +288,7 @@ fn local_state_rename(request: &Value) -> Result<Value, SdkError> {
             e
         ),
         code: 1,
+        cause: CommandFailureCause::Transport,
     })?;
     Ok(serde_json::json!({
         "renamed": true,
@@ -295,10 +319,41 @@ struct BinaryOutput {
     default_filename: String,
 }
 
+fn protocol_error(message: impl Into<String>) -> SdkError {
+    SdkError::CommandFailed {
+        error: message.into(),
+        code: 1,
+        cause: CommandFailureCause::Transport,
+    }
+}
+
+fn validate_wire_failure(
+    error_type: Option<&str>,
+    cause: Option<CommandFailureCause>,
+) -> Result<Option<CommandFailureCause>, SdkError> {
+    match (error_type, cause) {
+        (Some("command_failed"), Some(cause)) => Ok(Some(cause)),
+        (Some("command_failed"), None) => {
+            Err(protocol_error("command_failed response missing cause"))
+        }
+        (
+            Some("target_not_found" | "invalid_value" | "missing_arguments" | "unsupported_in_moat"),
+            None,
+        ) => Ok(None),
+        (Some(error_type), _) => Err(protocol_error(format!(
+            "invalid wire failure shape for errorType={error_type}"
+        ))),
+        (None, _) => Err(protocol_error("wire failure missing errorType")),
+    }
+}
+
 impl MoatClient {
     /// Init: register a new session (creates container + CDP).
     /// Opens ws, sends Register, receives session ID, closes ws.
     pub async fn init(url: &str, profile: Option<&str>) -> Result<Self, SdkError> {
+        if let Some(session_id) = session::read_session_id()? {
+            return Err(SdkError::SessionAlreadyActive { session_id });
+        }
         let (mut ws, _) = connect_async(url)
             .await
             .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
@@ -327,15 +382,24 @@ impl MoatClient {
             WireResponse::RegisterResult {
                 success: false,
                 error,
+                error_type,
+                cause,
                 code,
                 ..
-            } => Err(SdkError::RegisterFailed {
-                error: error.unwrap_or_default(),
-                code: code.unwrap_or(1),
-            }),
+            } => {
+                let cause = validate_wire_failure(error_type.as_deref(), cause)?;
+                Err(SdkError::RegisterFailed {
+                    error: error.unwrap_or_default(),
+                    code: code.unwrap_or(1),
+                    error_type,
+                    cause,
+                })
+            }
             _ => Err(SdkError::RegisterFailed {
                 error: "unexpected response".into(),
                 code: 1,
+                error_type: Some("command_failed".into()),
+                cause: Some(CommandFailureCause::Transport),
             }),
         }
     }
@@ -366,6 +430,8 @@ impl MoatClient {
                 success: true,
                 data: None,
                 error: None,
+                error_type: None,
+                cause: None,
                 warning: None,
             });
         }
@@ -390,44 +456,52 @@ impl MoatClient {
                 ..
             } => {
                 // Strip _tag from data (CLI doesn't need discriminant)
-                if let Some(ref mut d) = data {
+                if let Some(d) = &mut data {
                     if let Some(obj) = d.as_object_mut() {
                         obj.remove("_tag");
                     }
                 }
-                if let (Some(ref output), Some(ref mut d)) = (&screenshot_output, &mut data) {
+                if let (Some(output), Some(d)) = (&screenshot_output, &mut data) {
                     materialize_screenshot_response(d, output)?;
                 }
-                if let (Some(ref output), Some(ref mut d)) = (&binary_output, &mut data) {
+                if let (Some(output), Some(d)) = (&binary_output, &mut data) {
                     materialize_binary_response(d, output)?;
                 }
                 Ok(Response {
                     success: true,
                     data,
                     error: None,
+                    error_type: None,
+                    cause: None,
                     warning: None,
                 })
             }
             WireResponse::CommandResult {
                 success: false,
                 error,
+                error_type,
+                cause,
                 ..
-            } => Ok(Response {
-                success: false,
-                data: None,
-                error,
-                warning: None,
-            }),
+            } => {
+                let cause = validate_wire_failure(error_type.as_deref(), cause)?;
+                Ok(Response {
+                    success: false,
+                    data: None,
+                    error,
+                    error_type,
+                    cause,
+                    warning: None,
+                })
+            }
             WireResponse::Error { error, .. } => Ok(Response {
                 success: false,
                 data: None,
                 error: Some(error),
+                error_type: Some("command_failed".into()),
+                cause: Some(CommandFailureCause::Transport),
                 warning: None,
             }),
-            _ => Err(SdkError::CommandFailed {
-                error: "unexpected response".into(),
-                code: 1,
-            }),
+            _ => Err(protocol_error("unexpected response")),
         }
     }
 
@@ -445,11 +519,43 @@ impl MoatClient {
 
         let _ = ws.close(None).await;
 
-        session::clear_session_id()?;
-
         match resp {
-            WireResponse::DeregisterResult { success: true, .. } => Ok(()),
-            _ => Err(SdkError::DeregisterFailed),
+            WireResponse::DeregisterResult {
+                success: true, ..
+            } => {
+                // The retry handle is removed only after the controller proves
+                // that the owner-scoped remote cleanup succeeded.
+                session::clear_session_id()?;
+                Ok(())
+            }
+            WireResponse::DeregisterResult {
+                success: false,
+                error,
+                error_type,
+                cause,
+                code,
+                ..
+            } => {
+                let cause = validate_wire_failure(error_type.as_deref(), cause)?;
+                Err(SdkError::DeregisterFailed {
+                    error: error.unwrap_or_else(|| "Deregister failed".into()),
+                    code: code.unwrap_or(1),
+                    error_type,
+                    cause,
+                })
+            }
+            WireResponse::Error { error, code } => Err(SdkError::DeregisterFailed {
+                error,
+                code,
+                error_type: Some("command_failed".into()),
+                cause: Some(CommandFailureCause::Transport),
+            }),
+            _ => Err(SdkError::DeregisterFailed {
+                error: "unexpected response".into(),
+                code: 1,
+                error_type: Some("command_failed".into()),
+                cause: Some(CommandFailureCause::Transport),
+            }),
         }
     }
 
@@ -669,7 +775,11 @@ impl MoatClient {
 }
 
 fn command_error(error: String) -> SdkError {
-    SdkError::CommandFailed { error, code: 1 }
+    SdkError::CommandFailed {
+        error,
+        code: 1,
+        cause: CommandFailureCause::Cdp,
+    }
 }
 
 fn success(data: Value) -> Response {
@@ -677,6 +787,8 @@ fn success(data: Value) -> Response {
         success: true,
         data: Some(data),
         error: None,
+        error_type: None,
+        cause: None,
         warning: None,
     }
 }
@@ -685,9 +797,11 @@ fn require_success(response: Response) -> Result<Value, SdkError> {
     if response.success {
         Ok(response.data.unwrap_or(Value::Null))
     } else {
-        Err(command_error(
-            response.error.unwrap_or_else(|| "command failed".into()),
-        ))
+        Err(SdkError::CommandFailed {
+            error: response.error.unwrap_or_else(|| "command failed".into()),
+            code: 1,
+            cause: response.cause.unwrap_or(CommandFailureCause::Cdp),
+        })
     }
 }
 
@@ -750,6 +864,7 @@ fn prepare_command(
             return Err(SdkError::CommandFailed {
                 error: format!("unsupported_in_moat: {}", reason),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             });
         }
     }
@@ -800,6 +915,7 @@ fn prepare_command(
             .ok_or_else(|| SdkError::CommandFailed {
                 error: "upload files must be an array".into(),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
         let payloads = files
             .iter()
@@ -807,10 +923,12 @@ fn prepare_command(
                 let path = value.as_str().ok_or_else(|| SdkError::CommandFailed {
                     error: "upload file path must be a string".into(),
                     code: 1,
+                    cause: CommandFailureCause::Transport,
                 })?;
                 let bytes = std::fs::read(path).map_err(|e| SdkError::CommandFailed {
                     error: format!("read upload file {}: {}", path, e),
                     code: 1,
+                    cause: CommandFailureCause::Transport,
                 })?;
                 let name = PathBuf::from(path)
                     .file_name()
@@ -818,6 +936,7 @@ fn prepare_command(
                     .ok_or_else(|| SdkError::CommandFailed {
                         error: format!("upload path has no file name: {}", path),
                         code: 1,
+                        cause: CommandFailureCause::Transport,
                     })?
                     .to_string();
                 Ok(serde_json::json!({
@@ -837,15 +956,18 @@ fn prepare_command(
             .ok_or_else(|| SdkError::CommandFailed {
                 error: "state load requires a path".into(),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
         let contents = std::fs::read_to_string(path).map_err(|e| SdkError::CommandFailed {
             error: format!("read state file {}: {}", path, e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
         let state =
             serde_json::from_str::<Value>(&contents).map_err(|e| SdkError::CommandFailed {
                 error: format!("parse state file {}: {}", path, e),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
         obj.remove("path");
         obj.insert("state".into(), state);
@@ -978,6 +1100,7 @@ fn materialize_binary_response(data: &mut Value, output: &BinaryOutput) -> Resul
         .map_err(|e| SdkError::CommandFailed {
             error: format!("invalid file base64: {}", e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
     let suggested = obj
         .get("suggestedFilename")
@@ -1001,12 +1124,14 @@ fn materialize_binary_response(data: &mut Value, output: &BinaryOutput) -> Resul
             std::fs::create_dir_all(parent).map_err(|e| SdkError::CommandFailed {
                 error: format!("create output directory {}: {}", parent.display(), e),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
         }
     }
     std::fs::write(&path, &bytes).map_err(|e| SdkError::CommandFailed {
         error: format!("write output {}: {}", path.display(), e),
         code: 1,
+        cause: CommandFailureCause::Transport,
     })?;
     obj.insert(
         "path".into(),
@@ -1033,6 +1158,7 @@ fn materialize_screenshot_response(
         .map_err(|e| SdkError::CommandFailed {
             error: format!("invalid screenshot base64: {}", e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?;
     let path = resolve_screenshot_path(output)?;
     if let Some(parent) = path.parent() {
@@ -1040,12 +1166,14 @@ fn materialize_screenshot_response(
             std::fs::create_dir_all(parent).map_err(|e| SdkError::CommandFailed {
                 error: format!("create screenshot directory {}: {}", parent.display(), e),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             })?;
         }
     }
     std::fs::write(&path, &bytes).map_err(|e| SdkError::CommandFailed {
         error: format!("write screenshot {}: {}", path.display(), e),
         code: 1,
+        cause: CommandFailureCause::Transport,
     })?;
 
     obj.insert(
@@ -1088,6 +1216,7 @@ fn default_screenshot_filename(format: &str) -> Result<String, SdkError> {
             return Err(SdkError::CommandFailed {
                 error: format!("unsupported screenshot format: {}", other),
                 code: 1,
+                cause: CommandFailureCause::Transport,
             });
         }
     };
@@ -1096,6 +1225,7 @@ fn default_screenshot_filename(format: &str) -> Result<String, SdkError> {
         .map_err(|e| SdkError::CommandFailed {
             error: format!("system clock before UNIX_EPOCH: {}", e),
             code: 1,
+            cause: CommandFailureCause::Transport,
         })?
         .as_nanos();
     Ok(format!("moat-screenshot-{}.{}", nanos, ext))

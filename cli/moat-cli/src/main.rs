@@ -22,6 +22,7 @@ use flags::{clean_args, parse_flags, ControllerOverride};
 use fork_features::{command_help_text, help_text, unsupported_command, unsupported_flag};
 use output::{print_response_with_opts, OutputOptions};
 
+use moat_sdk::error::SdkError;
 use moat_sdk::MoatClient;
 
 const ERROR_UNSUPPORTED: &str = "unsupported_in_moat";
@@ -122,6 +123,43 @@ fn print_json_error_with_type(message: impl AsRef<str>, error_type: &str) {
             "errorType": error_type,
         }))
         .unwrap_or_default()
+    );
+}
+fn sdk_error_type(error: &SdkError) -> &str {
+    match error {
+        SdkError::RegisterFailed { error_type, .. }
+        | SdkError::DeregisterFailed { error_type, .. } => {
+            error_type.as_deref().unwrap_or(ERROR_COMMAND_FAILED)
+        }
+        SdkError::NoSession => ERROR_TARGET_NOT_FOUND,
+        SdkError::SessionAlreadyActive { .. }
+        | SdkError::ConnectionFailed(_)
+        | SdkError::WebSocket(_)
+        | SdkError::CommandFailed { .. }
+        | SdkError::SessionFileError(_)
+        | SdkError::ConfigError(_) => ERROR_COMMAND_FAILED,
+    }
+}
+
+fn sdk_error_json(error: &SdkError) -> serde_json::Value {
+    let error_type = sdk_error_type(error);
+    let mut payload = json!({
+        "success": false,
+        "error": error.to_string(),
+        "errorType": error_type,
+    });
+    if error_type == ERROR_COMMAND_FAILED {
+        if let Some(cause) = error.command_failure_cause() {
+            payload["cause"] = serde_json::to_value(cause).unwrap_or_default();
+        }
+    }
+    payload
+}
+
+fn print_sdk_json_error(error: &SdkError) {
+    println!(
+        "{}",
+        serde_json::to_string(&sdk_error_json(error)).unwrap_or_default()
     );
 }
 
@@ -298,7 +336,7 @@ async fn main() {
                 }
                 Err(e) => {
                     if flags.json {
-                        print_json_error(e.to_string());
+                        print_sdk_json_error(&e);
                     } else {
                         eprintln!("{} {}", color::error_indicator(), e);
                     }
@@ -344,7 +382,7 @@ async fn main() {
                 }
                 Err(e) => {
                     if flags.json {
-                        print_json_error(e.to_string());
+                        print_sdk_json_error(&e);
                     } else {
                         eprintln!("{} {}", color::error_indicator(), e);
                     }
@@ -355,7 +393,7 @@ async fn main() {
         }
 
         // destroy: deregister session, destroy container
-        "disconnect" | "destroy" | "close-session" => {
+        "disconnect" | "destroy" | "close-session" | "close" => {
             let url = match controller_url(&flags.controller) {
                 Ok(u) => u,
                 Err(e) => {
@@ -371,7 +409,7 @@ async fn main() {
                 Ok(Some(id)) => id,
                 _ => {
                     if flags.json {
-                        print_json_error("No active session");
+                        print_json_error_with_type("No active session", ERROR_TARGET_NOT_FOUND);
                     } else {
                         eprintln!("{} No active session.", color::error_indicator());
                     }
@@ -387,17 +425,13 @@ async fn main() {
                         println!("{} Disconnected.", color::success_indicator());
                     }
                 }
-                Err(e) => {
-                    // Session may already be gone — clean up local state
-                    let _ = moat_sdk::session::clear_session_id();
+                Err(error) => {
                     if flags.json {
-                        println!(r#"{{"success":true}}"#);
+                        print_sdk_json_error(&error);
                     } else {
-                        println!(
-                            "{} Cleaned up (session already gone).",
-                            color::success_indicator()
-                        );
+                        eprintln!("{} {}", color::error_indicator(), error);
                     }
+                    exit(1);
                 }
             }
             return;
@@ -473,7 +507,7 @@ async fn main() {
             }
             Err(error) => {
                 if flags.json {
-                    print_json_error(error.to_string());
+                    print_sdk_json_error(&error);
                 } else {
                     eprintln!("{} {}", color::error_indicator(), error);
                 }
@@ -507,7 +541,7 @@ async fn main() {
             }
         }
         Err(e) => {
-            if e.contains("No active session") || e.contains("NoSession") {
+            if matches!(&e, SdkError::NoSession) {
                 if flags.json {
                     print_json_error_with_type(
                         "No active session. Run `moat init` first.",
@@ -522,7 +556,7 @@ async fn main() {
                 exit(77);
             }
             if flags.json {
-                print_json_error(&e);
+                print_sdk_json_error(&e);
             } else {
                 eprintln!("{} {}", color::error_indicator(), e);
             }
@@ -599,11 +633,7 @@ async fn run_batch(flags: &flags::Flags) {
             Err(e) => {
                 if flags.json {
                     json_success = false;
-                    json_results.push(json!({
-                        "success": false,
-                        "error": e,
-                        "errorType": ERROR_COMMAND_FAILED,
-                    }));
+                    json_results.push(sdk_error_json(&e));
                 } else {
                     eprintln!("{} {}", color::error_indicator(), e);
                     exit(1);

@@ -44,7 +44,7 @@ type SessionEntry = {
 export type SessionRegistry = {
   register(profile?: string): Result<string, ControllerError>;
   transition(sessionId: string, newState: SessionState): Result<void, ControllerError>;
-  deregister(sessionId: string): Result<void, ControllerError>;
+  deregister(sessionId: string, notify?: boolean): Result<void, ControllerError>;
   get(sessionId: string): SessionState | undefined;
   getActive(sessionId: string): Result<ActiveSession, ControllerError>;
   touchActivity(sessionId: string): void;
@@ -97,13 +97,15 @@ export function createSessionRegistry(
     return Ok(undefined);
   }
 
-  function deregister(sessionId: string): Result<void, ControllerError> {
+  function deregister(sessionId: string, notify = true): Result<void, ControllerError> {
     const entry = entries.get(sessionId);
     if (!entry) {
       return Err({ _tag: "SessionNotFound", sessionId });
     }
     entry.state = { _tag: "Expired", reason: "deregistered" };
-    onExpired?.(sessionId, "deregistered");
+    if (notify) {
+      onExpired?.(sessionId, "deregistered");
+    }
     return Ok(undefined);
   }
 

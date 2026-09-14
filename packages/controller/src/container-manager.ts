@@ -1,5 +1,6 @@
 import { execFile as execFileCb } from "node:child_process";
 import { request as httpRequest } from "node:http";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { ControllerError } from "@moat-browser/types";
 
@@ -38,6 +39,7 @@ export type ContainerManagerConfig = {
   readonly dockerNetwork: string;
   readonly agentChromeImage: string;
   readonly cdpReadyTimeout: number;
+  readonly owner: string;
   readonly dockerFetch?: DockerFetch;
 };
 
@@ -46,21 +48,110 @@ export type ContainerManagerConfig = {
 export const LABEL_ROLE = "moat-browser.role";
 export const LABEL_ROLE_AGENT_CHROME = "agent-chrome";
 export const LABEL_SESSION_ID = "moat-browser.session-id";
+export const LABEL_OWNER = "moat-browser.owner";
 
-// ─── Create body ───
+function ownerPathToken(owner: string): string {
+  return Buffer.from(owner, "utf8").toString("base64url");
+}
+
+function profileDestination(profilesWork: string, owner: string, sessionId: string): string {
+  return `${profilesWork}/agent-${ownerPathToken(owner)}-${sessionId}`;
+}
+
+// ─── Controller owner resolution ───
+
+export type OwnerResolutionError = {
+  readonly _tag: "OwnerUnavailable";
+  readonly message: string;
+};
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null;
+}
+
+function composeProjectFromInspect(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const config = value.Config;
+  if (!isRecord(config)) return undefined;
+  const labels = config.Labels;
+  if (!isRecord(labels)) return undefined;
+  const project = labels["com.docker.compose.project"];
+  return typeof project === "string" && project.length > 0 ? project : undefined;
+}
+
+/**
+ * Resolve the stable logical-controller owner once at startup.
+ *
+ * Explicit CONTROLLER_OWNER is useful for deployments that cannot expose a
+ * Compose label. Otherwise the controller inspects its own container and
+ * inherits the stable Compose project label. There is deliberately no
+ * collision-prone fallback.
+ */
+export async function resolveControllerOwner(
+  explicitOwner: string | undefined,
+  dockerFetch: DockerFetch = defaultDockerFetch,
+): Promise<Result<string, OwnerResolutionError>> {
+  const configured = explicitOwner?.trim();
+  if (configured) return Ok(configured);
+
+  let hostname: string;
+  try {
+    hostname = (await readFile("/etc/hostname", "utf8")).trim();
+  } catch (error) {
+    return Err({
+      _tag: "OwnerUnavailable",
+      message: `CONTROLLER_OWNER is unset and /etc/hostname is unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+  }
+  if (!hostname) {
+    return Err({
+      _tag: "OwnerUnavailable",
+      message: "CONTROLLER_OWNER is unset and /etc/hostname is empty",
+    });
+  }
+
+  try {
+    const response = await dockerFetch(`/containers/${encodeURIComponent(hostname)}/json`);
+    if (!response.ok) {
+      const text = await response.text();
+      return Err({
+        _tag: "OwnerUnavailable",
+        message: `CONTROLLER_OWNER is unset and self-inspect failed (${response.status}): ${text}`,
+      });
+    }
+    const project = composeProjectFromInspect(await response.json());
+    if (!project) {
+      return Err({
+        _tag: "OwnerUnavailable",
+        message: "CONTROLLER_OWNER is unset and self container has no com.docker.compose.project label",
+      });
+    }
+    return Ok(project);
+  } catch (error) {
+    return Err({
+      _tag: "OwnerUnavailable",
+      message: `CONTROLLER_OWNER is unset and self-inspect failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+  }
+}
 
 export function buildCreateBody(
   sessionId: string,
-  cfg: Pick<ContainerManagerConfig, "agentChromeImage" | "profilesHostPath" | "dockerNetwork">,
+  cfg: Pick<ContainerManagerConfig, "agentChromeImage" | "profilesHostPath" | "dockerNetwork" | "owner">,
 ): Record<string, unknown> {
   return {
     Image: cfg.agentChromeImage,
     Labels: {
       [LABEL_ROLE]: LABEL_ROLE_AGENT_CHROME,
       [LABEL_SESSION_ID]: sessionId,
+      [LABEL_OWNER]: cfg.owner,
     },
     HostConfig: {
-      Binds: [`${cfg.profilesHostPath}/agent-${sessionId}:/data/profile`],
+      Binds: [`${cfg.profilesHostPath}/agent-${ownerPathToken(cfg.owner)}-${sessionId}:/data/profile`],
       NetworkMode: cfg.dockerNetwork,
       ShmSize: 2147483648,
     },
@@ -117,7 +208,7 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     sessionId: string,
     profilePath: string,
   ): Promise<Result<ContainerInfo, ControllerError>> {
-    const profileDest = `${config.profilesWork}/agent-${sessionId}`;
+    const profileDest = profileDestination(config.profilesWork, config.owner, sessionId);
 
     // Step 1: cp -a profile
     try {
@@ -248,13 +339,12 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
   async function destroy(sessionId: string): Promise<Result<void, ControllerError>> {
     let containerId = containers.get(sessionId);
     if (!containerId) {
-      // Fallback: label reverse-lookup — covers the create-succeeded-but-map-not-set
-      // window (process crash between docker create and containers.set) and cross-restart
-      // survivors that idle scanner rediscovers.
+      // Fallback: owner-scoped label reverse-lookup covers the
+      // create-before-map and cross-restart windows without crossing owners.
       const found = await findContainerIdBySession(sessionId);
       if (found._tag === "Err") return found;
       if (found.value === undefined) {
-        return Err({ _tag: "ContainerCreateFailed", message: `No container for session ${sessionId}` });
+        return Err({ _tag: "SessionNotFound", sessionId });
       }
       containerId = found.value;
     }
@@ -263,9 +353,9 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     if (stopDelete._tag === "Err") return stopDelete;
 
     try {
-      await execFile("rm", ["-rf", `${config.profilesWork}/agent-${sessionId}`]);
+      await execFile("rm", ["-rf", profileDestination(config.profilesWork, config.owner, sessionId)]);
     } catch {
-      // best-effort
+      // best-effort — Docker is the authoritative resource terminal state
     }
 
     containers.delete(sessionId);
@@ -302,17 +392,20 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       const stopDelete = await stopAndDelete(c.id);
       if (stopDelete._tag === "Err") {
         console.warn(
-          `[reap-failed] container=${c.id} session=${c.sessionId ?? "unknown"} ${stopDelete.error._tag}: ${
-            "message" in stopDelete.error ? stopDelete.error.message : ""
-          }`,
+          `[reap-failed] owner=${config.owner} container=${c.id} session=${c.sessionId ?? "unknown"} ${
+            stopDelete.error._tag
+          }: ${"message" in stopDelete.error ? stopDelete.error.message : ""}`,
         );
         continue;
       }
       if (c.sessionId) {
         try {
-          await execFile("rm", ["-rf", `${config.profilesWork}/agent-${c.sessionId}`]);
+          await execFile(
+            "rm",
+            ["-rf", profileDestination(config.profilesWork, config.owner, c.sessionId)],
+          );
         } catch {
-          // best-effort
+          // best-effort — Docker is the authoritative resource terminal state
         }
         containers.delete(c.sessionId);
       }
@@ -320,10 +413,13 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     }
     return Ok({ reaped });
   }
-
   async function findContainerIdBySession(sessionId: string): Promise<Result<string | undefined, ControllerError>> {
     const filters = JSON.stringify({
-      label: [`${LABEL_ROLE}=${LABEL_ROLE_AGENT_CHROME}`, `${LABEL_SESSION_ID}=${sessionId}`],
+      label: [
+        `${LABEL_ROLE}=${LABEL_ROLE_AGENT_CHROME}`,
+        `${LABEL_OWNER}=${config.owner}`,
+        `${LABEL_SESSION_ID}=${sessionId}`,
+      ],
     });
     try {
       const res = await dockerFetch(`/containers/json?all=true&filters=${encodeURIComponent(filters)}`);
@@ -332,6 +428,12 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
         return Err({ _tag: "ContainerCreateFailed", message: `Docker list failed (${res.status}): ${text}` });
       }
       const body = (await res.json()) as ReadonlyArray<{ readonly Id: string }>;
+      if (body.length > 1) {
+        return Err({
+          _tag: "ContainerCreateFailed",
+          message: `Multiple containers for owner ${config.owner} session ${sessionId}`,
+        });
+      }
       return Ok(body[0]?.Id);
     } catch (err) {
       return Err({
@@ -344,7 +446,12 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
   async function listAgentChromeContainers(): Promise<
     Result<ReadonlyArray<{ readonly id: string; readonly sessionId: string | undefined }>, ControllerError>
   > {
-    const filters = JSON.stringify({ label: [`${LABEL_ROLE}=${LABEL_ROLE_AGENT_CHROME}`] });
+    const filters = JSON.stringify({
+      label: [
+        `${LABEL_ROLE}=${LABEL_ROLE_AGENT_CHROME}`,
+        `${LABEL_OWNER}=${config.owner}`,
+      ],
+    });
     try {
       const res = await dockerFetch(`/containers/json?all=true&filters=${encodeURIComponent(filters)}`);
       if (!res.ok) {

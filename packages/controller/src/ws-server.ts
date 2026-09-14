@@ -5,6 +5,7 @@ import {
   type BrowserCommand,
   type ContentBoundary,
   type ControllerError,
+  type WireFailure,
   type WireRequest,
   type WireResponse,
   ErrorCode,
@@ -12,8 +13,8 @@ import {
   wireRequestSchema,
 } from "@moat-browser/types";
 import { type } from "arktype";
+import type { ContainerManager, Result as ContainerResult } from "./container-manager.js";
 import type { SessionRegistry } from "./session-registry.js";
-import type { ContainerManager } from "./container-manager.js";
 import type { RefStore } from "./ref-store.js";
 import { clearSessionRuntimeState, connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js";
 import type { ControllerConfig } from "./index.js";
@@ -29,8 +30,9 @@ function resolveProfilePath(
   if (path.isAbsolute(profile)) return profile;
   return path.join(path.dirname(defaultSource), profile);
 }
-
 // ─── errorToWireResponse (§11.2) ───
+
+type CleanupStage = "command" | "cleanup";
 
 function formatError(error: ControllerError): string {
   switch (error._tag) {
@@ -56,18 +58,50 @@ function formatError(error: ControllerError): string {
       return `Command failed: ${error.message}`;
     case "ValidationFailed":
       return `Validation failed: ${error.message}`;
-    default:
-      return exhaustive(error);
   }
+  return exhaustive(error);
 }
 
-function errorToWireResponse(sessionId: string, error: ControllerError): WireResponse {
+function wireFailure(error: ControllerError, stage: CleanupStage = "command"): WireFailure {
+  switch (error._tag) {
+    case "SessionNotFound":
+    case "SessionExpired":
+      return { errorType: "target_not_found" };
+    case "SessionNotReady":
+      return { errorType: "command_failed", cause: "container_creation" };
+    case "ContainerCreateFailed":
+    case "ProfileCopyFailed":
+      return {
+        errorType: "command_failed",
+        cause: stage === "cleanup" ? "cleanup" : "container_creation",
+      };
+    case "CdpUnreachable":
+    case "CdpDisconnected":
+    case "ElementNotFound":
+    case "Timeout":
+    case "CommandFailed":
+    case "ValidationFailed":
+      return { errorType: "command_failed", cause: stage === "cleanup" ? "cleanup" : "cdp" };
+  }
+  return exhaustive(error);
+}
+
+// The response type itself carries the error-type/cause invariant; callers spread
+// `wireFailure` directly so adding a ControllerError variant fails every mapping
+// site at compile time.
+
+function errorToWireResponse(
+  sessionId: string,
+  error: ControllerError,
+  stage: CleanupStage = "command",
+): WireResponse {
   return {
     type: "command_result",
     sessionId,
     success: false,
     error: formatError(error),
     code: ErrorCode[error._tag],
+    ...wireFailure(error, stage),
   };
 }
 
@@ -103,6 +137,15 @@ function logSessionActivity(event: SessionActivityLog): void {
       exhaustive(event);
   }
 }
+type CleanupTrigger = "deregister" | "idle-expired" | "cdp-disconnect";
+
+type CleanupRecord = {
+  readonly operationId: string;
+  readonly trigger: CleanupTrigger;
+  readonly owner: string;
+  readonly containerId: string | undefined;
+  readonly promise: Promise<ContainerResult<void, ControllerError>>;
+};
 
 // ─── WsHandler ───
 
@@ -133,6 +176,109 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
   // Persistent CDP connection cache — survives ws close, keyed by sessionId
   const cdpCache = new Map<string, CdpConnection>();
 
+  const sessionContainers = new Map<string, string>();
+  const cleanupRecords = new Map<string, CleanupRecord>();
+
+  function requestCleanup(
+    sessionId: string,
+    trigger: CleanupTrigger,
+    containerIdHint?: string,
+  ): Promise<ContainerResult<void, ControllerError>> {
+    const existing = cleanupRecords.get(sessionId);
+    if (existing) {
+      console.log(
+        `[cleanup-join] owner=${existing.owner} session=${sessionId} container=${
+          existing.containerId ?? "unknown"
+        } operation=${existing.operationId} trigger=${trigger} primary=${existing.trigger}`,
+      );
+      return existing.promise;
+    }
+
+    const operationId = randomBytes(8).toString("hex");
+    const containerId = containerIdHint ?? sessionContainers.get(sessionId);
+    let resolvePromise: ((result: ContainerResult<void, ControllerError>) => void) | undefined;
+    const promise = new Promise<ContainerResult<void, ControllerError>>((resolve) => {
+      resolvePromise = resolve;
+    });
+    const record: CleanupRecord = {
+      operationId,
+      trigger,
+      owner: config.controllerOwner,
+      containerId,
+      promise,
+    };
+    cleanupRecords.set(sessionId, record);
+
+    void performCleanup(sessionId, record).then((result) => {
+      if (result._tag === "Err") {
+        cleanupRecords.delete(sessionId);
+      }
+      resolvePromise?.(result);
+    });
+    return promise;
+  }
+
+  async function performCleanup(
+    sessionId: string,
+    record: CleanupRecord,
+  ): Promise<ContainerResult<void, ControllerError>> {
+    console.log(
+      `[cleanup-start] owner=${record.owner} session=${sessionId} container=${
+        record.containerId ?? "unknown"
+      } operation=${record.operationId} trigger=${record.trigger}`,
+    );
+
+    let closeFailure: ControllerError | undefined;
+    const cdp = cdpCache.get(sessionId);
+    if (cdp && record.trigger !== "cdp-disconnect") {
+      try {
+        await cdp.browser.close();
+      } catch (error) {
+        closeFailure = {
+          _tag: "CommandFailed",
+          message: `CDP close failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+
+    let destroyResult: ContainerResult<void, ControllerError>;
+    try {
+      destroyResult = await containerManager.destroy(sessionId);
+    } catch (error) {
+      destroyResult = {
+        _tag: "Err",
+        error: {
+          _tag: "ContainerCreateFailed",
+          message: `Container destroy threw: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      };
+    }
+
+    cdpCache.delete(sessionId);
+    clearSessionRuntimeState(sessionId);
+
+    let result: ContainerResult<void, ControllerError> = destroyResult;
+    if (destroyResult._tag === "Ok" && closeFailure) {
+      result = { _tag: "Err", error: closeFailure };
+    }
+    let failureDetails = "";
+    if (result._tag === "Ok") {
+      sessionContainers.delete(sessionId);
+    } else {
+      const failure = wireFailure(result.error, "cleanup");
+      failureDetails = ` error=${formatError(result.error)} errorType=${failure.errorType}${
+        failure.errorType === "command_failed" ? ` cause=${failure.cause}` : ""
+      }`;
+    }
+    console.log(
+      `[cleanup-result] owner=${record.owner} session=${sessionId} container=${
+        record.containerId ?? "unknown"
+      } operation=${record.operationId} trigger=${record.trigger} outcome=${
+        result._tag === "Ok" ? "success" : "failed"
+      }${failureDetails}`,
+    );
+    return result;
+  }
   return { handleConnection, onSessionExpired };
 
   function handleConnection(ws: WebSocket): void {
@@ -203,6 +349,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         success: false,
         error: formatError(regResult.error),
         code: ErrorCode[regResult.error._tag],
+        ...wireFailure(regResult.error),
       };
     }
     const sessionId = regResult.value;
@@ -214,32 +361,47 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     const containerResult = await containerManager.create(sessionId, profilePath);
     if (containerResult._tag === "Err") {
-      // Rollback: deregister session
-      registry.deregister(sessionId);
+      // Rollback without scheduling a second cleanup attempt.
+      registry.deregister(sessionId, false);
       return {
         type: "register_result",
         success: false,
         error: formatError(containerResult.error),
         code: ErrorCode[containerResult.error._tag],
+        ...wireFailure(containerResult.error),
       };
     }
 
     const { containerId, ip } = containerResult.value;
+    sessionContainers.set(sessionId, containerId);
     registry.transition(sessionId, { _tag: "ConnectingCDP", containerId });
+
 
     // Step 3: CdpBridge.connect()
     let cdp: CdpConnection;
     try {
       cdp = await connectCdp(`http://${ip}:9222`);
     } catch (e) {
-      // Rollback: destroy container + deregister
-      await containerManager.destroy(sessionId);
-      registry.deregister(sessionId);
+      // Rollback: destroy container + deregister without invoking cleanup hooks.
+      const destroyResult = await containerManager.destroy(sessionId);
+      if (destroyResult._tag === "Err") {
+        console.warn(
+          `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-rollback trigger=register outcome=failed error=${formatError(
+            destroyResult.error,
+          )}`,
+        );
+      }
+      registry.deregister(sessionId, false);
+      const cdpError: ControllerError = {
+        _tag: "CdpUnreachable",
+        containerId,
+      };
       return {
         type: "register_result",
         success: false,
         error: `CDP connection failed: ${e instanceof Error ? e.message : String(e)}`,
         code: ErrorCode.CdpUnreachable,
+        ...wireFailure(cdpError),
       };
     }
 
@@ -316,98 +478,72 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     };
   }
 
-  // ─── deregister ───
+  function deregisterErrorResponse(
+    sessionId: string,
+    error: ControllerError,
+    stage: CleanupStage = "command",
+  ): WireResponse {
+    return {
+      type: "deregister_result",
+      sessionId,
+      success: false,
+      error: formatError(error),
+      code: ErrorCode[error._tag],
+      ...wireFailure(error, stage),
+    };
+  }
 
   async function handleDeregister(
     sessionId: string,
   ): Promise<WireResponse> {
-    // Step 1: Deregister from registry
+    const state = registry.get(sessionId);
+    if (!state) {
+      return deregisterErrorResponse(sessionId, { _tag: "SessionNotFound", sessionId });
+    }
+
+    const containerId = state._tag === "Active"
+      ? state.containerId
+      : sessionContainers.get(sessionId);
+    const cleanup = requestCleanup(sessionId, "deregister", containerId);
     const deregResult = registry.deregister(sessionId);
     if (deregResult._tag === "Err") {
-      return {
-        type: "deregister_result",
-        sessionId,
-        success: false,
-      };
+      return deregisterErrorResponse(sessionId, deregResult.error);
     }
 
-    // Step 2: Disconnect CDP (close Patchright Browser)
-    const cdp = cdpCache.get(sessionId);
-    if (cdp) {
-      try {
-        await cdp.browser.close();
-      } catch {
-        // best-effort
-      }
-    }
-
-    // Step 3: Destroy container
-    await containerManager.destroy(sessionId);
-
-    // Cleanup
-    cdpCache.delete(sessionId);
-    clearSessionRuntimeState(sessionId);
+    const cleanupResult = await cleanup;
     logSessionActivity({ _tag: "Deregister", sessionId });
-
+    if (cleanupResult._tag === "Err") {
+      return deregisterErrorResponse(sessionId, cleanupResult.error, "cleanup");
+    }
     return { type: "deregister_result", sessionId, success: true };
   }
 
   // ─── Browser disconnected handler (§11.3) ───
 
   function setupBrowserDisconnectHandler(browser: Browser, sessionId: string): void {
-    browser.on("disconnected", async () => {
+    browser.on("disconnected", () => {
       logSessionActivity({ _tag: "CdpDisconnect", sessionId });
 
-      // Session → Expired
-      registry.transition(sessionId, {
-        _tag: "Expired",
-        reason: "CDP disconnected",
-      });
-
-      // Trigger container cleanup
-      const destroyResult = await containerManager.destroy(sessionId);
-      if (destroyResult._tag === "Err") {
-        console.warn(
-          `[destroy-failed] session=${sessionId} trigger=cdp-disconnect ${destroyResult.error._tag}: ${
-            "message" in destroyResult.error ? destroyResult.error.message : ""
-          }`,
-        );
+      const state = registry.get(sessionId);
+      if (state && state._tag !== "Expired") {
+        registry.transition(sessionId, {
+          _tag: "Expired",
+          reason: "CDP disconnected",
+        });
       }
 
-      // Cleanup CDP cache
-      cdpCache.delete(sessionId);
-      clearSessionRuntimeState(sessionId);
+      const containerId = state?._tag === "Active"
+        ? state.containerId
+        : sessionContainers.get(sessionId);
+      void requestCleanup(sessionId, "cdp-disconnect", containerId);
     });
   }
 
-  // ─── onSessionExpired (called by idle scanner) ───
+  // ─── onSessionExpired (called by idle scanner or explicit deregister) ───
 
   function onSessionExpired(sessionId: string, reason: string): void {
     logSessionActivity({ _tag: "Expired", sessionId, reason });
-
-    const cdp = cdpCache.get(sessionId);
-    if (cdp) {
-      cdp.browser.close().catch(() => {});
-    }
-    containerManager
-      .destroy(sessionId)
-      .then((r) => {
-        if (r._tag === "Err") {
-          console.warn(
-            `[destroy-failed] session=${sessionId} trigger=idle-expired ${r.error._tag}: ${
-              "message" in r.error ? r.error.message : ""
-            }`,
-          );
-        }
-      })
-      .catch((err: unknown) => {
-        console.warn(
-          `[destroy-failed] session=${sessionId} trigger=idle-expired threw: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
-    cdpCache.delete(sessionId);
-    clearSessionRuntimeState(sessionId);
+    const trigger: CleanupTrigger = reason === "deregistered" ? "deregister" : "idle-expired";
+    void requestCleanup(sessionId, trigger, sessionContainers.get(sessionId));
   }
 }
