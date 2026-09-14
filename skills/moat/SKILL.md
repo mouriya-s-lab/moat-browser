@@ -57,6 +57,11 @@ moat disconnect
 
 `moat init` is an alias for `moat connect`, and `moat destroy` is an alias for `moat disconnect`.
 
+`moat status` is a local session/configuration view: it shows the session
+handle and the Controller URL resolved for this invocation, but does not probe
+remote Controller health. An explicit `--controller` is shown for that
+invocation only and is not persisted.
+
 ## Interaction model
 
 Prefer semantic locators over snapshots:
@@ -92,10 +97,18 @@ moat hover @e1
 moat press Enter
 moat screenshot
 moat eval "document.title"
+moat window new
+moat get cdp-url  # returns unsupported_in_moat; CDP is Controller-private
 moat batch
 ```
 
-`moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector.
+`moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
+
+For machine-readable failures, inspect `errorType` rather than matching
+`error`: `unsupported_in_moat`, `missing_arguments`, `invalid_value`, and
+`target_not_found` are stable classes. `command_failed` is reserved for
+infrastructure failures with a structured cause; `capacity_exceeded` and
+`timeout` are reserved for their respective bounded-resource contracts.
 
 ## Neko login URL
 

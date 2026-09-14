@@ -19,81 +19,160 @@ use std::process::exit;
 use commands::{parse_command, ParseError};
 use connection::send_command;
 use flags::{clean_args, parse_flags, ControllerOverride};
-use fork_features::{print_command_help, print_help, unsupported_command, unsupported_flag};
+use fork_features::{command_help_text, help_text, unsupported_command, unsupported_flag};
 use output::{print_response_with_opts, OutputOptions};
 
 use moat_sdk::MoatClient;
 
-fn controller_url(controller: &ControllerOverride) -> Result<String, String> {
+const ERROR_UNSUPPORTED: &str = "unsupported_in_moat";
+const ERROR_MISSING_ARGUMENTS: &str = "missing_arguments";
+const ERROR_INVALID_VALUE: &str = "invalid_value";
+const ERROR_TARGET_NOT_FOUND: &str = "target_not_found";
+const ERROR_COMMAND_FAILED: &str = "command_failed";
+
+enum ControllerUrlError {
+    Missing(String),
+    Invalid(String),
+}
+
+impl ControllerUrlError {
+    fn message(&self) -> &str {
+        match self {
+            ControllerUrlError::Missing(message) => message,
+            ControllerUrlError::Invalid(message) => message,
+        }
+    }
+
+    fn error_type(&self) -> &'static str {
+        match self {
+            ControllerUrlError::Missing(_) => ERROR_MISSING_ARGUMENTS,
+            ControllerUrlError::Invalid(_) => ERROR_INVALID_VALUE,
+        }
+    }
+}
+
+fn controller_url(controller: &ControllerOverride) -> Result<String, ControllerUrlError> {
     match controller {
         ControllerOverride::Url(url) => return Ok(url.clone()),
-        ControllerOverride::MissingValue => return Err("Usage: moat --controller <url>".into()),
+        ControllerOverride::MissingValue => {
+            return Err(ControllerUrlError::Missing(
+                "Usage: moat --controller <url>".into(),
+            ));
+        }
         ControllerOverride::EmptyValue => {
-            return Err("--controller requires a non-empty URL".into());
+            return Err(ControllerUrlError::Invalid(
+                "--controller requires a non-empty URL".into(),
+            ));
         }
         ControllerOverride::Unspecified => {}
     }
 
-    if let Ok(value) = env::var("MOAT_CONTROLLER") {
-        if !value.trim().is_empty() {
+    match env::var("MOAT_CONTROLLER") {
+        Ok(value) => {
+            if value.trim().is_empty() {
+                return Err(ControllerUrlError::Invalid(
+                    "MOAT_CONTROLLER requires a non-empty URL".into(),
+                ));
+            }
             return Ok(value);
+        }
+        Err(env::VarError::NotPresent) => {}
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(ControllerUrlError::Invalid(
+                "MOAT_CONTROLLER is not valid Unicode".into(),
+            ));
         }
     }
 
-    let home = dirs::home_dir().ok_or("no home dir")?;
+    let home = match dirs::home_dir() {
+        Some(home) => home,
+        None => {
+            return Err(ControllerUrlError::Missing("no home dir".into()));
+        }
+    };
     let config_path = home.join(".moat").join("config.json");
     if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| ControllerUrlError::Invalid(e.to_string()))?;
         let config: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| e.to_string())?;
+            serde_json::from_str(&content).map_err(|e| ControllerUrlError::Invalid(e.to_string()))?;
         config
             .get("controller")
             .and_then(|value| value.as_str())
             .filter(|value| !value.trim().is_empty())
             .map(String::from)
-            .ok_or_else(|| "no non-empty 'controller' field in ~/.moat/config.json".into())
+            .ok_or_else(|| {
+                ControllerUrlError::Invalid(
+                    "no non-empty 'controller' field in ~/.moat/config.json".into(),
+                )
+            })
     } else {
-        Err("MOAT_CONTROLLER not set and ~/.moat/config.json not found".into())
+        Err(ControllerUrlError::Missing(
+            "MOAT_CONTROLLER not set and ~/.moat/config.json not found".into(),
+        ))
     }
 }
 
-fn print_json_error(message: impl AsRef<str>) {
-    let message = message.as_ref();
+fn print_json_error_with_type(message: impl AsRef<str>, error_type: &str) {
     println!(
         "{}",
         serde_json::to_string(&json!({
             "success": false,
-            "error": message,
-            "errorType": error_type(message),
+            "error": message.as_ref(),
+            "errorType": error_type,
         }))
         .unwrap_or_default()
     );
 }
 
-fn error_type(message: &str) -> &'static str {
-    if message.contains("unsupported_in_moat") || message.contains("not available in moat CLI") {
-        "unsupported_in_moat"
-    } else if message.contains("No active session") || message.contains("NoSession") {
-        "no_session"
-    } else if message.starts_with("Usage:") || message.contains("Missing required") {
-        "missing_arguments"
-    } else if message.contains("Invalid JSON") || message.contains("invalid_value") {
-        "invalid_input"
-    } else if message.contains("--controller")
-        || message.contains("MOAT_CONTROLLER")
-        || message.contains("no home dir")
-        || message.contains("controller")
-    {
-        "configuration_error"
+fn print_json_error(message: impl AsRef<str>) {
+    print_json_error_with_type(message, ERROR_COMMAND_FAILED);
+}
+
+fn print_json_success(data: serde_json::Value) {
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "success": true,
+            "data": data,
+        }))
+        .unwrap_or_default()
+    );
+}
+
+fn print_help_output(json_mode: bool, command: Option<&str>) {
+    let text = command
+        .and_then(command_help_text)
+        .unwrap_or_else(|| help_text().to_string());
+    if json_mode {
+        print_json_success(json!({
+            "kind": "help",
+            "text": text,
+        }));
     } else {
-        "command_failed"
+        println!("{}", text);
     }
 }
 
-fn print_version() {
-    println!("moat {}", env!("CARGO_PKG_VERSION"));
+fn print_version(json_mode: bool) {
+    let version = env!("CARGO_PKG_VERSION");
+    if json_mode {
+        print_json_success(json!({ "kind": "version", "version": version }));
+    } else {
+        println!("moat {}", version);
+    }
 }
 
+fn parse_error_type(error: &ParseError) -> &'static str {
+    match error {
+        ParseError::Unsupported { .. } => ERROR_UNSUPPORTED,
+        ParseError::MissingArguments { .. } => ERROR_MISSING_ARGUMENTS,
+        ParseError::UnknownCommand { .. }
+        | ParseError::UnknownSubcommand { .. }
+        | ParseError::InvalidValue { .. }
+        | ParseError::InvalidSessionName { .. } => ERROR_INVALID_VALUE,
+    }
+}
 #[tokio::main]
 async fn main() {
     // Reset SIGPIPE to default on Unix
@@ -108,48 +187,41 @@ async fn main() {
 
     // `help` is a local documentation command, not a Controller wire action.
     if clean.first().map(String::as_str) == Some("help") {
-        if let Some(cmd) = clean.get(1) {
-            if print_command_help(cmd) {
-                return;
-            }
-        }
-        print_help();
+        print_help_output(flags.json, clean.get(1).map(String::as_str));
         return;
     }
 
     // --help
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        if let Some(cmd) = clean.first() {
-            if print_command_help(cmd) {
-                return;
-            }
-        }
-        print_help();
+        print_help_output(flags.json, clean.first().map(String::as_str));
         return;
     }
 
     // --version
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        print_version();
+        print_version(flags.json);
         return;
     }
     let controller_override_error = match &flags.controller {
-        ControllerOverride::MissingValue => Some("Usage: moat --controller <url>"),
-        ControllerOverride::EmptyValue => Some("--controller requires a non-empty URL"),
+        ControllerOverride::MissingValue => {
+            Some((ERROR_MISSING_ARGUMENTS, "Usage: moat --controller <url>"))
+        }
+        ControllerOverride::EmptyValue => {
+            Some((ERROR_INVALID_VALUE, "--controller requires a non-empty URL"))
+        }
         ControllerOverride::Url(_) | ControllerOverride::Unspecified => None,
     };
-    if let Some(message) = controller_override_error {
+    if let Some((error_type, message)) = controller_override_error {
         if flags.json {
-            print_json_error(message);
+            print_json_error_with_type(message, error_type);
         } else {
             eprintln!("{} {}", color::error_indicator(), message);
         }
         exit(78);
     }
 
-
     if clean.is_empty() {
-        print_help();
+        print_help_output(flags.json, None);
         return;
     }
 
@@ -157,7 +229,7 @@ async fn main() {
     // turn an architectural rejection into missing_arguments/invalid_input.
     if let Some(message) = unsupported_command(&clean[0]) {
         if flags.json {
-            print_json_error(message);
+            print_json_error_with_type(message, ERROR_UNSUPPORTED);
         } else {
             eprintln!("{} {}", color::error_indicator(), message);
         }
@@ -166,7 +238,7 @@ async fn main() {
 
     if let Some(message) = unsupported_flag(&args, &clean[0]) {
         if flags.json {
-            print_json_error(message);
+            print_json_error_with_type(message, ERROR_UNSUPPORTED);
         } else {
             eprintln!("{} {}", color::error_indicator(), message);
         }
@@ -181,7 +253,7 @@ async fn main() {
             if clean.len() > 1 {
                 let message = "unsupported_in_moat: direct CDP connect is unavailable; use `moat init` and let the Controller create the browser";
                 if flags.json {
-                    print_json_error(message);
+                    print_json_error_with_type(message, ERROR_UNSUPPORTED);
                 } else {
                     eprintln!("{} {}", color::error_indicator(), message);
                 }
@@ -191,9 +263,9 @@ async fn main() {
                 Ok(u) => u,
                 Err(e) => {
                     if flags.json {
-                        print_json_error(&e);
+                        print_json_error_with_type(e.message(), e.error_type());
                     } else {
-                        eprintln!("{} {}", color::error_indicator(), e);
+                        eprintln!("{} {}", color::error_indicator(), e.message());
                     }
                     exit(78);
                 }
@@ -242,9 +314,15 @@ async fn main() {
                 Some(id) => id.clone(),
                 None => {
                     if flags.json {
-                        print_json_error("Usage: moat use <session-id>");
+                        print_json_error_with_type(
+                            "Missing arguments for: use\nUsage: moat use <session-id>",
+                            ERROR_MISSING_ARGUMENTS,
+                        );
                     } else {
-                        eprintln!("{} Usage: moat use <session-id>", color::error_indicator());
+                        eprintln!(
+                            "{} Missing arguments for: use\nUsage: moat use <session-id>",
+                            color::error_indicator()
+                        );
                     }
                     exit(1);
                 }
@@ -282,9 +360,9 @@ async fn main() {
                 Ok(u) => u,
                 Err(e) => {
                     if flags.json {
-                        print_json_error(&e);
+                        print_json_error_with_type(e.message(), e.error_type());
                     } else {
-                        eprintln!("{} {}", color::error_indicator(), e);
+                        eprintln!("{} {}", color::error_indicator(), e.message());
                     }
                     exit(78);
                 }
@@ -328,25 +406,31 @@ async fn main() {
         "status" => {
             match moat_sdk::session::read_session_id() {
                 Ok(Some(id)) => {
-                    let url = controller_url(&ControllerOverride::Unspecified)
-                        .unwrap_or_else(|_| "(not set)".into());
+                    let url =
+                        controller_url(&flags.controller).unwrap_or_else(|_| "(not set)".into());
                     if flags.json {
                         println!(
                             "{}",
                             serde_json::to_string(&json!({
                                 "success": true,
-                                "data": { "sessionId": id, "controller": url }
+                                "data": {
+                                    "sessionId": id,
+                                    "controller": url,
+                                    "view": "local_session_config",
+                                    "remoteChecked": false
+                                }
                             }))
                             .unwrap()
                         );
                     } else {
                         println!("Session:    {}", id);
                         println!("Controller: {}", url);
+                        println!("View:       local session/config (remote health not checked)");
                     }
                 }
                 _ => {
                     if flags.json {
-                        print_json_error("No active session");
+                        print_json_error_with_type("No active session", ERROR_TARGET_NOT_FOUND);
                     } else {
                         eprintln!("{} No active session.", color::error_indicator());
                     }
@@ -354,20 +438,6 @@ async fn main() {
                 }
             }
             return;
-        }
-
-        // Skip upstream-only commands that don't apply to moat
-        "install" | "upgrade" | "dashboard" | "profiles" | "session" => {
-            if flags.json {
-                print_json_error(format!("'{}' is not available in moat CLI", clean[0]));
-            } else {
-                eprintln!(
-                    "{} '{}' is not available in moat CLI. Use `moat init` to create sessions.",
-                    color::error_indicator(),
-                    clean[0]
-                );
-            }
-            exit(1);
         }
 
         _ => {} // Fall through to command execution
@@ -379,22 +449,7 @@ async fn main() {
         Ok(c) => c,
         Err(e) => {
             if flags.json {
-                let error_type = match &e {
-                    ParseError::UnknownCommand { .. } => "unknown_command",
-                    ParseError::UnknownSubcommand { .. } => "unknown_subcommand",
-                    ParseError::MissingArguments { .. } => "missing_arguments",
-                    ParseError::InvalidValue { .. } => "invalid_value",
-                    ParseError::InvalidSessionName { .. } => "invalid_session_name",
-                };
-                println!(
-                    "{}",
-                    serde_json::to_string(&json!({
-                        "success": false,
-                        "error": e.format(),
-                        "errorType": error_type,
-                    }))
-                    .unwrap_or_default()
-                );
+                print_json_error_with_type(e.format(), parse_error_type(&e));
             } else {
                 eprintln!("{}", color::red(&e.format()));
             }
@@ -434,9 +489,9 @@ async fn main() {
         Ok(u) => u,
         Err(e) => {
             if flags.json {
-                print_json_error(e);
+                print_json_error_with_type(e.message(), e.error_type());
             } else {
-                eprintln!("{} {}", color::error_indicator(), e);
+                eprintln!("{} {}", color::error_indicator(), e.message());
             }
             exit(78);
         }
@@ -454,7 +509,10 @@ async fn main() {
         Err(e) => {
             if e.contains("No active session") || e.contains("NoSession") {
                 if flags.json {
-                    print_json_error("No active session. Run `moat init` first.");
+                    print_json_error_with_type(
+                        "No active session. Run `moat init` first.",
+                        ERROR_TARGET_NOT_FOUND,
+                    );
                 } else {
                     eprintln!(
                         "{} No active session. Run `moat init` first.",
@@ -503,9 +561,9 @@ async fn run_batch(flags: &flags::Flags) {
         Ok(u) => u,
         Err(e) => {
             if flags.json {
-                print_json_error(e);
+                print_json_error_with_type(e.message(), e.error_type());
             } else {
-                eprintln!("{} {}", color::error_indicator(), e);
+                eprintln!("{} {}", color::error_indicator(), e.message());
             }
             exit(78);
         }
@@ -520,7 +578,7 @@ async fn run_batch(flags: &flags::Flags) {
             Ok(c) => c,
             Err(e) => {
                 if flags.json {
-                    print_json_error(e.format());
+                    print_json_error_with_type(e.format(), parse_error_type(&e));
                 } else {
                     eprintln!("{}", color::red(&e.format()));
                 }
@@ -544,7 +602,7 @@ async fn run_batch(flags: &flags::Flags) {
                     json_results.push(json!({
                         "success": false,
                         "error": e,
-                        "errorType": error_type(&e),
+                        "errorType": ERROR_COMMAND_FAILED,
                     }));
                 } else {
                     eprintln!("{} {}", color::error_indicator(), e);

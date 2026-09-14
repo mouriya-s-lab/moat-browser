@@ -482,13 +482,31 @@ CLI 命令词汇完整继承自 agent-browser fork，详见上游文档：`githu
 |------|------|
 | `moat connect [--profile <name>]` | 建立 session：Controller 拷贝 profile、创建 agent-chrome 容器、等待 CDP 就绪。session ID 写入 `~/.moat/session` |
 | `moat disconnect` | 销毁 session：Controller 停止并删除容器、清理 profile 拷贝。清除 `~/.moat/session` |
-| `moat status` | 查询当前 session：容器 IP、CDP 端口、profile 名称、存活时长 |
+| `moat status` | 显示本地 session ID、按本次调用解析的 Controller 配置与 `local_session_config` 视图；不探测远端健康状态 |
 
 **与 agent-browser 的行为差异**：
 
 | 命令 | agent-browser 行为 | moat 行为 |
 |------|---------|----------|
 | （所有命令） | 隐式自动启动本地 daemon + 本地 Chrome | 需要先 `moat connect`，返回 exit 77 如未连接 |
+
+**C14 公开契约**：
+
+- `moat window new` 保留同一 BrowserContext 的能力，但创建的是当前共享会话中的新 tab，不是隔离 browser context 或操作系统窗口。
+- `moat get cdp-url` 在 moat 架构中不可用，返回 `unsupported_in_moat`；agent-chrome 的 CDP 端口仅供 Controller 在 Docker 内部网络访问，CLI 不返回容器地址。
+- `moat --json --help`、`-h`、`help`、`--version` 与 `-V` 都返回单个 JSON 值。错误对象的 `errorType` 是机器判别字段，`error` 只用于展示。
+
+机器错误分类使用结构化 `errorType`，而不是匹配 `error` 文案：
+
+| `errorType` | 语义 |
+|-------------|------|
+| `unsupported_in_moat` | moat 架构不提供该命令 |
+| `missing_arguments` | 必需参数缺失 |
+| `invalid_value` | 参数值或形状非法 |
+| `target_not_found` | 引用的 session、tab、frame 或元素目标不存在 |
+| `command_failed` | 不属于上述类别的基础设施失败，并带结构化失败原因 |
+
+`capacity_exceeded`（配额已满，可在资源释放后重试）与 `timeout`（调用预算耗尽）是预留类别；它们不应被压成 `command_failed`。
 
 ### 9.4 Wire 协议
 

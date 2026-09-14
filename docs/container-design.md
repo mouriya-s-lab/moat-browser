@@ -307,9 +307,9 @@ user=chrome
 
 | 端口 | 协议 | 用途 |
 |------|------|------|
-| 9222 | TCP | Chrome DevTools Protocol |
+| 9222 | TCP | Chrome DevTools Protocol（仅 Controller 内部使用） |
 
-不对宿主暴露。Controller 通过 Docker 内部网络直接访问容器 IP:9222。
+agent-chrome 的 9222 端口不对宿主暴露。Controller 通过 Docker 内部网络直接访问容器 IP:9222；`moat` CLI 不提供该私有地址，`moat get cdp-url` 以 `unsupported_in_moat` 明确拒绝。
 
 ### 2.11 卷挂载
 

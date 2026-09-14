@@ -131,21 +131,36 @@ fn format_stream_status_text(action: Option<&str>, data: &serde_json::Value) -> 
 }
 
 pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &OutputOptions) {
+    // The Controller's CDP endpoint is private to its Docker network. Keep
+    // this guard even though the moat CLI rejects `get cdp-url` before send:
+    // a malformed or older Controller response must not become a URL leak.
+    if action == Some("cdp_url") {
+        let message =
+            "unsupported_in_moat: get cdp-url is unavailable because the container CDP endpoint is private; use moat browser commands through the active session";
+        if opts.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "success": false,
+                    "error": message,
+                    "errorType": "unsupported_in_moat",
+                })
+            );
+        } else {
+            eprintln!("{} {}", color::error_indicator(), message);
+        }
+        return;
+    }
+
     if opts.json {
         let response_json = || {
             let mut value = serde_json::to_value(resp).unwrap_or_default();
             if !resp.success {
                 if let Some(obj) = value.as_object_mut() {
-                    let error = resp.error.as_deref().unwrap_or_default();
-                    let error_type = if error.contains("unsupported_in_moat") {
-                        "unsupported_in_moat"
-                    } else if error.contains("Session") {
-                        "session_error"
-                    } else if error.contains("Validation") || error.contains("discriminant") {
-                        "wire_validation_error"
-                    } else {
-                        "command_failed"
-                    };
+                    let error_type = obj
+                        .get("errorType")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("command_failed");
                     obj.insert(
                         "errorType".into(),
                         serde_json::Value::String(error_type.into()),
@@ -259,10 +274,6 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 return;
             }
             println!("{}", url);
-            return;
-        }
-        if let Some(cdp_url) = data.get("cdpUrl").and_then(|v| v.as_str()) {
-            println!("{}", cdp_url);
             return;
         }
         // Diff responses -- route by action to avoid fragile shape probing
@@ -406,6 +417,9 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
         }
         // Tabs
         if let Some(tabs) = data.get("tabs").and_then(|v| v.as_array()) {
+            if action == Some("window_new") {
+                println!("Opened a new tab in the shared browser context:");
+            }
             for (i, tab) in tabs.iter().enumerate() {
                 let title = tab
                     .get("title")
