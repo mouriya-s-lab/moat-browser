@@ -155,19 +155,6 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
     if opts.json {
         let response_json = || {
             let mut value = serde_json::to_value(resp).unwrap_or_default();
-            if resp.success && action == Some("window_new") {
-                if let Some(data) = value
-                    .get_mut("data")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    data.insert(
-                        "description".into(),
-                        serde_json::Value::String(
-                            "Opened a new tab in the shared browser context".into(),
-                        ),
-                    );
-                }
-            }
             if !resp.success {
                 if let Some(obj) = value.as_object_mut() {
                     let error_type = obj

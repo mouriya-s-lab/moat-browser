@@ -67,11 +67,7 @@ Examples:
   moat disconnect"#
 }
 
-pub fn print_help() {
-    println!("{}", help_text());
-}
-
-/// Print moat-specific command help without inheriting upstream's local-browser
+/// Moat-specific command help without inheriting upstream's local-browser
 /// daemon, named-session, or browser-launch claims.
 pub fn command_help_text(command: &str) -> Option<String> {
     let usage = match command {
@@ -171,24 +167,15 @@ pub fn command_help_text(command: &str) -> Option<String> {
     ))
 }
 
-/// Print command-specific help. Returns true if help was printed, false if command unknown.
-pub fn print_command_help(command: &str) -> bool {
-    let Some(help) = command_help_text(command) else {
-        return false;
-    };
-    println!("{}", help);
-    true
-}
-
 #[cfg(test)]
 mod tests {
-    use super::print_command_help;
+    use super::command_help_text;
 
     #[test]
     fn recognizes_supported_and_unavailable_commands() {
         for command in ["open", "snapshot", "network", "state", "auth", "stream"] {
-            assert!(print_command_help(command));
+            assert!(command_help_text(command).is_some());
         }
-        assert!(!print_command_help("not-a-command"));
+        assert!(command_help_text("not-a-command").is_none());
     }
 }

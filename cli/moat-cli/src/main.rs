@@ -30,36 +30,86 @@ const ERROR_INVALID_VALUE: &str = "invalid_value";
 const ERROR_TARGET_NOT_FOUND: &str = "target_not_found";
 const ERROR_COMMAND_FAILED: &str = "command_failed";
 
-fn controller_url(controller: &ControllerOverride) -> Result<String, String> {
+enum ControllerUrlError {
+    Missing(String),
+    Invalid(String),
+}
+
+impl ControllerUrlError {
+    fn message(&self) -> &str {
+        match self {
+            ControllerUrlError::Missing(message) => message,
+            ControllerUrlError::Invalid(message) => message,
+        }
+    }
+
+    fn error_type(&self) -> &'static str {
+        match self {
+            ControllerUrlError::Missing(_) => ERROR_MISSING_ARGUMENTS,
+            ControllerUrlError::Invalid(_) => ERROR_INVALID_VALUE,
+        }
+    }
+}
+
+fn controller_url(controller: &ControllerOverride) -> Result<String, ControllerUrlError> {
     match controller {
         ControllerOverride::Url(url) => return Ok(url.clone()),
-        ControllerOverride::MissingValue => return Err("Usage: moat --controller <url>".into()),
+        ControllerOverride::MissingValue => {
+            return Err(ControllerUrlError::Missing(
+                "Usage: moat --controller <url>".into(),
+            ));
+        }
         ControllerOverride::EmptyValue => {
-            return Err("--controller requires a non-empty URL".into());
+            return Err(ControllerUrlError::Invalid(
+                "--controller requires a non-empty URL".into(),
+            ));
         }
         ControllerOverride::Unspecified => {}
     }
 
-    if let Ok(value) = env::var("MOAT_CONTROLLER") {
-        if !value.trim().is_empty() {
+    match env::var("MOAT_CONTROLLER") {
+        Ok(value) => {
+            if value.trim().is_empty() {
+                return Err(ControllerUrlError::Invalid(
+                    "MOAT_CONTROLLER requires a non-empty URL".into(),
+                ));
+            }
             return Ok(value);
+        }
+        Err(env::VarError::NotPresent) => {}
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(ControllerUrlError::Invalid(
+                "MOAT_CONTROLLER is not valid Unicode".into(),
+            ));
         }
     }
 
-    let home = dirs::home_dir().ok_or("no home dir")?;
+    let home = match dirs::home_dir() {
+        Some(home) => home,
+        None => {
+            return Err(ControllerUrlError::Missing("no home dir".into()));
+        }
+    };
     let config_path = home.join(".moat").join("config.json");
     if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| ControllerUrlError::Invalid(e.to_string()))?;
         let config: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| e.to_string())?;
+            serde_json::from_str(&content).map_err(|e| ControllerUrlError::Invalid(e.to_string()))?;
         config
             .get("controller")
             .and_then(|value| value.as_str())
             .filter(|value| !value.trim().is_empty())
             .map(String::from)
-            .ok_or_else(|| "no non-empty 'controller' field in ~/.moat/config.json".into())
+            .ok_or_else(|| {
+                ControllerUrlError::Invalid(
+                    "no non-empty 'controller' field in ~/.moat/config.json".into(),
+                )
+            })
     } else {
-        Err("MOAT_CONTROLLER not set and ~/.moat/config.json not found".into())
+        Err(ControllerUrlError::Missing(
+            "MOAT_CONTROLLER not set and ~/.moat/config.json not found".into(),
+        ))
     }
 }
 
@@ -213,9 +263,9 @@ async fn main() {
                 Ok(u) => u,
                 Err(e) => {
                     if flags.json {
-                        print_json_error(&e);
+                        print_json_error_with_type(e.message(), e.error_type());
                     } else {
-                        eprintln!("{} {}", color::error_indicator(), e);
+                        eprintln!("{} {}", color::error_indicator(), e.message());
                     }
                     exit(78);
                 }
@@ -310,9 +360,9 @@ async fn main() {
                 Ok(u) => u,
                 Err(e) => {
                     if flags.json {
-                        print_json_error(&e);
+                        print_json_error_with_type(e.message(), e.error_type());
                     } else {
-                        eprintln!("{} {}", color::error_indicator(), e);
+                        eprintln!("{} {}", color::error_indicator(), e.message());
                     }
                     exit(78);
                 }
@@ -439,9 +489,9 @@ async fn main() {
         Ok(u) => u,
         Err(e) => {
             if flags.json {
-                print_json_error(e);
+                print_json_error_with_type(e.message(), e.error_type());
             } else {
-                eprintln!("{} {}", color::error_indicator(), e);
+                eprintln!("{} {}", color::error_indicator(), e.message());
             }
             exit(78);
         }
@@ -511,9 +561,9 @@ async fn run_batch(flags: &flags::Flags) {
         Ok(u) => u,
         Err(e) => {
             if flags.json {
-                print_json_error(e);
+                print_json_error_with_type(e.message(), e.error_type());
             } else {
-                eprintln!("{} {}", color::error_indicator(), e);
+                eprintln!("{} {}", color::error_indicator(), e.message());
             }
             exit(78);
         }
