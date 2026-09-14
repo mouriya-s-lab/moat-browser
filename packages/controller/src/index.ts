@@ -117,7 +117,9 @@ const admission = createSessionAdmission({
 
 const admissionConfig = admission.validate();
 if (admissionConfig._tag === "Err") {
-  console.error(`[admission-config] ${admissionConfig.error.message}`);
+  console.error(
+    `[admission-config] ${"message" in admissionConfig.error ? admissionConfig.error.message : admissionConfig.error._tag}`,
+  );
   process.exit(78);
 }
 
