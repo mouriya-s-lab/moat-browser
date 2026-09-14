@@ -104,7 +104,15 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
     case "ValidationFailed":
       return { errorType: "command_failed", cause: stage === "cleanup" ? "cleanup" : "cdp" };
     case "CapacityExceeded":
-      return { errorType: "capacity_exceeded" };
+      return {
+        errorType: "capacity_exceeded",
+        owner: error.owner,
+        current: error.current,
+        limit: error.limit,
+        ownerCurrent: error.ownerCurrent,
+        ownerLimit: error.ownerLimit,
+        retryCondition: error.retryCondition,
+      };
   }
   return exhaustive(error);
 }

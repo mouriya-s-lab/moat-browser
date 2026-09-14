@@ -960,6 +960,8 @@ flowchart TD
 
 准入 reservation 通过所有 controller 共用的状态目录原子占位，使用 `moat-browser.owner` 标签核对 Docker 中重启遗留的 allocation。占额覆盖 Registering、CreatingContainer、ConnectingCDP、Active 和 cleanup；只有资源已清理或确认不存在后才释放。任何失败都保留 allocation 直到清理终态，避免后台创建绕过总额。
 
+共享 Docker 中来自其他 controller、但未出现在本 controller `SESSION_OWNER_QUOTAS` 的容器，只计入宿主总额，不阻塞本 owner 在自身配额内的请求；它们占用的资源仍会减少总额余量。只有本 controller 的 owner 缺少静态配额声明时才属于启动配置错误。已声明 owner 的静态配额总和必须不超过共享总额。
+
 ---
 
 ## 11. 错误处理

@@ -390,6 +390,12 @@ export type WireFailure =
   | {
       readonly errorType: "capacity_exceeded";
       readonly cause?: never;
+      readonly owner: string;
+      readonly current: number;
+      readonly limit: number;
+      readonly ownerCurrent: number;
+      readonly ownerLimit: number;
+      readonly retryCondition: string;
     };
 
 // ─── SessionState ───

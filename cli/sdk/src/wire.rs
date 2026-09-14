@@ -35,6 +35,19 @@ pub enum CommandFailureCause {
     Transport,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct CapacityDetails {
+    pub owner: String,
+    pub current: u32,
+    pub limit: u32,
+    #[serde(rename = "ownerCurrent")]
+    pub owner_current: u32,
+    #[serde(rename = "ownerLimit")]
+    pub owner_limit: u32,
+    #[serde(rename = "retryCondition")]
+    pub retry_condition: String,
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum WireResponse {
@@ -48,6 +61,15 @@ pub enum WireResponse {
         error_type: Option<String>,
         code: Option<u32>,
         cause: Option<CommandFailureCause>,
+        owner: Option<String>,
+        current: Option<u32>,
+        limit: Option<u32>,
+        #[serde(rename = "ownerCurrent")]
+        owner_current: Option<u32>,
+        #[serde(rename = "ownerLimit")]
+        owner_limit: Option<u32>,
+        #[serde(rename = "retryCondition")]
+        retry_condition: Option<String>,
     },
     #[serde(rename = "command_result")]
     CommandResult {
@@ -60,6 +82,15 @@ pub enum WireResponse {
         error_type: Option<String>,
         code: Option<u32>,
         cause: Option<CommandFailureCause>,
+        owner: Option<String>,
+        current: Option<u32>,
+        limit: Option<u32>,
+        #[serde(rename = "ownerCurrent")]
+        owner_current: Option<u32>,
+        #[serde(rename = "ownerLimit")]
+        owner_limit: Option<u32>,
+        #[serde(rename = "retryCondition")]
+        retry_condition: Option<String>,
     },
     #[serde(rename = "deregister_result")]
     DeregisterResult {
@@ -71,6 +102,15 @@ pub enum WireResponse {
         error_type: Option<String>,
         code: Option<u32>,
         cause: Option<CommandFailureCause>,
+        owner: Option<String>,
+        current: Option<u32>,
+        limit: Option<u32>,
+        #[serde(rename = "ownerCurrent")]
+        owner_current: Option<u32>,
+        #[serde(rename = "ownerLimit")]
+        owner_limit: Option<u32>,
+        #[serde(rename = "retryCondition")]
+        retry_condition: Option<String>,
     },
     #[serde(rename = "error")]
     Error { error: String, code: u32 },
@@ -89,6 +129,18 @@ pub struct Response {
     pub error_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<CommandFailureCause>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(rename = "ownerCurrent", skip_serializing_if = "Option::is_none")]
+    pub owner_current: Option<u32>,
+    #[serde(rename = "ownerLimit", skip_serializing_if = "Option::is_none")]
+    pub owner_limit: Option<u32>,
+    #[serde(rename = "retryCondition", skip_serializing_if = "Option::is_none")]
+    pub retry_condition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
