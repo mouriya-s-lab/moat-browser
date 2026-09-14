@@ -46,7 +46,7 @@ pub fn unsupported_command(command: &str) -> Option<String> {
         ),
         "session" => (
             "moat sessions are managed by the Controller and selected through `moat status`",
-            "use `moat status` or `moat connect",
+            "use `moat status` or `moat connect`",
         ),
         _ => return None,
     };

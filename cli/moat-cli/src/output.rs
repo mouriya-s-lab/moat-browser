@@ -1709,6 +1709,7 @@ Subcommands:
   count <selector>           Count matching elements
   box <selector>             Get bounding box (x, y, width, height)
   styles <selector>          Get computed styles of elements
+  cdp-url                    Get Chrome DevTools Protocol WebSocket URL
 
 Global Options:
   --json               Output as JSON
@@ -2021,19 +2022,21 @@ Examples:
         // === Window ===
         "window" => {
             r##"
-moat window - Open a shared-session tab
+agent-browser window - Manage browser windows
 
-Usage: moat window new
+Usage: agent-browser window <operation>
 
-Opens a new tab in the active session's shared browser context. It does
-not create an isolated browser context or an operating-system window.
+Manage browser windows.
+
+Operations:
+  new                  Open new browser window
 
 Global Options:
   --json               Output as JSON
   --session <name>     Use specific session
 
 Examples:
-  moat window new
+  agent-browser window new
 "##
         }
 
@@ -2635,6 +2638,7 @@ Navigation:
   reload                     Reload page
 
 Get Info:  agent-browser get <what> [selector]
+  text, html, value, attr <name>, title, url, count, box, styles, cdp-url
 
 Check State:  agent-browser is <what> <selector>
   visible, enabled, checked
