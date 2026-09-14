@@ -480,9 +480,22 @@ CLI 命令词汇完整继承自 agent-browser fork，详见上游文档：`githu
 
 | 命令 | 说明 |
 |------|------|
-| `moat connect [--profile <name>]` | 建立 session：Controller 拷贝 profile、创建带 owner/session 标签的 agent-chrome 容器、等待 CDP 就绪。session ID 写入 `~/.moat/session`；已有本地 session 时在远端注册前拒绝，保留原 handle。 |
+| `moat connect [--profile <registered-name>]` | 建立 session：Controller 按受信任注册名称解析 profile，拷贝 profile、创建带 owner/session 标签的 agent-chrome 容器、等待 CDP 就绪。`default` 始终指向 `PROFILE_SOURCE`；其他名称必须由 Controller 的 `PROFILE_REGISTRY` 显式注册。绝对路径、相对路径、路径分隔符和未注册名称在创建 session 前返回 `invalid_value`，不会产生容器或 profile 副本。session ID 写入 `~/.moat/session`；已有本地 session 时在远端注册前拒绝，保留原 handle。 |
 | `moat disconnect` / `moat destroy` / `moat close-session` / `moat close` | 共享同一清理终态：只有 Controller 确认当前 owner 的容器与 profile 已清理才返回成功并删除 `~/.moat/session`。传输、删除或终态未知时返回非零失败，保留本地 session handle 供重试。 |
 | `moat status` | 显示本地 session ID、按本次调用解析的 Controller 配置与 `local_session_config` 视图；不探测远端健康状态 |
+
+`--profile` 只接受 profile 名称，不接受客户端或 Controller 路径。Controller
+操作员可通过 JSON 环境变量注册额外名称；来源必须是已挂载的目录并位于
+`PROFILE_STORE`（默认 `PROFILES_WORK`）之内：
+
+```bash
+PROFILE_STORE=/data/profiles
+PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
+```
+
+`default` 是保留名称，始终使用 `PROFILE_SOURCE`，不能由
+`PROFILE_REGISTRY` 覆盖。注册来源不存在或越出受控目录时，该名称会以
+`invalid_value` 拒绝；不会按名称推导 `/data/<name>`，也不会自动创建目录。
 
 **与 agent-browser 的行为差异**：
 

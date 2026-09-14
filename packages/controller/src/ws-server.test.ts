@@ -28,7 +28,9 @@ type FakeBrowser = {
 
 const config: ControllerConfig = {
   port: 3000,
-  profileSource: "/data/profile",
+  profileSource: "/tmp",
+  profileRegistry: { secondary: "/tmp" },
+  profileStoreRoot: "/tmp",
   profilesWork: "/data/profiles",
   profilesHostPath: "/data/profiles",
   dockerNetwork: "moat",
@@ -36,6 +38,7 @@ const config: ControllerConfig = {
   sessionIdleTimeout: 600_000,
   cdpReadyTimeout: 30_000,
   commandTimeout: 25_000,
+  controllerOwner: "test-owner",
 };
 
 let originalLog: typeof console.log;

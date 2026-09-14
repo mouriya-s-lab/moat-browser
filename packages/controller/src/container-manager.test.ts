@@ -42,11 +42,14 @@ function match(method: string, matcher: string | RegExp, handler: (call: Call) =
 
 const baseConfig: Omit<ContainerManagerConfig, "dockerFetch"> = {
   profileSource: "/data/profile",
+  profileRegistry: {},
+  profileStoreRoot: "/tmp/profiles-test",
   profilesWork: "/tmp/profiles-test",
   profilesHostPath: "/data/profiles",
   dockerNetwork: "moat",
   agentChromeImage: "agent-chrome:test",
   cdpReadyTimeout: 100,
+  owner: "test-owner",
 };
 
 let originalWarn: typeof console.warn;
