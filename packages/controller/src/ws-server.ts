@@ -20,6 +20,11 @@ import type {
 import {
   resolveProfilePath,
 } from "./container-manager.js";
+import {
+  createSessionAdmission,
+  type AdmissionPhase,
+  type SessionAdmission,
+} from "./session-admission.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { RefStore } from "./ref-store.js";
 import { clearSessionRuntimeState, connectCDP, executeCommand, type CdpConnection } from "./cdp-bridge.js";
@@ -68,6 +73,8 @@ function formatError(error: ControllerError): string {
       return `Command failed: ${error.message}`;
     case "ValidationFailed":
       return `Validation failed: ${error.message}`;
+    case "CapacityExceeded":
+      return `Capacity exceeded: ${error.current}/${error.limit} sessions allocated (owner ${error.owner}: ${error.ownerCurrent}/${error.ownerLimit}); ${error.retryCondition}`;
   }
   return exhaustive(error);
 }
@@ -96,6 +103,8 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
     case "CommandFailed":
     case "ValidationFailed":
       return { errorType: "command_failed", cause: stage === "cleanup" ? "cleanup" : "cdp" };
+    case "CapacityExceeded":
+      return { errorType: "capacity_exceeded" };
   }
   return exhaustive(error);
 }
@@ -165,6 +174,7 @@ type CleanupRecord = {
 
 export type WsHandlerDeps = {
   readonly registry: SessionRegistry;
+  readonly admission?: SessionAdmission;
   readonly containerManager: ContainerManager;
   readonly refStore: RefStore;
   readonly config: ControllerConfig;
@@ -180,12 +190,20 @@ export type WsHandler = {
 export function createWsHandler(deps: WsHandlerDeps): WsHandler {
   const {
     registry,
+    admission: configuredAdmission,
     containerManager,
     refStore,
     config,
     connectCDP: connectCdp = connectCDP,
     executeCommand: runCommand = executeCommand,
   } = deps;
+  const admission =
+    configuredAdmission ??
+    createSessionAdmission({
+      owner: config.controllerOwner,
+      ownerQuota: 5,
+      totalQuota: 5,
+    });
 
   // Persistent CDP connection cache — survives ws close, keyed by sessionId
   const cdpCache = new Map<string, CdpConnection>();
@@ -241,6 +259,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         record.containerId ?? "unknown"
       } operation=${record.operationId} trigger=${record.trigger}`,
     );
+    await updateAdmissionPhase(sessionId, "cleanup");
 
     let closeFailure: ControllerError | undefined;
     const cdp = cdpCache.get(sessionId);
@@ -276,10 +295,15 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     if (destroyResult._tag === "Ok" && closeFailure) {
       result = { _tag: "Err", error: closeFailure };
     }
-    let failureDetails = "";
-    if (result._tag === "Ok") {
+    const releaseError = await releaseAfterCleanup(sessionId, destroyResult);
+    if (releaseError && result._tag === "Ok") {
+      result = { _tag: "Err", error: releaseError };
+    }
+    if (destroyResult._tag === "Ok" && !releaseError) {
       sessionContainers.delete(sessionId);
-    } else {
+    }
+    let failureDetails = "";
+    if (result._tag === "Err") {
       const failure = wireFailure(result.error, "cleanup");
       failureDetails = ` error=${formatError(result.error)} errorType=${failure.errorType}${
         failure.errorType === "command_failed" ? ` cause=${failure.cause}` : ""
@@ -353,6 +377,55 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
   // ─── register 全链路 (§10) ───
 
+  async function updateAdmissionPhase(sessionId: string, phase: AdmissionPhase): Promise<void> {
+    const result = await admission.updatePhase(sessionId, phase);
+    if (result._tag === "Err") {
+      console.warn(
+        `[admission-phase-failed] owner=${config.controllerOwner} session=${sessionId} phase=${phase} error=${formatError(
+          result.error,
+        )}`,
+      );
+    }
+  }
+
+  async function releaseAfterCleanup(
+    sessionId: string,
+    cleanupResult: ContainerResult<void, ControllerError>,
+  ): Promise<ControllerError | undefined> {
+    if (
+      cleanupResult._tag === "Err" &&
+      cleanupResult.error._tag !== "SessionNotFound"
+    ) {
+      return undefined;
+    }
+    const releaseResult = await admission.release(sessionId);
+    if (releaseResult._tag === "Err") {
+      console.warn(
+        `[admission-release-failed] owner=${config.controllerOwner} session=${sessionId} error=${formatError(
+          releaseResult.error,
+        )}`,
+      );
+      return releaseResult.error;
+    }
+    return undefined;
+  }
+  async function destroyForRollback(
+    sessionId: string,
+  ): Promise<ContainerResult<void, ControllerError>> {
+    try {
+      return await containerManager.destroy(sessionId);
+    } catch (error) {
+      return {
+        _tag: "Err",
+        error: {
+          _tag: "CommandFailed",
+          message: `Rollback cleanup threw: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      };
+    }
+  }
+
+
   async function handleRegister(
     profile?: string,
   ): Promise<WireResponse> {
@@ -369,9 +442,29 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
     const profilePath = profileResult.value;
 
-    // SessionRegistry.register() is the first mutating step.
-    const regResult = registry.register(profile);
+    // Reserve before touching Docker. The reservation is shared across
+    // controller processes through the admission store and remains occupied
+    // until cleanup reaches a terminal state.
+    const admissionResult = await admission.reserve();
+    if (admissionResult._tag === "Err") {
+      if (admissionResult.error._tag === "CapacityExceeded") {
+        console.warn(
+          `[capacity-rejected] owner=${admissionResult.error.owner} current=${admissionResult.error.current}/${admissionResult.error.limit} ownerCurrent=${admissionResult.error.ownerCurrent}/${admissionResult.error.ownerLimit}`,
+        );
+      }
+      return {
+        type: "register_result",
+        success: false,
+        error: formatError(admissionResult.error),
+        code: ErrorCode[admissionResult.error._tag],
+        ...wireFailure(admissionResult.error),
+      };
+    }
+    const sessionId = admissionResult.value.sessionId;
+
+    const regResult = registry.register(profile, sessionId);
     if (regResult._tag === "Err") {
+      await admission.release(sessionId);
       return {
         type: "register_result",
         success: false,
@@ -380,14 +473,15 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         ...wireFailure(regResult.error),
       };
     }
-    const sessionId = regResult.value;
 
     // ContainerManager.create() — transition through states
     registry.transition(sessionId, { _tag: "CreatingContainer", profilePath });
+    await updateAdmissionPhase(sessionId, "creating");
 
     const containerResult = await containerManager.create(sessionId, profilePath);
     if (containerResult._tag === "Err") {
-      // Rollback without scheduling a second cleanup attempt.
+      const destroyResult = await destroyForRollback(sessionId);
+      await releaseAfterCleanup(sessionId, destroyResult);
       registry.deregister(sessionId, false);
       return {
         type: "register_result",
@@ -401,7 +495,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     const { containerId, ip } = containerResult.value;
     sessionContainers.set(sessionId, containerId);
     registry.transition(sessionId, { _tag: "ConnectingCDP", containerId });
-
+    await updateAdmissionPhase(sessionId, "connecting");
 
     // Step 3: CdpBridge.connect()
     let cdp: CdpConnection;
@@ -409,7 +503,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       cdp = await connectCdp(`http://${ip}:9222`);
     } catch (e) {
       // Rollback: destroy container + deregister without invoking cleanup hooks.
-      const destroyResult = await containerManager.destroy(sessionId);
+      const destroyResult = await destroyForRollback(sessionId);
+      await releaseAfterCleanup(sessionId, destroyResult);
       if (destroyResult._tag === "Err") {
         console.warn(
           `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-rollback trigger=register outcome=failed error=${formatError(
@@ -441,6 +536,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       createdAt: now,
       lastActivity: now,
     });
+    await updateAdmissionPhase(sessionId, "active");
 
     // Step 5: Cache CDP connection + listen for browser disconnect
     cdpCache.set(sessionId, cdp);

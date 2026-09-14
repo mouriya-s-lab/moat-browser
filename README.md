@@ -737,7 +737,16 @@ type ControllerError =
   | { readonly _tag: "SessionExpired"; readonly sessionId: string }
   | { readonly _tag: "ContainerCreateFailed"; readonly message: string }
   | { readonly _tag: "CdpUnreachable"; readonly containerId: string }
-  | { readonly _tag: "ProfileCopyFailed"; readonly message: string };
+  | { readonly _tag: "ProfileCopyFailed"; readonly message: string }
+  | {
+      readonly _tag: "CapacityExceeded";
+      readonly current: number;
+      readonly limit: number;
+      readonly owner: string;
+      readonly ownerCurrent: number;
+      readonly ownerLimit: number;
+      readonly retryCondition: string;
+    };
 ```
 
 ControllerError 在序列化到 wire 时，映射到 agent-browser 响应的 `error` 字段 + 对应的 exit code。

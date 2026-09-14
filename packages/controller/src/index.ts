@@ -5,12 +5,12 @@ import {
   resolveControllerOwner,
   type ProfileRegistry,
 } from "./container-manager.js";
+import { createSessionAdmission } from "./session-admission.js";
 import { createSessionRegistry } from "./session-registry.js";
 import { createRefStore } from "./ref-store.js";
 import { createWsHandler } from "./ws-server.js";
 
 // ─── ControllerConfig ───
-
 export type ControllerConfig = {
   readonly port: number;
   readonly profileSource: string;
@@ -24,7 +24,30 @@ export type ControllerConfig = {
   readonly cdpReadyTimeout: number;
   readonly commandTimeout: number;
   readonly controllerOwner: string;
+  readonly sessionQuotaTotal: number;
+  readonly sessionQuota: number;
+  readonly sessionOwnerQuotas: Readonly<Record<string, number>> | undefined;
+  readonly admissionStatePath: string;
 };
+
+function parseQuota(raw: string | undefined, fallback: number): number {
+  const value = Number(raw ?? fallback);
+  return Number.isInteger(value) ? value : -1;
+}
+
+function parseOwnerQuotas(raw: string | undefined): Readonly<Record<string, number>> | undefined {
+  if (!raw?.trim()) return undefined;
+  const quotas: Record<string, number> = {};
+  for (const item of raw.split(",")) {
+    const [owner, quota] = item.split("=", 2).map((part) => part.trim());
+    if (!owner || quota === undefined) {
+      quotas["__invalid__"] = 6;
+      continue;
+    }
+    quotas[owner] = parseQuota(quota, 6);
+  }
+  return quotas;
+}
 
 async function loadConfig(): Promise<ControllerConfig> {
   const port = parseInt(process.env.PORT ?? "3000", 10);
@@ -37,12 +60,15 @@ async function loadConfig(): Promise<ControllerConfig> {
     console.error(`[profile-config] ${profileRegistryResult.error.message}`);
     process.exit(78);
   }
-
   const ownerResult = await resolveControllerOwner(process.env.CONTROLLER_OWNER);
   if (ownerResult._tag === "Err") {
     console.error(`[controller-owner] ${ownerResult.error.message}`);
     process.exit(78);
   }
+
+  const sessionQuotaTotal = parseQuota(process.env.SESSION_TOTAL_QUOTA, 5);
+  const sessionQuota = parseQuota(process.env.SESSION_QUOTA, sessionQuotaTotal);
+  const sessionOwnerQuotas = parseOwnerQuotas(process.env.SESSION_OWNER_QUOTAS);
 
   return {
     port,
@@ -57,6 +83,10 @@ async function loadConfig(): Promise<ControllerConfig> {
     cdpReadyTimeout: parseInt(process.env.CDP_READY_TIMEOUT ?? "30000", 10),
     commandTimeout: parseInt(process.env.COMMAND_TIMEOUT ?? "25000", 10),
     controllerOwner: ownerResult.value,
+    sessionQuotaTotal,
+    sessionQuota,
+    sessionOwnerQuotas,
+    admissionStatePath: process.env.ADMISSION_STATE_PATH ?? `${profilesWork}/.moat-admission`,
   };
 }
 
@@ -76,6 +106,15 @@ const containerManager = createContainerManager({
   owner: config.controllerOwner,
 });
 
+const admission = createSessionAdmission({
+  owner: config.controllerOwner,
+  ownerQuota: config.sessionQuota,
+  totalQuota: config.sessionQuotaTotal,
+  ownerQuotas: config.sessionOwnerQuotas,
+  statePath: config.admissionStatePath,
+  listExternalAllocations: containerManager.listAllocations,
+});
+
 const refStore = createRefStore();
 
 const registry = createSessionRegistry(
@@ -89,6 +128,7 @@ const registry = createSessionRegistry(
 
 const handler = createWsHandler({
   registry,
+  admission,
   containerManager,
   refStore,
   config,
@@ -106,6 +146,19 @@ if (reapResult._tag === "Ok") {
       "message" in reapResult.error ? reapResult.error.message : ""
     }`,
   );
+}
+
+if (reapResult._tag === "Ok") {
+  const reconciled = await admission.reconcile();
+  if (reconciled._tag === "Ok") {
+    console.log(`[admission-reconcile] owner=${config.controllerOwner} removed=${reconciled.value.removed}`);
+  } else {
+    console.warn(
+      `[admission-reconcile-failed] owner=${config.controllerOwner} ${reconciled.error._tag}: ${
+        "message" in reconciled.error ? reconciled.error.message : ""
+      }`,
+    );
+  }
 }
 
 const wss = new WebSocketServer({ port: config.port });

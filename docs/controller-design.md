@@ -938,35 +938,27 @@ wire 协议是严格的 request-response 模式（不是 pub-sub）。每条请�
 
 ## 10. register 全链路
 
-将 Session Registry、Container Manager、CDP Bridge 三个模块串联：
+注册请求先取得共享准入 reservation，再进入 Session Registry；容量拒绝在 profile copy、Docker create/start 和 CDP 连接之前返回。
 
-```
-SDK                     Controller
- │                         │
- ├─ register ─────────────►│
- │                         ├─ SessionRegistry: 创建 entry (Registering)
- │                         │
- │                         ├─ ContainerManager.create()
- │                         │    ├─ cp -a profile
- │                         │    ├─ chown 1000:1000
- │                         │    ├─ SessionRegistry: → CreatingContainer
- │                         │    ├─ docker create + start
- │                         │    ├─ SessionRegistry: → ConnectingCDP
- │                         │    ├─ 轮询 :9222/json/version
- │                         │    └─ 返回 { containerId, ip }
- │                         │
- │                         ├─ CdpBridge.connect(ip:9222)
- │                         │    ├─ patchright.chromium.connectOverCDP
- │                         │    └─ 返回 { browser, context }
- │                         │
- │                         ├─ SessionRegistry: → Active
- │                         │    (存入 containerId, ip, browser, context)
- │                         │
- │◄─ register_result ──────│  { success: true, sessionId }
- │                         │
+```mermaid
+flowchart TD
+    R[register request] --> A[SessionAdmission.reserve]
+    A -->|capacity_exceeded| X[return current quota and retry condition]
+    A -->|reservation| S[SessionRegistry: Registering]
+    S --> C[ContainerManager.create]
+    C --> P[copy profile and create agent container]
+    P --> K[SessionRegistry: CreatingContainer / ConnectingCDP]
+    K --> D[CdpBridge.connect]
+    D --> T[SessionRegistry: Active]
+    T --> O[return register_result with sessionId]
+    C -->|failure| Q[cleanup resources, then release reservation]
+    D -->|failure| Q
+    Q --> E[return typed failure]
+    T --> Z[disconnect or idle expiry]
+    Z --> Y[cleanup terminal state, then release reservation]
 ```
 
-任何步骤失败 → 回滚已创建的资源（停容器、删 profile 拷贝）→ 返回对应错误码。
+准入 reservation 通过所有 controller 共用的状态目录原子占位，使用 `moat-browser.owner` 标签核对 Docker 中重启遗留的 allocation。占额覆盖 Registering、CreatingContainer、ConnectingCDP、Active 和 cleanup；只有资源已清理或确认不存在后才释放。任何失败都保留 allocation 直到清理终态，避免后台创建绕过总额。
 
 ---
 
@@ -986,10 +978,21 @@ type ControllerError =
   | { readonly _tag: "ElementNotFound"; readonly selector?: string }
   | { readonly _tag: "Timeout"; readonly operation: string }
   | { readonly _tag: "CommandFailed"; readonly message: string }
-  | { readonly _tag: "ValidationFailed"; readonly message: string };
+  | { readonly _tag: "ValidationFailed"; readonly message: string }
+  | {
+      readonly _tag: "CapacityExceeded";
+      readonly owner: string;
+      readonly current: number;
+      readonly limit: number;
+      readonly ownerCurrent: number;
+      readonly ownerLimit: number;
+      readonly retryCondition: string;
+    };
 ```
 
 ### 11.2 错误到 Wire 响应的映射
+
+容量拒绝使用 `errorType: "capacity_exceeded"`，并保留当前总额、owner 占额与可重试条件；它不能被压成 `command_failed`。
 
 ```typescript
 function errorToWireResponse(sessionId: string, error: ControllerError): WireResponse {
@@ -1005,13 +1008,14 @@ function errorToWireResponse(sessionId: string, error: ControllerError): WireRes
     Timeout: 75,
     CommandFailed: 1,
     ValidationFailed: 2,
+    CapacityExceeded: 84,
   };
 
   return {
     type: "command_result",
     sessionId,
     success: false,
-    error: formatError(error),  // 人类可读的错误描述
+    error: formatError(error),
     code: codeMap[error._tag],
   };
 }
@@ -1051,7 +1055,12 @@ type ControllerConfig = {
   readonly cdpReadyTimeout: number;         // 默认 30000
   /** Patchright 命令默认超时（毫秒） */
   readonly commandTimeout: number;          // 默认 25000
-};
+  /** 固定共享 session 总额，默认 5；验证可显式降低 */
+  readonly sessionQuotaTotal: number;
+  /** 当前 owner 静态配额，不得超过 sessionQuotaTotal */
+  readonly sessionQuota: number;
+  /** 共享状态目录，用于跨 controller 原子 reservation */
+  readonly admissionStatePath: string;
 ```
 
 来源优先级：环境变量 > 配置文件 > 代码默认值。
@@ -1069,3 +1078,7 @@ type ControllerConfig = {
 | `RECONNECT_WINDOW` | reconnectWindow |
 | `CDP_READY_TIMEOUT` | cdpReadyTimeout |
 | `COMMAND_TIMEOUT` | commandTimeout |
+| `SESSION_TOTAL_QUOTA` | sessionQuotaTotal（默认 5，验收可降低） |
+| `SESSION_QUOTA` | sessionQuota |
+| `SESSION_OWNER_QUOTAS` | owner 到静态配额的逗号分隔声明 |
+| `ADMISSION_STATE_PATH` | admissionStatePath |
