@@ -46,8 +46,11 @@ import type {
   BatchResultEntry,
 } from "@moat-browser/types";
 import { exhaustive } from "@moat-browser/types";
-import type { RefStore } from "./ref-store.js";
-
+import type {
+  RefScope,
+  RefStaleReason,
+  RefStore,
+} from "./ref-store.js";
 // ─── Result ADT ───
 
 export type Result<T, E> =
@@ -170,6 +173,7 @@ type SessionRuntimeState = {
   readonly observedPages: WeakSet<Page>;
   readonly cdpObservedPages: WeakSet<Page>;
   readonly pageObservers: WeakMap<Page, Promise<void>>;
+  readonly pageNavigationGenerations: WeakMap<Page, number>;
   readonly observerSessions: Set<CDPSession>;
   readonly pendingConsoleKeys: Set<string>;
   readonly pendingErrorMessages: Set<string>;
@@ -177,8 +181,10 @@ type SessionRuntimeState = {
   readonly pageErrors: Array<{ readonly message: string }>;
   readonly requestIds: WeakMap<Request, string>;
   readonly requests: Map<string, NetworkRequestEntry>;
+  activePage?: Page;
   activeFrame?: Frame;
   activeFrameSelector?: string;
+  nextRefNumber: number;
   pendingDialog?: Dialog;
   dialogInfo?: {
     readonly type: string;
@@ -200,6 +206,7 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     observedPages: new WeakSet<Page>(),
     cdpObservedPages: new WeakSet<Page>(),
     pageObservers: new WeakMap<Page, Promise<void>>(),
+    pageNavigationGenerations: new WeakMap<Page, number>(),
     observerSessions: new Set<CDPSession>(),
     pendingConsoleKeys: new Set<string>(),
     pendingErrorMessages: new Set<string>(),
@@ -207,12 +214,54 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     pageErrors: [],
     requestIds: new WeakMap<Request, string>(),
     requests: new Map<string, NetworkRequestEntry>(),
+    nextRefNumber: 1,
     traceActive: false,
     harActive: false,
     nextRequestId: 1,
   };
   sessionRuntimeState.set(sessionId, created);
   return created;
+}
+
+function currentRefScope(state: SessionRuntimeState, page: Page): RefScope {
+  return {
+    page,
+    ...(state.activeFrame === undefined ? {} : { frame: state.activeFrame }),
+    navigationGeneration: state.pageNavigationGenerations.get(page) ?? 0,
+  };
+}
+
+function invalidateRefs(refStore: RefStore, sessionId: string, reason: RefStaleReason): void {
+  if (refStore.invalidate) {
+    refStore.invalidate(sessionId, reason);
+    return;
+  }
+  refStore.update(sessionId, new Map());
+}
+
+function resolveRef(
+  refStore: RefStore,
+  sessionId: string,
+  ref: string,
+  scope: RefScope,
+): Result<Locator, ControllerError> {
+  const detailed = refStore.resolveDetailed?.(sessionId, ref, scope);
+  if (detailed) {
+    switch (detailed._tag) {
+      case "Found":
+        return ok(detailed.locator);
+      case "Missing":
+        return err({ _tag: "ElementNotFound", selector: ref });
+      case "Stale":
+        return err({ _tag: "StaleReference", ref, reason: detailed.reason });
+      default:
+        return exhaustive(detailed);
+    }
+  }
+  const locator = refStore.resolve(sessionId, ref, scope);
+  return locator
+    ? ok(locator)
+    : err({ _tag: "ElementNotFound", selector: ref });
 }
 
 function recordConsole(
@@ -238,6 +287,15 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
   const state = getSessionRuntimeState(sessionId);
   if (state.observedPages.has(page)) return state;
   state.observedPages.add(page);
+  state.pageNavigationGenerations.set(page, 0);
+  page.on("framenavigated", (frame) => {
+    const generation = state.pageNavigationGenerations.get(page) ?? 0;
+    state.pageNavigationGenerations.set(page, generation + 1);
+    if (state.activePage === page && frame === page.mainFrame()) {
+      state.activeFrame = undefined;
+      state.activeFrameSelector = undefined;
+    }
+  });
   page.on("console", (message) => {
     if (!state.cdpObservedPages.has(page)) recordConsole(state, message.type(), message.text());
   });
@@ -403,27 +461,29 @@ function resolveLocator(
   scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
+  refScope: RefScope,
   ref?: string,
   selector?: string,
-): Locator | null {
-  if (ref) return refStore.resolve(sessionId, ref) ?? null;
-  if (selector) return scope.locator(selector);
-  return null;
+): Result<Locator, ControllerError> {
+  if (ref) return resolveRef(refStore, sessionId, ref, refScope);
+  if (selector) return ok(scope.locator(selector));
+  return err({ _tag: "ElementNotFound" });
 }
 
 // ─── executeElementAction ───
-
 async function executeElementAction(
   scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
+  refScope: RefScope,
   ref: string | undefined,
   selector: string | undefined,
   action: "click" | "fill" | "type" | "hover",
   value?: string,
 ): Promise<Result<CommandResultData, ControllerError>> {
-  const locator = resolveLocator(scope, refStore, sessionId, ref, selector);
-  if (!locator) return err({ _tag: "ElementNotFound", selector: ref ?? selector } as const);
+  const resolved = resolveLocator(scope, refStore, sessionId, refScope, ref, selector);
+  if (resolved._tag === "Err") return resolved;
+  const locator = resolved.value;
 
   switch (action) {
     case "click":
@@ -461,6 +521,7 @@ async function buildAriaSnapshot(
   scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
+  refScope: RefScope,
   options: {
     readonly selector?: string;
     readonly ref?: string;
@@ -468,15 +529,19 @@ async function buildAriaSnapshot(
     readonly compact?: boolean;
     readonly maxDepth?: number;
   } = {},
-): Promise<string> {
-  const root = options.ref
-    ? refStore.resolve(sessionId, options.ref)
-    : scope.locator(options.selector ?? "body");
-  if (!root) throw new Error(`Unknown element ref: ${options.ref}`);
+): Promise<Result<string, ControllerError>> {
+  let root: Locator;
+  if (options.ref) {
+    const resolved = resolveRef(refStore, sessionId, options.ref, refScope);
+    if (resolved._tag === "Err") return resolved;
+    root = resolved.value;
+  } else {
+    root = scope.locator(options.selector ?? "body");
+  }
   const snapshot = await root.ariaSnapshot();
   const refs = new Map<string, Locator>();
-  let counter = 1;
-  const nthByRole = new Map<string, number>();
+  const state = getSessionRuntimeState(sessionId);
+  const roleOccurrences = new Map<string, number>();
 
   const annotated = snapshot.split("\n").filter((line) => {
     if (options.maxDepth !== undefined) {
@@ -493,24 +558,21 @@ async function buildAriaSnapshot(
     const [, indent, role, name, rest] = m;
     if (!INTERACTIVE_ROLES.has(role)) return line;
 
-    const key = `@e${counter}`;
-    const locator = name
-      ? root.getByRole(role as Parameters<Page["getByRole"]>[0], { name, exact: true })
-      : (() => {
-          const n = nthByRole.get(role) ?? 0;
-          nthByRole.set(role, n + 1);
-          return root.getByRole(role as Parameters<Page["getByRole"]>[0]).nth(n);
-        })();
+    const roleIndex = roleOccurrences.get(role) ?? 0;
+    roleOccurrences.set(role, roleIndex + 1);
+    const key = `@e${state.nextRefNumber++}`;
+    const locator = root
+      .getByRole(role as Parameters<Page["getByRole"]>[0])
+      .nth(roleIndex);
     refs.set(key, locator);
-    counter++;
 
     return name
       ? `${indent}${key} ${role} "${name}"${rest}`
       : `${indent}${key} ${role}${rest}`;
   }).filter((line) => !options.compact || line.trim().length > 0).join("\n");
 
-  refStore.update(sessionId, refs);
-  return annotated;
+  refStore.update(sessionId, refs, refScope);
+  return ok(annotated);
 }
 
 type ScreenshotAnnotation = {
@@ -529,8 +591,16 @@ async function installScreenshotAnnotations(
   scope: Page | Frame,
   refStore: RefStore,
   sessionId: string,
-): Promise<ReadonlyArray<ScreenshotAnnotation>> {
-  await buildAriaSnapshot(scope, refStore, sessionId, { interactive: true });
+  refScope: RefScope,
+): Promise<Result<ReadonlyArray<ScreenshotAnnotation>, ControllerError>> {
+  const snapshotResult = await buildAriaSnapshot(
+    scope,
+    refStore,
+    sessionId,
+    refScope,
+    { interactive: true },
+  );
+  if (snapshotResult._tag === "Err") return snapshotResult;
   const annotations: Array<ScreenshotAnnotation> = [];
   for (const [ref, locator] of refStore.entries(sessionId)) {
     const box = await locator.boundingBox();
@@ -573,7 +643,7 @@ async function installScreenshotAnnotations(
       document.body.append(outline);
     }
   }, annotations);
-  return annotations;
+  return ok(annotations);
 }
 
 async function removeScreenshotAnnotations(page: Page): Promise<void> {
@@ -632,12 +702,15 @@ export async function executeCommand(
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
   const runtimeState = observePageRuntime(sessionId, page);
+  runtimeState.activePage = page;
   if (command.action === "eval") await ensureCdpRuntimeObserver(sessionId, context, page);
   const scope = runtimeState.activeFrame ?? page;
+  const refScope = currentRefScope(runtimeState, page);
 
   try {
     switch (command.action) {
       case "navigate": {
+        invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         if (command.headers) await page.setExtraHTTPHeaders(command.headers);
@@ -649,6 +722,7 @@ export async function executeCommand(
       }
 
       case "back": {
+        invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         const urlBefore = page.url();
@@ -662,8 +736,8 @@ export async function executeCommand(
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
-
       case "forward": {
+        invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         const urlBefore = page.url();
@@ -677,8 +751,8 @@ export async function executeCommand(
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
-
       case "reload": {
+        invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         await page.reload({ waitUntil: "domcontentloaded" });
@@ -734,20 +808,39 @@ export async function executeCommand(
         );
 
       case "click":
-        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "click");
+        return executeElementAction(scope, refStore, sessionId, refScope, command.ref, command.selector, "click");
 
       case "fill":
-        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "fill", command.value);
+        return executeElementAction(
+          scope,
+          refStore,
+          sessionId,
+          refScope,
+          command.ref,
+          command.selector,
+          "fill",
+          command.value,
+        );
 
       case "type":
-        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "type", command.text);
+        return executeElementAction(
+          scope,
+          refStore,
+          sessionId,
+          refScope,
+          command.ref,
+          command.selector,
+          "type",
+          command.text,
+        );
 
       case "hover":
-        return executeElementAction(scope, refStore, sessionId, command.ref, command.selector, "hover");
+        return executeElementAction(scope, refStore, sessionId, refScope, command.ref, command.selector, "hover");
 
       case "snapshot": {
-        const snapshot = await buildAriaSnapshot(scope, refStore, sessionId, command);
-        const result: SnapshotResult = { _tag: "SnapshotResult", snapshot };
+        const snapshotResult = await buildAriaSnapshot(scope, refStore, sessionId, refScope, command);
+        if (snapshotResult._tag === "Err") return snapshotResult;
+        const result: SnapshotResult = { _tag: "SnapshotResult", snapshot: snapshotResult.value };
         return ok(result);
       }
 
@@ -757,15 +850,26 @@ export async function executeCommand(
           type: format,
           quality: format === "jpeg" ? (command.quality ?? 80) : undefined,
         } as const;
-        const target = command.ref
-          ? refStore.resolve(sessionId, command.ref)
-          : command.selector
-            ? scope.locator(command.selector)
-            : undefined;
-        if (command.ref && !target) return err({ _tag: "ElementNotFound", selector: command.ref });
-        const annotations = command.annotate
-          ? await installScreenshotAnnotations(page, scope, refStore, sessionId)
-          : [];
+        let target: Locator | undefined;
+        if (command.ref) {
+          const resolved = resolveRef(refStore, sessionId, command.ref, refScope);
+          if (resolved._tag === "Err") return resolved;
+          target = resolved.value;
+        } else if (command.selector) {
+          target = scope.locator(command.selector);
+        }
+        let annotations: ReadonlyArray<ScreenshotAnnotation> = [];
+        if (command.annotate) {
+          const annotationResult = await installScreenshotAnnotations(
+            page,
+            scope,
+            refStore,
+            sessionId,
+            refScope,
+          );
+          if (annotationResult._tag === "Err") return annotationResult;
+          annotations = annotationResult.value;
+        }
         let buf: Buffer;
         try {
           buf = target
@@ -815,10 +919,12 @@ export async function executeCommand(
       }
 
       case "tab_new": {
+        invalidateRefs(refStore, sessionId, "page");
         const newPage = await context.newPage();
         if (command.url) await newPage.goto(command.url);
         activeTabIndex = context.pages().length - 1;
         sessionTabIndex.set(sessionId, activeTabIndex);
+        runtimeState.activePage = newPage;
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         observePageRuntime(sessionId, newPage);
@@ -828,29 +934,45 @@ export async function executeCommand(
 
       case "tab_switch": {
         if (!Number.isInteger(command.index) || command.index < 0 || command.index >= context.pages().length) {
-          return err({ _tag: "CommandFailed", message: `Unknown tab index: ${command.index}` });
+          return err({ _tag: "ElementNotFound", selector: `tab:${command.index}` });
+        }
+        const nextPage = context.pages()[command.index];
+        if (nextPage !== page) {
+          invalidateRefs(refStore, sessionId, "page");
+        } else if (runtimeState.activeFrame !== undefined) {
+          invalidateRefs(refStore, sessionId, "frame");
         }
         activeTabIndex = command.index;
         sessionTabIndex.set(sessionId, activeTabIndex);
+        runtimeState.activePage = nextPage;
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        observePageRuntime(sessionId, context.pages()[activeTabIndex]);
+        observePageRuntime(sessionId, nextPage);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
 
       case "tab_close": {
         const closeIndex = command.index ?? activeTabIndex;
-        if (!Number.isInteger(closeIndex) || closeIndex < 0 || closeIndex >= context.pages().length) {
-          return err({ _tag: "CommandFailed", message: `Unknown tab index: ${closeIndex}` });
+        const pages = context.pages();
+        if (!Number.isInteger(closeIndex) || closeIndex < 0 || closeIndex >= pages.length) {
+          return err({ _tag: "ElementNotFound", selector: `tab:${closeIndex}` });
         }
-        await context.pages()[closeIndex].close();
-        if (activeTabIndex >= context.pages().length) {
-          activeTabIndex = Math.max(0, context.pages().length - 1);
+        const closingActivePage = closeIndex === activeTabIndex;
+        await pages[closeIndex].close();
+        if (closingActivePage) {
+          invalidateRefs(refStore, sessionId, "page");
+          const remainingPages = context.pages();
+          if (activeTabIndex >= remainingPages.length) {
+            activeTabIndex = Math.max(0, remainingPages.length - 1);
+          }
+          runtimeState.activePage = remainingPages[activeTabIndex];
+          runtimeState.activeFrame = undefined;
+          runtimeState.activeFrameSelector = undefined;
+        } else if (closeIndex < activeTabIndex) {
+          activeTabIndex--;
         }
         sessionTabIndex.set(sessionId, activeTabIndex);
-        runtimeState.activeFrame = undefined;
-        runtimeState.activeFrameSelector = undefined;
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -1261,9 +1383,11 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "window_new": {
+        invalidateRefs(refStore, sessionId, "page");
         const newPage = await context.newPage();
         activeTabIndex = context.pages().indexOf(newPage);
         sessionTabIndex.set(sessionId, activeTabIndex);
+        runtimeState.activePage = newPage;
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         observePageRuntime(sessionId, newPage);
@@ -1275,15 +1399,25 @@ export async function executeCommand(
       }
 
       case "nth": {
-        const loc = scope.locator(command.selector).nth(command.index);
+        const loc = scope.locator(command.selector);
+        const count = await loc.count();
+        if (!Number.isInteger(command.index) || command.index < 0 || command.index >= count) {
+          return err({ _tag: "ElementNotFound", selector: command.selector });
+        }
+        if (command.subaction === undefined) {
+          const result: LocatorResult = { _tag: "LocatorResult", found: true, count };
+          return ok(result);
+        }
+
+        const target = loc.nth(command.index);
         if (command.subaction === "click") {
-          await loc.click();
+          await target.click();
         } else if (command.subaction === "fill" && command.value) {
-          await loc.fill(command.value);
+          await target.fill(command.value);
         } else if (command.subaction === "type" && command.value) {
-          await loc.pressSequentially(command.value);
+          await target.pressSequentially(command.value);
         } else if (command.subaction === "hover") {
-          await loc.hover();
+          await target.hover();
         }
         return ok({ _tag: "VoidResult" } as const);
       }
@@ -1297,9 +1431,9 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "download": {
-        const locator = resolveLocator(scope, refStore, sessionId, command.ref, command.selector);
-        if (!locator) return err({ _tag: "ElementNotFound", selector: command.ref ?? command.selector });
-        return ok(await remoteDownload(context, page, sessionId, undefined, () => locator.click()));
+        const resolved = resolveLocator(scope, refStore, sessionId, refScope, command.ref, command.selector);
+        if (resolved._tag === "Err") return resolved;
+        return ok(await remoteDownload(context, page, sessionId, undefined, () => resolved.value.click()));
       }
 
       case "waitfordownload": {
@@ -1667,6 +1801,7 @@ export async function executeCommand(
         if (!frame) {
           return err({ _tag: "CommandFailed", message: `Selector is not a frame: ${command.selector}` });
         }
+        invalidateRefs(refStore, sessionId, "frame");
         runtimeState.activeFrame = frame;
         runtimeState.activeFrameSelector = command.selector;
         const r: FrameResult = { _tag: "FrameResult", frame: command.selector };
@@ -1674,6 +1809,7 @@ export async function executeCommand(
       }
 
       case "mainframe": {
+        invalidateRefs(refStore, sessionId, "frame");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         const r: FrameResult = { _tag: "FrameResult", frame: "main" };

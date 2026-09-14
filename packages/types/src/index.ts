@@ -333,6 +333,8 @@ export type CommandResultData =
 
 export type ProfileUnavailableReason = "invalid_name" | "not_registered" | "source_unavailable";
 
+export type RefStaleReason = "snapshot" | "frame" | "page" | "navigation";
+
 // ─── ControllerError ───
 export type ControllerError =
   | { readonly _tag: "SessionNotFound"; readonly sessionId: string }
@@ -348,6 +350,7 @@ export type ControllerError =
       readonly reason: ProfileUnavailableReason;
     }
   | { readonly _tag: "ElementNotFound"; readonly selector?: string }
+  | { readonly _tag: "StaleReference"; readonly ref: string; readonly reason: RefStaleReason }
   | { readonly _tag: "Timeout"; readonly operation: string }
   | { readonly _tag: "CommandFailed"; readonly message: string }
   | { readonly _tag: "ValidationFailed"; readonly message: string };
@@ -404,6 +407,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   ProfileCopyFailed: 82,
   ProfileUnavailable: 2,
   ElementNotFound: 66,
+  StaleReference: 67,
   Timeout: 75,
   CommandFailed: 1,
   ValidationFailed: 2,
