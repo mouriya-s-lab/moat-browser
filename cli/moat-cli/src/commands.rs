@@ -26,6 +26,8 @@ pub enum ParseError {
         message: String,
         usage: &'static str,
     },
+    /// Command is known but unavailable in the moat architecture.
+    Unsupported { message: String },
     /// Invalid session name (path traversal or invalid characters)
     InvalidSessionName { name: String },
 }
@@ -47,14 +49,12 @@ impl ParseError {
                 )
             }
             ParseError::MissingArguments { context, usage } => {
-                format!(
-                    "Missing arguments for: {}\nUsage: agent-browser {}",
-                    context, usage
-                )
+                format!("Missing arguments for: {}\nUsage: moat {}", context, usage)
             }
             ParseError::InvalidValue { message, usage } => {
-                format!("{}\nUsage: agent-browser {}", message, usage)
+                format!("{}\nUsage: moat {}", message, usage)
             }
+            ParseError::Unsupported { message } => message.clone(),
             ParseError::InvalidSessionName { name } => session_name_error(name),
         }
     }
@@ -1694,7 +1694,7 @@ fn parse_diff(rest: &[&str], id: &str) -> Result<Value, ParseError> {
 
 fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     const VALID: &[&str] = &[
-        "text", "html", "value", "attr", "url", "title", "count", "box", "styles", "cdp-url",
+        "text", "html", "value", "attr", "url", "title", "count", "box", "styles",
     ];
 
     match rest.first().copied() {
@@ -1731,7 +1731,9 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             Ok(json!({ "id": id, "action": "getattribute", "selector": sel, "attribute": attr }))
         }
         Some("url") => Ok(json!({ "id": id, "action": "url" })),
-        Some("cdp-url") => Ok(json!({ "id": id, "action": "cdp_url" })),
+        Some("cdp-url") => Err(ParseError::Unsupported {
+            message: "unsupported_in_moat: get cdp-url is unavailable because the container CDP endpoint is private; use moat browser commands through the active session".into(),
+        }),
         Some("title") => Ok(json!({ "id": id, "action": "title" })),
         Some("count") => {
             let sel = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
@@ -1760,7 +1762,7 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         }),
         None => Err(ParseError::MissingArguments {
             context: "get".to_string(),
-            usage: "get <text|html|value|attr|url|title|count|box|styles|cdp-url> [args...]",
+            usage: "get <text|html|value|attr|url|title|count|box|styles> [args...]",
         }),
     }
 }
@@ -4393,9 +4395,12 @@ mod tests {
     }
 
     #[test]
-    fn test_get_cdp_url() {
-        let cmd = parse_command(&args("get cdp-url"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "cdp_url");
+    fn test_get_cdp_url_is_unsupported() {
+        let error = parse_command(&args("get cdp-url"), &default_flags()).unwrap_err();
+        assert!(matches!(
+            error,
+            ParseError::Unsupported { message } if message.starts_with("unsupported_in_moat:")
+        ));
     }
 
     // === Batch Tests ===

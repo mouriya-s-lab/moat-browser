@@ -1,12 +1,11 @@
-pub fn print_help() {
-    println!(
-        r#"moat - remote Chromium automation through the moat Controller
+pub fn help_text() -> &'static str {
+    r#"moat - remote Chromium automation through the moat Controller
 
 Usage: moat <command> [args] [options]
 
 Session:
   init | connect               Create a Controller-managed browser session
-  status                       Show the active session and Controller
+  status                       Show the local session/config view and Controller
   disconnect | close-session  Destroy the active session
   close                        Destroy the active session (command alias)
 
@@ -25,6 +24,7 @@ Page artifacts and state:
 
 Browser and runtime state:
   tab | window | frame | dialog | clipboard
+  window new                   Open a new tab in the shared browser context
   set viewport|device|geo|offline|headers|credentials|media
   network route|unroute|requests
   console | errors | batch | diff
@@ -37,6 +37,7 @@ Unavailable in moat architecture (stable unsupported_in_moat error):
   record                       Video recording is outside the Controller contract
   stream                       Live viewing uses neko WebRTC
   device list                  No local Xcode/Appium device backend
+  get cdp-url                  Private container CDP is Controller-only
   install | upgrade | dashboard | profiles | session
 
 Global options:
@@ -64,12 +65,15 @@ Examples:
   moat screenshot --annotate ./page.png
   moat diff screenshot --baseline ./before.png --output ./diff.png
   moat disconnect"#
-    );
+}
+
+pub fn print_help() {
+    println!("{}", help_text());
 }
 
 /// Print moat-specific command help without inheriting upstream's local-browser
 /// daemon, named-session, or browser-launch claims.
-pub fn print_command_help(command: &str) -> bool {
+pub fn command_help_text(command: &str) -> Option<String> {
     let usage = match command {
         "init" => "init [--profile <name>] [--controller <url>]",
         "connect" => "connect [--profile <name>] [--controller <url>]",
@@ -104,7 +108,7 @@ pub fn print_command_help(command: &str) -> bool {
         "snapshot" => "snapshot [-i] [-c] [-d <depth>] [-s <selector>]",
         "eval" => "eval <javascript> [selector]",
         "close" | "quit" | "exit" => "close",
-        "get" => "get <url|title|text|html|value|attr|count|box|styles|cdp-url> [argument]",
+        "get" => "get <url|title|text|html|value|attr|count|box|styles> [argument]",
         "is" => "is <visible|enabled|checked> <selector>",
         "find" => "find <role|text|label|placeholder|alt|title|testid|first|last|nth> ...",
         "mouse" => "mouse <move|down|up|wheel> ...",
@@ -142,21 +146,35 @@ pub fn print_command_help(command: &str) -> bool {
         "batch" => "batch  # reads a JSON command array from stdin",
         "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "device" | "install"
         | "upgrade" | "dashboard" | "profiles" | "session" | "launch" => {
-            println!(
+            return Some(format!(
                 "moat {command} - unavailable in the moat Controller architecture\n\n\
                  This command returns a nonzero unsupported_in_moat error.\n\
                  Run `moat --help` for the supported alternative."
-            );
-            return true;
+            ));
         }
-        _ => return false,
+        _ => return None,
     };
 
-    println!(
+    let description = match command {
+        "window" => "Open a new tab in the shared browser context for the active session.",
+        "status" => {
+            "Show the local session/config view; this command does not probe remote Controller health."
+        }
+        _ => "This command runs against the active Controller-managed session.",
+    };
+    Some(format!(
         "moat {command}\n\nUsage: moat {usage}\n\n\
-         This command runs against the active Controller-managed session.\n\
+         {description}\n\
          Options: --json emits exactly one JSON value. Run `moat --help` for global options."
-    );
+    ))
+}
+
+/// Print command-specific help. Returns true if help was printed, false if command unknown.
+pub fn print_command_help(command: &str) -> bool {
+    let Some(help) = command_help_text(command) else {
+        return false;
+    };
+    println!("{}", help);
     true
 }
 
