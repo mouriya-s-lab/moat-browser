@@ -53,6 +53,11 @@ export type LocatorResult = {
   readonly count: number;
 };
 
+export type KeyStateResult = {
+  readonly _tag: "KeyStateResult";
+  readonly heldModifiers: ReadonlyArray<string>;
+};
+
 export type SnapshotResult = {
   readonly _tag: "SnapshotResult";
   readonly snapshot: string;
@@ -298,6 +303,7 @@ export type CommandResultData =
   | NavigateResult
   | VoidResult
   | LocatorResult
+  | KeyStateResult
   | SnapshotResult
   | ScreenshotResult
   | EvalResult
@@ -439,6 +445,17 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
 
 // ─── BrowserCommand ───
 
+export type NthSubaction =
+  | "click"
+  | "fill"
+  | "type"
+  | "hover"
+  | "dblclick"
+  | "focus"
+  | "select"
+  | "check"
+  | "uncheck";
+
 export type BrowserCommand =
   // 导航
   | { readonly action: "navigate"; readonly url: string; readonly waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" | "none"; readonly headers?: Readonly<Record<string, string>> }
@@ -579,7 +596,7 @@ export type BrowserCommand =
   | { readonly action: "request_detail"; readonly requestId: string }
   | { readonly action: "highlight"; readonly selector: string }
   | { readonly action: "window_new" }
-  | { readonly action: "nth"; readonly selector: string; readonly index: number; readonly subaction?: string; readonly value?: string }
+  | { readonly action: "nth"; readonly selector: string; readonly index: number; readonly subaction?: NthSubaction; readonly value?: string }
   | { readonly action: "upload"; readonly selector: string; readonly files: ReadonlyArray<{
       readonly name: string;
       readonly mimeType: string;
@@ -808,7 +825,7 @@ const browserCommandSchema = type({
   .or({ action: "'request_detail'", requestId: "string" })
   .or({ action: "'highlight'", selector: "string" })
   .or({ action: "'window_new'" })
-  .or({ action: "'nth'", selector: "string", index: "number", "subaction?": "string", "value?": "string" })
+  .or({ action: "'nth'", selector: "string", index: "number", "subaction?": "'click' | 'fill' | 'type' | 'hover' | 'dblclick' | 'focus' | 'select' | 'check' | 'uncheck'", "value?": "string" })
   .or({ action: "'upload'", selector: "string", files: type({ name: "string", mimeType: "string", base64: "string" }).array() })
   .or({ action: "'download'", "ref?": "string", "selector?": "string" })
   .or({ action: "'waitfordownload'", "timeout?": "number" })
