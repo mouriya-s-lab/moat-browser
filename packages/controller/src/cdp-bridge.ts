@@ -178,6 +178,7 @@ type SessionRuntimeState = {
   readonly requestIds: WeakMap<Request, string>;
   readonly requests: Map<string, NetworkRequestEntry>;
   activeFrame?: Frame;
+  activeFrameSelector?: string;
   pendingDialog?: Dialog;
   dialogInfo?: {
     readonly type: string;
@@ -638,6 +639,7 @@ export async function executeCommand(
     switch (command.action) {
       case "navigate": {
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         if (command.headers) await page.setExtraHTTPHeaders(command.headers);
         await page.goto(command.url, {
           waitUntil: command.waitUntil === "none" ? "commit" : (command.waitUntil ?? "domcontentloaded"),
@@ -648,6 +650,7 @@ export async function executeCommand(
 
       case "back": {
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         const urlBefore = page.url();
         try {
           await page.goBack({ waitUntil: "domcontentloaded", timeout: 3000 });
@@ -662,6 +665,7 @@ export async function executeCommand(
 
       case "forward": {
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         const urlBefore = page.url();
         try {
           await page.goForward({ waitUntil: "domcontentloaded", timeout: 3000 });
@@ -676,6 +680,7 @@ export async function executeCommand(
 
       case "reload": {
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         await page.reload({ waitUntil: "domcontentloaded" });
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
@@ -799,7 +804,13 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "tab_list": {
-        const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
+        const result: TabResult & { readonly activeFrame?: string } = {
+          _tag: "TabResult",
+          tabs: await buildTabList(context, activeTabIndex),
+          ...(runtimeState.activeFrameSelector === undefined
+            ? {}
+            : { activeFrame: runtimeState.activeFrameSelector }),
+        };
         return ok(result);
       }
 
@@ -809,6 +820,7 @@ export async function executeCommand(
         activeTabIndex = context.pages().length - 1;
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         observePageRuntime(sessionId, newPage);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
@@ -821,6 +833,7 @@ export async function executeCommand(
         activeTabIndex = command.index;
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         observePageRuntime(sessionId, context.pages()[activeTabIndex]);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
@@ -837,6 +850,7 @@ export async function executeCommand(
         }
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -1251,6 +1265,7 @@ export async function executeCommand(
         activeTabIndex = context.pages().indexOf(newPage);
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         observePageRuntime(sessionId, newPage);
         const r: TabResult = {
           _tag: "TabResult",
@@ -1653,12 +1668,14 @@ export async function executeCommand(
           return err({ _tag: "CommandFailed", message: `Selector is not a frame: ${command.selector}` });
         }
         runtimeState.activeFrame = frame;
+        runtimeState.activeFrameSelector = command.selector;
         const r: FrameResult = { _tag: "FrameResult", frame: command.selector };
         return ok(r);
       }
 
       case "mainframe": {
         runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
         const r: FrameResult = { _tag: "FrameResult", frame: "main" };
         return ok(r);
       }

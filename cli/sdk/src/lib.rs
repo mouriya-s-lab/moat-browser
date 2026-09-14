@@ -460,24 +460,39 @@ impl MoatClient {
     async fn diff_snapshot(&self, request: &Value) -> Result<Response, SdkError> {
         let snapshot_request = snapshot_request(request);
         let current = response_string(self.command_remote(snapshot_request).await?, "snapshot")?;
-        let baseline = if let Some(path) = request.get("baseline").and_then(Value::as_str) {
-            std::fs::read_to_string(path)
-                .map_err(|e| command_error(format!("read snapshot baseline {path}: {e}")))?
-        } else {
-            let path = snapshot_baseline_path(&self.session_id)?;
-            let previous = if path.exists() {
-                std::fs::read_to_string(&path).map_err(|e| {
-                    command_error(format!("read previous snapshot {}: {e}", path.display()))
-                })?
-            } else {
-                current.clone()
-            };
+        if let Some(path) = request.get("baseline").and_then(Value::as_str) {
+            let baseline = std::fs::read_to_string(path)
+                .map_err(|e| command_error(format!("read snapshot baseline {path}: {e}")))?;
+            let mut result = diff::snapshots(&baseline, &current);
+            if let Some(data) = result.as_object_mut() {
+                data.insert("status".into(), Value::String("compared".into()));
+            }
+            return Ok(success(result));
+        }
+
+        let path = snapshot_baseline_path(&self.session_id)?;
+        if !path.exists() {
             std::fs::write(&path, &current).map_err(|e| {
                 command_error(format!("write previous snapshot {}: {e}", path.display()))
             })?;
-            previous
-        };
-        Ok(success(diff::snapshots(&baseline, &current)))
+            return Ok(success(serde_json::json!({
+                "status": "baseline-initialized",
+                "baselineInitialized": true,
+            })));
+        }
+
+        let baseline = std::fs::read_to_string(&path).map_err(|e| {
+            command_error(format!("read previous snapshot {}: {e}", path.display()))
+        })?;
+        std::fs::write(&path, &current).map_err(|e| {
+            command_error(format!("write previous snapshot {}: {e}", path.display()))
+        })?;
+        let mut result = diff::snapshots(&baseline, &current);
+        if let Some(data) = result.as_object_mut() {
+            data.insert("status".into(), Value::String("compared".into()));
+            data.insert("baselineInitialized".into(), Value::Bool(false));
+        }
+        Ok(success(result))
     }
 
     async fn diff_screenshot(&self, request: &Value) -> Result<Response, SdkError> {
@@ -490,16 +505,28 @@ impl MoatClient {
             .and_then(Value::as_f64)
             .unwrap_or(0.1);
         let result = diff::screenshots(&baseline, &current, threshold).map_err(command_error)?;
-        let diff_path = request.get("output").and_then(Value::as_str);
-        if let (Some(path), Some(bytes)) = (diff_path, result.diff_image.as_ref()) {
-            write_file(path, bytes)?;
-        }
+        let requested_path = request.get("output").and_then(Value::as_str);
+        let diff_path = match (requested_path, result.diff_image.as_ref()) {
+            (Some(path), Some(bytes)) => {
+                write_file(path, bytes)?;
+                let metadata = std::fs::metadata(path)
+                    .map_err(|e| command_error(format!("verify diff image {path}: {e}")))?;
+                if !metadata.is_file() {
+                    return Err(command_error(format!("diff image is not a file: {path}")));
+                }
+                Some(path.to_string())
+            }
+            _ => None,
+        };
+        let diff_image_generated = diff_path.is_some();
         Ok(success(serde_json::json!({
             "match": result.matched,
             "mismatchPercentage": result.mismatch_percentage,
             "totalPixels": result.total_pixels,
             "differentPixels": result.different_pixels,
             "diffPath": diff_path,
+            "diffImageGenerated": diff_image_generated,
+            "outputPath": requested_path,
             "dimensionMismatch": result.dimension_mismatch,
         })))
     }
@@ -508,47 +535,119 @@ impl MoatClient {
         let url1 = required_string(request, "url1")?;
         let url2 = required_string(request, "url2")?;
         let wait_until = request.get("waitUntil").cloned();
-        let mut navigate1 = serde_json::json!({ "action": "navigate", "url": url1 });
-        let mut navigate2 = serde_json::json!({ "action": "navigate", "url": url2 });
-        if let Some(value) = wait_until {
-            navigate1["waitUntil"] = value.clone();
-            navigate2["waitUntil"] = value;
-        }
-        require_success(self.command_remote(navigate1).await?)?;
-        let first_snapshot = response_string(
-            self.command_remote(snapshot_request(request)).await?,
-            "snapshot",
+
+        let caller_data = require_success(
+            self.command_remote(serde_json::json!({ "action": "tab_list" }))
+                .await?,
         )?;
-        let first_screenshot = if request.get("screenshot").and_then(Value::as_bool) == Some(true) {
-            Some(self.capture_screenshot(request).await?)
-        } else {
-            None
-        };
-        require_success(self.command_remote(navigate2).await?)?;
-        let second_snapshot = response_string(
-            self.command_remote(snapshot_request(request)).await?,
-            "snapshot",
+        let (caller_index, caller_frame) = active_tab_state(&caller_data)?;
+        let temporary_data = require_success(
+            self.command_remote(serde_json::json!({ "action": "tab_new" }))
+                .await?,
         )?;
-        let snapshot = diff::snapshots(&first_snapshot, &second_snapshot);
-        let screenshot = if let Some(first) = first_screenshot {
-            let second = self.capture_screenshot(request).await?;
-            let result = diff::screenshots(&first, &second, 0.1).map_err(command_error)?;
-            Some(serde_json::json!({
-                "match": result.matched,
-                "mismatchPercentage": result.mismatch_percentage,
-                "totalPixels": result.total_pixels,
-                "differentPixels": result.different_pixels,
-                "dimensionMismatch": result.dimension_mismatch,
+        let (temporary_index, _) = active_tab_state(&temporary_data)?;
+
+        let comparison = async {
+            let mut navigate1 = serde_json::json!({ "action": "navigate", "url": url1 });
+            let mut navigate2 = serde_json::json!({ "action": "navigate", "url": url2 });
+            if let Some(value) = wait_until {
+                navigate1["waitUntil"] = value.clone();
+                navigate2["waitUntil"] = value;
+            }
+            require_success(self.command_remote(navigate1).await?)?;
+            let first_snapshot = response_string(
+                self.command_remote(snapshot_request(request)).await?,
+                "snapshot",
+            )?;
+            let first_screenshot =
+                if request.get("screenshot").and_then(Value::as_bool) == Some(true) {
+                    Some(self.capture_screenshot(request).await?)
+                } else {
+                    None
+                };
+            require_success(self.command_remote(navigate2).await?)?;
+            let second_snapshot = response_string(
+                self.command_remote(snapshot_request(request)).await?,
+                "snapshot",
+            )?;
+            let snapshot = diff::snapshots(&first_snapshot, &second_snapshot);
+            let screenshot = if let Some(first) = first_screenshot {
+                let second = self.capture_screenshot(request).await?;
+                let result = diff::screenshots(&first, &second, 0.1).map_err(command_error)?;
+                Some(serde_json::json!({
+                    "match": result.matched,
+                    "mismatchPercentage": result.mismatch_percentage,
+                    "totalPixels": result.total_pixels,
+                    "differentPixels": result.different_pixels,
+                    "dimensionMismatch": result.dimension_mismatch,
+                }))
+            } else {
+                None
+            };
+            Ok::<Value, SdkError>(serde_json::json!({
+                "url1": url1,
+                "url2": url2,
+                "snapshot": snapshot,
+                "screenshot": screenshot,
             }))
-        } else {
-            None
+        }
+        .await;
+
+        let cleanup = self
+            .cleanup_diff_page(temporary_index, caller_index, caller_frame.as_deref())
+            .await;
+        match (comparison, cleanup) {
+            (Ok(result), Ok(())) => Ok(success(result)),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(command_error(format!("diff url cleanup failed: {error}"))),
+            (Err(error), Err(cleanup_error)) => Err(command_error(format!(
+                "diff url failed: {error}; cleanup failed: {cleanup_error}"
+            ))),
+        }
+    }
+
+    async fn cleanup_diff_page(
+        &self,
+        temporary_index: usize,
+        caller_index: usize,
+        caller_frame: Option<&str>,
+    ) -> Result<(), SdkError> {
+        let mut errors = Vec::new();
+        if let Err(error) = self
+            .command_remote(serde_json::json!({
+                "action": "tab_close",
+                "index": temporary_index,
+            }))
+            .await
+            .and_then(require_success)
+        {
+            errors.push(error.to_string());
+        }
+        if let Err(error) = self
+            .command_remote(serde_json::json!({
+                "action": "tab_switch",
+                "index": caller_index,
+            }))
+            .await
+            .and_then(require_success)
+        {
+            errors.push(error.to_string());
+        }
+        let restore = match caller_frame {
+            Some(selector) => serde_json::json!({
+                "action": "frame",
+                "selector": selector,
+            }),
+            None => serde_json::json!({ "action": "mainframe" }),
         };
-        Ok(success(serde_json::json!({
-            "url1": url1,
-            "url2": url2,
-            "snapshot": snapshot,
-            "screenshot": screenshot,
-        })))
+        if let Err(error) = self.command_remote(restore).await.and_then(require_success) {
+            errors.push(error.to_string());
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(command_error(errors.join("; ")))
+        }
     }
 
     async fn capture_screenshot(&self, request: &Value) -> Result<Vec<u8>, SdkError> {
@@ -827,6 +926,26 @@ fn prepare_command(
     obj.retain(|_, value| !value.is_null());
 
     Ok((screenshot_output, binary_output))
+}
+fn active_tab_state(data: &Value) -> Result<(usize, Option<String>), SdkError> {
+    let tabs = data
+        .get("tabs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| command_error("response has no tabs".into()))?;
+    let active_tab = tabs
+        .iter()
+        .find(|tab| tab.get("active").and_then(Value::as_bool) == Some(true))
+        .ok_or_else(|| command_error("response has no active tab".into()))?;
+    let index = active_tab
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| command_error("response has invalid active tab index".into()))?;
+    let frame = data
+        .get("activeFrame")
+        .and_then(Value::as_str)
+        .map(String::from);
+    Ok((index, frame))
 }
 
 fn mime_type_for_path(path: &str) -> &'static str {
