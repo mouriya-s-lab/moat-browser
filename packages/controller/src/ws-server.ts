@@ -328,6 +328,11 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
   const sessionContainers = new Map<string, string>();
   const cleanupRecords = new Map<string, CleanupRecord>();
+  // A timed-out register can settle through several late callbacks. Keep one
+  // cleanup owner per session so one reservation is released exactly once.
+  const registrationCleanupStarted = new Set<string>();
+  const admissionReleaseOperations = new Map<string, Promise<ControllerError | undefined>>();
+  const releasedAdmissions = new Set<string>();
 
   function requestCleanup(
     sessionId: string,
@@ -507,26 +512,52 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
   }
 
-  async function releaseAfterCleanup(
+  function releaseAfterCleanup(
     sessionId: string,
     cleanupResult: ContainerResult<void, ControllerError>,
   ): Promise<ControllerError | undefined> {
-    if (
-      cleanupResult._tag === "Err" &&
-      cleanupResult.error._tag !== "SessionNotFound"
-    ) {
-      return undefined;
-    }
-    const releaseResult = await admission.release(sessionId);
-    if (releaseResult._tag === "Err") {
-      console.warn(
-        `[admission-release-failed] owner=${config.controllerOwner} session=${sessionId} error=${formatError(
-          releaseResult.error,
-        )}`,
-      );
-      return releaseResult.error;
-    }
-    return undefined;
+    const releaseEligible =
+      cleanupResult._tag === "Ok"
+      || cleanupResult.error._tag === "SessionNotFound";
+    return releaseEligible
+      ? releaseAdmissionOnce(sessionId)
+      : Promise.resolve(undefined);
+  }
+
+  function releaseAdmissionOnce(sessionId: string): Promise<ControllerError | undefined> {
+    if (releasedAdmissions.has(sessionId)) return Promise.resolve(undefined);
+    const existing = admissionReleaseOperations.get(sessionId);
+    if (existing) return existing;
+
+    const operation = (async (): Promise<ControllerError | undefined> => {
+      try {
+        const releaseResult = await admission.release(sessionId);
+        if (releaseResult._tag === "Err") {
+          console.warn(
+            `[admission-release-failed] owner=${config.controllerOwner} session=${sessionId} error=${formatError(
+              releaseResult.error,
+            )}`,
+          );
+          return releaseResult.error;
+        }
+        releasedAdmissions.add(sessionId);
+        return undefined;
+      } catch (error) {
+        const releaseError: ControllerError = {
+          _tag: "CommandFailed",
+          message: `Admission release threw: ${error instanceof Error ? error.message : String(error)}`,
+        };
+        console.warn(
+          `[admission-release-failed] owner=${config.controllerOwner} session=${sessionId} error=${formatError(
+            releaseError,
+          )}`,
+        );
+        return releaseError;
+      }
+    })();
+    admissionReleaseOperations.set(sessionId, operation);
+    void operation.then(() => admissionReleaseOperations.delete(sessionId));
+    return operation;
   }
 
   async function destroyForRollback(
@@ -547,7 +578,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
   async function cleanupLateRegistration(
     sessionId: string,
-    containerId: string,
+    containerId: string | undefined,
     cdp?: CdpConnection,
   ): Promise<void> {
     if (cdp) {
@@ -555,7 +586,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         await cdp.browser.close();
       } catch (error) {
         console.warn(
-          `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=CDP close failed: ${
+          `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId ?? "unknown"} operation=register-timeout trigger=register outcome=failed error=CDP close failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -569,19 +600,36 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
     if (destroyResult._tag === "Err") {
       console.warn(
-        `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=${formatError(
+        `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId ?? "unknown"} operation=register-timeout trigger=register outcome=failed error=${formatError(
           destroyResult.error,
         )}`,
       );
     }
     if (releaseError) {
       console.warn(
-        `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=${formatError(
+        `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId ?? "unknown"} operation=register-timeout trigger=register outcome=failed error=${formatError(
           releaseError,
         )}`,
       );
     }
+
     registry.deregister(sessionId, false);
+  }
+  function startLateRegistrationCleanup(
+    sessionId: string,
+    containerId: string | undefined,
+    cdp: CdpConnection | undefined,
+    detail?: string,
+  ): void {
+    if (registrationCleanupStarted.has(sessionId)) return;
+    registrationCleanupStarted.add(sessionId);
+    void cleanupLateRegistration(sessionId, containerId, cdp).catch((error) => {
+      console.warn(
+        `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId ?? "unknown"} operation=register-timeout trigger=register outcome=failed error=${
+          error instanceof Error ? error.message : String(error)
+        }${detail === undefined ? "" : ` (${detail})`}`,
+      );
+    });
   }
 
   function registerTimeoutResponse(phase: string, sessionId?: string): WireResponse {
@@ -626,22 +674,14 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       if (admissionResult.error === admissionTimeout) {
         void admissionPromise.then(
           (lateResult) => {
-            if (lateResult._tag !== "Ok") return;
-            void admission.release(lateResult.value.sessionId).then((releaseResult) => {
-              if (releaseResult._tag === "Err") {
-                console.warn(
-                  `[admission-release-failed] owner=${config.controllerOwner} session=${lateResult.value.sessionId} error=${formatError(
-                    releaseResult.error,
-                  )}`,
-                );
-              }
-            }).catch((error) => {
-              console.warn(
-                `[admission-release-failed] owner=${config.controllerOwner} session=${lateResult.value.sessionId} error=${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              );
-            });
+            switch (lateResult._tag) {
+              case "Ok":
+                void releaseAdmissionOnce(lateResult.value.sessionId);
+                return;
+              case "Err":
+                return;
+            }
+            exhaustive(lateResult);
           },
           (error) => console.warn(
             `[admission-release-failed] owner=${config.controllerOwner} session=pending error=${
@@ -662,7 +702,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     const regResult = registry.register(profile, sessionId);
     if (regResult._tag === "Err") {
-      await admission.release(sessionId);
+      await releaseAdmissionOnce(sessionId);
       return errorToRegisterResponse(regResult.error);
     }
 
@@ -686,15 +726,24 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
         registry.deregister(sessionId, false);
         void containerPromise.then(
           (lateResult) => {
-            if (lateResult._tag === "Ok") {
-              void cleanupLateRegistration(sessionId, lateResult.value.containerId);
+            switch (lateResult._tag) {
+              case "Ok":
+                startLateRegistrationCleanup(sessionId, lateResult.value.containerId, undefined);
+                return;
+              case "Err":
+                startLateRegistrationCleanup(sessionId, sessionContainers.get(sessionId), undefined);
+                return;
             }
+            exhaustive(lateResult);
           },
-          (error) => console.warn(
-            `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} operation=register-timeout trigger=register outcome=failed error=${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          ),
+          (error) => {
+            startLateRegistrationCleanup(
+              sessionId,
+              sessionContainers.get(sessionId),
+              undefined,
+              `create rejected: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          },
         );
         return registerTimeoutResponse("container_creation", sessionId);
       }
@@ -708,7 +757,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     sessionContainers.set(sessionId, containerId);
     if (deadline <= Date.now()) {
       registry.deregister(sessionId, false);
-      void cleanupLateRegistration(sessionId, containerId);
+      startLateRegistrationCleanup(sessionId, containerId, undefined);
       return registerTimeoutResponse("container_creation", sessionId);
     }
     registry.transition(sessionId, { _tag: "ConnectingCDP", containerId });
@@ -750,18 +799,21 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     if (cdp === null) {
       registry.deregister(sessionId, false);
       void cdpPromise.then(
-        (lateCdp) => void cleanupLateRegistration(sessionId, containerId, lateCdp),
-        (error) => console.warn(
-          `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        ),
+        (lateCdp) => startLateRegistrationCleanup(sessionId, containerId, lateCdp),
+        (error) => {
+          startLateRegistrationCleanup(
+            sessionId,
+            containerId,
+            undefined,
+            `CDP rejected: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        },
       );
       return registerTimeoutResponse("cdp", sessionId);
     }
     if (deadline <= Date.now()) {
       registry.deregister(sessionId, false);
-      void cleanupLateRegistration(sessionId, containerId, cdp);
+      startLateRegistrationCleanup(sessionId, containerId, cdp);
       return registerTimeoutResponse("cdp", sessionId);
     }
 
