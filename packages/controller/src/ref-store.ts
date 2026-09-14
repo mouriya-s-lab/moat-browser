@@ -1,11 +1,9 @@
-import type { RefStaleReason } from "@moat-browser/types";
+import type { RefStaleReason as RefStaleReasonType } from "@moat-browser/types";
 import type { Frame, Locator, Page } from "patchright";
 
-export type { RefStaleReason } from "@moat-browser/types";
+export type RefStaleReason = RefStaleReasonType;
 
 // ─── RefStore ───
-
-export type RefStaleReason = "snapshot" | "frame" | "page" | "navigation";
 
 export type RefScope = {
   readonly page: Page;
@@ -65,17 +63,18 @@ export function createRefStore(): RefStore {
     if (!refs) return { _tag: "Missing" };
 
     const current = refs.current;
-    const locator = current?.refs.get(ref);
-    if (locator) {
-      const reason = scopeStaleReason(current.scope, scope);
-      if (reason) return { _tag: "Stale", reason };
-      return { _tag: "Found", locator };
+    if (current) {
+      const locator = current.refs.get(ref);
+      if (locator) {
+        const reason = scopeStaleReason(current.scope, scope);
+        if (reason) return { _tag: "Stale", reason };
+        return { _tag: "Found", locator };
+      }
     }
 
     const reason = refs.stale.get(ref);
     return reason === undefined ? { _tag: "Missing" } : { _tag: "Stale", reason };
   }
-
   return {
     update(sessionId, refs, scope) {
       const session = sessionRefs(sessionId);
