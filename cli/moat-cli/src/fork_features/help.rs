@@ -5,7 +5,7 @@ Usage: moat <command> [args] [options]
 
 Session:
   init | connect               Create a Controller-managed browser session
-  status                       Show the local session/config view and Controller
+  status                       Show local session/config; does not probe Controller health
   disconnect | close-session  Destroy the active session
   close                        Destroy the active session (command alias)
 
