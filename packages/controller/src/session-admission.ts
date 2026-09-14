@@ -68,6 +68,7 @@ export type SessionAdmissionConfig = {
 };
 
 export type SessionAdmission = {
+  validate(): Result<void, ControllerError>;
   reserve(): Promise<Result<{ readonly sessionId: string }, ControllerError>>;
   updatePhase(sessionId: string, phase: AdmissionPhase): Promise<Result<void, ControllerError>>;
   release(sessionId: string): Promise<Result<void, ControllerError>>;
@@ -84,12 +85,17 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
   const configError = validateConfig(config);
   const memoryAllocations = new Map<string, AllocationRecord>();
   return {
+    validate,
     reserve,
     updatePhase,
     release,
     snapshot,
     reconcile,
   };
+
+  function validate(): Result<void, ControllerError> {
+    return configError ? Err(configError) : Ok(undefined);
+  }
 
   async function reserve(): Promise<Result<{ readonly sessionId: string }, ControllerError>> {
     if (configError) return Err(configError);
@@ -108,7 +114,7 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
       const external = await readExternalAllocations();
       if (external._tag === "Err") return external;
       const counts = countAllocations(inventory.value, external.value, config.owner);
-      const ownerDeclaration = validateOwnerDeclarations(inventory.value, external.value, config);
+      const ownerDeclaration = validateOwnerDeclarations(inventory.value, config);
       if (ownerDeclaration._tag === "Err") return ownerDeclaration;
 
       if (counts.current >= config.totalQuota || counts.ownerCurrent >= config.ownerQuota) {
@@ -441,7 +447,6 @@ function validateConfig(config: SessionAdmissionConfig): ControllerError | undef
 
 function validateOwnerDeclarations(
   inventory: ReadonlyArray<SlotRecord>,
-  external: ReadonlyArray<ExternalAllocation>,
   config: SessionAdmissionConfig,
 ): Result<void, ControllerError> {
   const declarations = new Map<string, number>();
@@ -453,23 +458,17 @@ function validateOwnerDeclarations(
   for (const record of inventory) {
     const allocation = record.allocation;
     if (!allocation) continue;
-    const previous = declarations.get(allocation.owner);
-    if (previous !== undefined && previous !== allocation.ownerQuota) {
+    const declaredQuota =
+      config.ownerQuotas?.[allocation.owner] ??
+      (allocation.owner === config.owner ? config.ownerQuota : undefined);
+    if (declaredQuota === undefined) continue;
+    if (declaredQuota !== allocation.ownerQuota) {
       return Err({
         _tag: "ValidationFailed",
         message: `conflicting static quota declarations for owner ${allocation.owner}`,
       });
     }
-    declarations.set(allocation.owner, allocation.ownerQuota);
-  }
-  for (const allocation of external) {
-    if (!allocation.owner || allocation.owner === config.owner) continue;
-    if (!declarations.has(allocation.owner)) {
-      return Err({
-        _tag: "ValidationFailed",
-        message: `cannot admit while owner ${allocation.owner} has no declared static quota`,
-      });
-    }
+    declarations.set(allocation.owner, declaredQuota);
   }
   if (!declarations.has(config.owner)) {
     declarations.set(config.owner, config.ownerQuota);

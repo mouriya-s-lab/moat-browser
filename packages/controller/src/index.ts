@@ -115,6 +115,12 @@ const admission = createSessionAdmission({
   listExternalAllocations: containerManager.listAllocations,
 });
 
+const admissionConfig = admission.validate();
+if (admissionConfig._tag === "Err") {
+  console.error(`[admission-config] ${admissionConfig.error.message}`);
+  process.exit(78);
+}
+
 const refStore = createRefStore();
 
 const registry = createSessionRegistry(
