@@ -19,11 +19,19 @@ export type RefResolution =
 type RefSnapshot = {
   readonly refs: Map<string, Locator>;
   readonly scope?: RefScope;
+  readonly generation: number;
+};
+
+type StaleRef = {
+  readonly reason: RefStaleReason;
+  readonly generation: number;
 };
 
 type SessionRefs = {
   current?: RefSnapshot;
-  readonly stale: Map<string, RefStaleReason>;
+  readonly stale: Map<string, StaleRef>;
+  staleSnapshotBeforeRefNumber?: number;
+  generation: number;
 };
 
 export type RefStore = {
@@ -32,9 +40,11 @@ export type RefStore = {
   /** 命令执行时调用，根据 @eN 返回 Locator */
   resolve(sessionId: string, ref: string, scope?: RefScope): Locator | undefined;
   /** 返回引用的生命周期状态，供 controller 生成可操作的错误 */
-  resolveDetailed?: (sessionId: string, ref: string, scope?: RefScope) => RefResolution;
+  resolveDetailed(sessionId: string, ref: string, scope?: RefScope): RefResolution;
   /** 主动使当前 session 的引用失效，并保留失效原因 */
-  invalidate?: (sessionId: string, reason: RefStaleReason) => void;
+  invalidate(sessionId: string, reason: RefStaleReason): void;
+  /** 会话终止时删除所有引用和失效记录 */
+  clear(sessionId: string): void;
   /** screenshot annotation 时枚举当前 session 的引用 */
   entries(sessionId: string): ReadonlyArray<readonly [string, Locator]>;
 };
@@ -47,15 +57,65 @@ function scopeStaleReason(previous: RefScope | undefined, current: RefScope | un
   return undefined;
 }
 
+const MAX_STALE_GENERATIONS = 8;
+const MAX_STALE_REFS = 1024;
+const SNAPSHOT_REF_RE = /^@e(\d+)$/;
+
+function snapshotRefNumber(ref: string): number | undefined {
+  const match = SNAPSHOT_REF_RE.exec(ref);
+  if (!match) return undefined;
+  const number = Number(match[1]);
+  return Number.isSafeInteger(number) ? number : undefined;
+}
+
 export function createRefStore(): RefStore {
   const store = new Map<string, SessionRefs>();
 
   function sessionRefs(sessionId: string): SessionRefs {
     const existing = store.get(sessionId);
     if (existing) return existing;
-    const created: SessionRefs = { stale: new Map() };
+    const created: SessionRefs = { stale: new Map(), generation: 0 };
     store.set(sessionId, created);
     return created;
+  }
+
+  function rememberStale(
+    session: SessionRefs,
+    refs: Iterable<string>,
+    reason: RefStaleReason,
+    generation: number,
+  ): void {
+    for (const ref of refs) {
+      session.stale.set(ref, { reason, generation });
+    }
+  }
+
+  function pruneStale(session: SessionRefs): void {
+    const oldestRetainedGeneration = session.generation - MAX_STALE_GENERATIONS + 1;
+    for (const [ref, stale] of session.stale) {
+      if (stale.generation >= oldestRetainedGeneration) continue;
+      const number = snapshotRefNumber(ref);
+      if (number !== undefined) {
+        session.staleSnapshotBeforeRefNumber = Math.max(
+          session.staleSnapshotBeforeRefNumber ?? number,
+          number,
+        );
+      }
+      session.stale.delete(ref);
+    }
+
+    if (session.stale.size <= MAX_STALE_REFS) return;
+    for (const [ref] of session.stale) {
+      if (session.stale.size <= MAX_STALE_REFS) break;
+      const number = snapshotRefNumber(ref);
+      if (number !== undefined) {
+        session.staleSnapshotBeforeRefNumber = Math.max(
+          session.staleSnapshotBeforeRefNumber ?? number,
+          number,
+        );
+      }
+      session.stale.delete(ref);
+    }
   }
 
   function resolveDetailed(sessionId: string, ref: string, scope?: RefScope): RefResolution {
@@ -72,16 +132,33 @@ export function createRefStore(): RefStore {
       }
     }
 
-    const reason = refs.stale.get(ref);
-    return reason === undefined ? { _tag: "Missing" } : { _tag: "Stale", reason };
+    const stale = refs.stale.get(ref);
+    if (stale) return { _tag: "Stale", reason: stale.reason };
+
+    const number = snapshotRefNumber(ref);
+    if (
+      number !== undefined
+      && refs.staleSnapshotBeforeRefNumber !== undefined
+      && number <= refs.staleSnapshotBeforeRefNumber
+    ) {
+      return { _tag: "Stale", reason: "snapshot" };
+    }
+    return { _tag: "Missing" };
   }
+
   return {
     update(sessionId, refs, scope) {
       const session = sessionRefs(sessionId);
-      for (const ref of session.current?.refs.keys() ?? []) {
-        session.stale.set(ref, "snapshot");
-      }
-      session.current = { refs: new Map(refs), ...(scope === undefined ? {} : { scope }) };
+      const generation = session.generation + 1;
+      session.generation = generation;
+      const current = session.current;
+      if (current) rememberStale(session, current.refs.keys(), "snapshot", current.generation);
+      session.current = {
+        refs: new Map(refs),
+        generation,
+        ...(scope === undefined ? {} : { scope }),
+      };
+      pruneStale(session);
     },
 
     resolve(sessionId, ref, scope) {
@@ -92,11 +169,19 @@ export function createRefStore(): RefStore {
     resolveDetailed,
 
     invalidate(sessionId, reason) {
-      const session = sessionRefs(sessionId);
-      for (const ref of session.current?.refs.keys() ?? []) {
-        session.stale.set(ref, reason);
-      }
-      session.current = { refs: new Map() };
+      const session = store.get(sessionId);
+      if (!session) return;
+      const current = session.current;
+      if (current) rememberStale(session, current.refs.keys(), reason, current.generation);
+      session.current = {
+        refs: new Map(),
+        generation: session.generation,
+      };
+      pruneStale(session);
+    },
+
+    clear(sessionId) {
+      store.delete(sessionId);
     },
 
     entries(sessionId) {

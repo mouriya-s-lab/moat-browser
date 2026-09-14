@@ -232,11 +232,7 @@ function currentRefScope(state: SessionRuntimeState, page: Page): RefScope {
 }
 
 function invalidateRefs(refStore: RefStore, sessionId: string, reason: RefStaleReason): void {
-  if (refStore.invalidate) {
-    refStore.invalidate(sessionId, reason);
-    return;
-  }
-  refStore.update(sessionId, new Map());
+  refStore.invalidate(sessionId, reason);
 }
 
 function resolveRef(
@@ -245,23 +241,17 @@ function resolveRef(
   ref: string,
   scope: RefScope,
 ): Result<Locator, ControllerError> {
-  const detailed = refStore.resolveDetailed?.(sessionId, ref, scope);
-  if (detailed) {
-    switch (detailed._tag) {
-      case "Found":
-        return ok(detailed.locator);
-      case "Missing":
-        return err({ _tag: "ElementNotFound", selector: ref });
-      case "Stale":
-        return err({ _tag: "StaleReference", ref, reason: detailed.reason });
-      default:
-        return exhaustive(detailed);
-    }
+  const detailed = refStore.resolveDetailed(sessionId, ref, scope);
+  switch (detailed._tag) {
+    case "Found":
+      return ok(detailed.locator);
+    case "Missing":
+      return err({ _tag: "ElementNotFound", selector: ref });
+    case "Stale":
+      return err({ _tag: "StaleReference", ref, reason: detailed.reason });
+    default:
+      return exhaustive(detailed);
   }
-  const locator = refStore.resolve(sessionId, ref, scope);
-  return locator
-    ? ok(locator)
-    : err({ _tag: "ElementNotFound", selector: ref });
 }
 
 function recordConsole(

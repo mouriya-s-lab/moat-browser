@@ -270,6 +270,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     cdpCache.delete(sessionId);
     clearSessionRuntimeState(sessionId);
+    refStore.clear(sessionId);
 
     let result: ContainerResult<void, ControllerError> = destroyResult;
     if (destroyResult._tag === "Ok" && closeFailure) {

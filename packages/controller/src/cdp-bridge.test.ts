@@ -193,6 +193,16 @@ function mockRefStore(): RefStore {
     resolve(sessionId, ref) {
       return store.get(sessionId)?.get(ref);
     },
+    resolveDetailed(sessionId, ref) {
+      const locator = store.get(sessionId)?.get(ref);
+      return locator ? { _tag: "Found", locator } : { _tag: "Missing" };
+    },
+    invalidate(sessionId, _reason) {
+      store.set(sessionId, new Map());
+    },
+    clear(sessionId) {
+      store.delete(sessionId);
+    },
     entries(sessionId) {
       return Array.from(store.get(sessionId)?.entries() ?? []);
     },
