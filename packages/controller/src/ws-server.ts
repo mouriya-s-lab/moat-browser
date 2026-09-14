@@ -45,8 +45,9 @@ function formatError(error: ControllerError): string {
       return `CDP disconnected for container ${error.containerId}`;
     case "ProfileCopyFailed":
       return `Profile copy failed: ${error.message}`;
-    case "ProfileUnavailable":
-      switch (error.reason) {
+    case "ProfileUnavailable": {
+      const reason = error.reason;
+      switch (reason) {
         case "invalid_name":
           return "Profile name is invalid; choose a registered profile name";
         case "not_registered":
@@ -54,8 +55,9 @@ function formatError(error: ControllerError): string {
         case "source_unavailable":
           return "Configured profile is unavailable; choose another registered profile name";
         default:
-          return exhaustive(error.reason);
+          return exhaustive(reason);
       }
+    }
     case "ElementNotFound":
       return `Element not found${error.selector ? `: ${error.selector}` : ""}`;
     case "Timeout":
