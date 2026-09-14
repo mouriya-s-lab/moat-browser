@@ -569,6 +569,7 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     if (found._tag === "Err") return found;
     return Ok(
       found.value.map((container) => ({
+        containerId: container.id,
         sessionId: container.sessionId,
         owner: container.owner,
       })),

@@ -211,6 +211,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       owner: config.controllerOwner,
       ownerQuota: 5,
       totalQuota: 5,
+      pendingReservationGraceMs: config.cdpReadyTimeout * 2,
     });
 
   // Persistent CDP connection cache — survives ws close, keyed by sessionId

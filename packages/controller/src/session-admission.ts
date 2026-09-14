@@ -28,6 +28,7 @@ export type AdmissionPhase =
   | "cleanup";
 
 export type ExternalAllocation = {
+  readonly containerId: string;
   readonly sessionId: string | undefined;
   readonly owner: string | undefined;
 };
@@ -57,7 +58,12 @@ export type SessionAdmissionConfig = {
   readonly owner: string;
   readonly ownerQuota: number;
   readonly totalQuota: number;
-  /** Shared directory mounted by every controller using the same daemon. */
+  /**
+   * Capacity retries preserve fresh pending markers for this long. Callers
+   * derive it from the register-to-CDP budget so a slow reservation cannot
+   * be mistaken for a stale marker.
+   */
+  readonly pendingReservationGraceMs: number;
   readonly statePath?: string;
   /** Read-only Docker inventory used to account for resources created before restart. */
   readonly listExternalAllocations?: () => Promise<
@@ -78,8 +84,13 @@ export type SessionAdmission = {
 
 const MAX_TOTAL_QUOTA = 5;
 const LOCK_WAIT_MS = 900;
-const LOCK_STALE_MS = 1_000;
+const LOCK_STALE_MS = 5_000;
 const LOCK_RETRY_MS = 5;
+
+type LockOwner = {
+  readonly pid: number;
+  readonly timestamp: number;
+};
 
 export function createSessionAdmission(config: SessionAdmissionConfig): SessionAdmission {
   const configError = validateConfig(config);
@@ -100,6 +111,23 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
   async function reserve(): Promise<Result<{ readonly sessionId: string }, ControllerError>> {
     if (configError) return Err(configError);
     const sessionId = randomUUID();
+    const result = await reserveOnce(sessionId);
+    if (result._tag !== "Err" || result.error._tag !== "CapacityExceeded") {
+      return result;
+    }
+
+    // Unlike startup, a live capacity retry can overlap a new reservation.
+    const reconciled = await reconcile(true);
+    if (reconciled._tag === "Err") return reconciled;
+    console.log(
+      `[admission-reconcile] owner=${config.owner} trigger=capacity-retry removed=${reconciled.value.removed}`,
+    );
+    return reserveOnce(sessionId);
+  }
+
+  async function reserveOnce(
+    sessionId: string,
+  ): Promise<Result<{ readonly sessionId: string }, ControllerError>> {
     return withStateLock(async () => {
       const inventory = await readInventory();
       if (inventory._tag === "Err") return inventory;
@@ -250,7 +278,11 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
     });
   }
 
-  async function reconcile(): Promise<Result<{ readonly removed: number }, ControllerError>> {
+  // Startup reconciliation keeps the default false; only the capacity retry
+  // preserves fresh pending markers while reserve-to-CDP work is in flight.
+  async function reconcile(
+    preserveFreshPending = false,
+  ): Promise<Result<{ readonly removed: number }, ControllerError>> {
     if (!config.statePath) {
       return Ok({ removed: 0 });
     }
@@ -265,18 +297,33 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
           allocation.sessionId ? [allocation.sessionId] : [],
         ),
       );
+      const now = Date.now();
       let removed = 0;
       for (const record of inventory.value) {
+        const allocation = record.allocation;
         if (
-          record.allocation?.owner === config.owner &&
-          !externalSessions.has(record.allocation.sessionId)
+          !allocation ||
+          allocation.owner !== config.owner ||
+          externalSessions.has(allocation.sessionId)
         ) {
-          await rm(join(statePath, `slot-${record.slot}`), {
-            recursive: true,
-            force: true,
-          });
-          removed += 1;
+          continue;
         }
+        const pending =
+          allocation.phase === "registering" ||
+          allocation.phase === "creating" ||
+          allocation.phase === "connecting";
+        if (
+          preserveFreshPending &&
+          pending &&
+          now - allocation.reservedAt < config.pendingReservationGraceMs
+        ) {
+          continue;
+        }
+        await rm(join(statePath, `slot-${record.slot}`), {
+          recursive: true,
+          force: true,
+        });
+        removed += 1;
       }
       return Ok({ removed });
     });
@@ -298,29 +345,36 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
     const lockPath = join(config.statePath, ".lock");
     const acquired = await acquireLock(lockPath);
     if (acquired._tag === "Err") return acquired;
+    const owner = acquired.value;
     const heartbeat = setInterval(() => {
-      void utimes(lockPath, new Date(), new Date()).catch(() => undefined);
+      void refreshLock(lockPath, owner);
     }, LOCK_RETRY_MS * 10);
     try {
       return await operation();
     } finally {
       clearInterval(heartbeat);
-      await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+      await releaseLock(lockPath, owner);
     }
   }
 
-  async function acquireLock(lockPath: string): Promise<Result<void, ControllerError>> {
+  async function acquireLock(lockPath: string): Promise<Result<LockOwner, ControllerError>> {
     const started = Date.now();
     while (Date.now() - started < LOCK_WAIT_MS) {
+      let created = false;
       try {
         await mkdir(lockPath);
+        created = true;
+        const owner = { pid: process.pid, timestamp: Date.now() };
         await writeFile(
           join(lockPath, "owner"),
-          `${process.pid}:${Date.now()}`,
+          `${owner.pid}:${owner.timestamp}`,
           { encoding: "utf8", flag: "wx" },
         );
-        return Ok(undefined);
+        return Ok(owner);
       } catch (error) {
+        if (created) {
+          await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+        }
         const code = isNodeError(error) ? error.code : undefined;
         if (code !== "EEXIST") {
           return Err({
@@ -329,14 +383,27 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
           });
         }
 
-        try {
-          const lockStat = await stat(lockPath);
-          if (Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) {
-            await rm(lockPath, { recursive: true, force: true });
-            continue;
+        const lockOwner = await readLockOwner(lockPath);
+        if (lockOwner) {
+          try {
+            const lockStat = await stat(lockPath);
+            const now = Date.now();
+            const ownerAge = now - lockOwner.timestamp;
+            const heartbeatAge = now - lockStat.mtimeMs;
+            if (ownerAge > LOCK_STALE_MS && heartbeatAge > LOCK_STALE_MS) {
+              console.warn(
+                `[admission-lock-steal] stalePid=${lockOwner.pid} staleTimestamp=${lockOwner.timestamp}`,
+              );
+              try {
+                await rm(lockPath, { recursive: true, force: true });
+              } catch {
+                // A competing owner released or replaced the lock; retry.
+              }
+              continue;
+            }
+          } catch {
+            // A competing owner released or replaced the lock; retry immediately.
           }
-        } catch {
-          // A competing owner released the lock; retry immediately.
         }
         await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
       }
@@ -346,6 +413,59 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
       message: "Admission lock is busy; retry the request without creating a session",
     });
   }
+  async function refreshLock(lockPath: string, owner: LockOwner): Promise<void> {
+    try {
+      const current = await readLockOwner(lockPath);
+      if (
+        !current ||
+        current.pid !== owner.pid ||
+        current.timestamp !== owner.timestamp
+      ) {
+        return;
+      }
+      await utimes(lockPath, new Date(), new Date());
+    } catch {
+      // The lock was released or replaced before the heartbeat completed.
+    }
+  }
+
+  async function releaseLock(lockPath: string, owner: LockOwner): Promise<void> {
+    try {
+      const current = await readLockOwner(lockPath);
+      if (
+        !current ||
+        current.pid !== owner.pid ||
+        current.timestamp !== owner.timestamp
+      ) {
+        return;
+      }
+      await rm(lockPath, { recursive: true, force: true });
+    } catch {
+      // A competing owner released or replaced the lock.
+    }
+  }
+
+  async function readLockOwner(lockPath: string): Promise<LockOwner | undefined> {
+    try {
+      const raw = await readFile(join(lockPath, "owner"), "utf8");
+      const parts = raw.trim().split(":");
+      if (parts.length !== 2) return undefined;
+      const pid = Number(parts[0]);
+      const timestamp = Number(parts[1]);
+      if (
+        !Number.isSafeInteger(pid) ||
+        pid < 1 ||
+        !Number.isSafeInteger(timestamp) ||
+        timestamp < 1
+      ) {
+        return undefined;
+      }
+      return { pid, timestamp };
+    } catch {
+      return undefined;
+    }
+  }
+
 
   async function readInventory(): Promise<Result<ReadonlyArray<SlotRecord>, ControllerError>> {
     if (!config.statePath) {
@@ -401,6 +521,12 @@ export function createSessionAdmission(config: SessionAdmissionConfig): SessionA
 }
 
 function validateConfig(config: SessionAdmissionConfig): ControllerError | undefined {
+  if (!Number.isFinite(config.pendingReservationGraceMs) || config.pendingReservationGraceMs <= 0) {
+    return {
+      _tag: "ValidationFailed",
+      message: "pendingReservationGraceMs must be a positive finite number",
+    };
+  }
   if (!Number.isInteger(config.totalQuota) || config.totalQuota < 1 || config.totalQuota > MAX_TOTAL_QUOTA) {
     return {
       _tag: "ValidationFailed",
@@ -503,7 +629,7 @@ function countAllocations(
   }
 
   for (const allocation of external) {
-    const key = allocation.sessionId ?? `unknown-docker-${sessions.size}`;
+    const key = allocation.sessionId ?? `unknown-docker-${allocation.containerId}`;
     sessions.add(key);
     if (allocation.owner === owner) ownerSessions.add(key);
   }

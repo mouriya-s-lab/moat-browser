@@ -106,10 +106,14 @@ const containerManager = createContainerManager({
   owner: config.controllerOwner,
 });
 
+// A capacity retry must not reclaim a reservation while profile copy, Docker
+// startup, and CDP readiness are still in flight; two configured CDP budgets
+// provide a derived grace period without hard-coding the timeout.
 const admission = createSessionAdmission({
   owner: config.controllerOwner,
   ownerQuota: config.sessionQuota,
   totalQuota: config.sessionQuotaTotal,
+  pendingReservationGraceMs: config.cdpReadyTimeout * 2,
   ownerQuotas: config.sessionOwnerQuotas,
   statePath: config.admissionStatePath,
   listExternalAllocations: containerManager.listAllocations,
