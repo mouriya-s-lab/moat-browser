@@ -436,6 +436,7 @@ impl MoatClient {
                 owner_current,
                 owner_limit,
                 retry_condition,
+                ..
             } => {
                 let cause = validate_wire_failure(error_type.as_deref(), cause)?;
                 let capacity = parse_capacity_details(
