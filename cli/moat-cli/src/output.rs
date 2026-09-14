@@ -2471,8 +2471,10 @@ Snapshot Diff:
     -c, --compact            Use compact snapshot format
     -d, --depth <n>          Limit snapshot tree depth
 
-  Without --baseline, compares against the last snapshot taken in this session.
+  Without --baseline, the first invocation initializes a session baseline;
+  later invocations compare against that session's previous snapshot.
 
+  A first invocation reports baseline initialization, not a comparison result.
 Screenshot Diff:
 
   Usage: agent-browser diff screenshot --baseline <file> [options]
@@ -2847,6 +2849,13 @@ iOS Simulator (requires Xcode and Appium):
 }
 
 fn print_snapshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
+    if data.get("status").and_then(|v| v.as_str()) == Some("baseline-initialized") {
+        println!(
+            "{} Baseline initialized; no comparison performed",
+            color::success_indicator()
+        );
+        return;
+    }
     let changed = data
         .get("changed")
         .and_then(|v| v.as_bool())
@@ -2876,7 +2885,6 @@ fn print_snapshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
         );
     }
 }
-
 fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
     let mismatch = data
         .get("mismatchPercentage")
@@ -2905,6 +2913,8 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
     }
     if let Some(diff_path) = data.get("diffPath").and_then(|v| v.as_str()) {
         println!("  Diff image: {}", color::green(diff_path));
+    } else {
+        println!("  No diff image generated");
     }
     let total = data
         .get("totalPixels")
