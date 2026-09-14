@@ -60,6 +60,8 @@ function formatError(error: ControllerError): string {
     }
     case "ElementNotFound":
       return `Element not found${error.selector ? `: ${error.selector}` : ""}`;
+    case "StaleReference":
+      return `Stale reference ${error.ref} (${error.reason})`;
     case "Timeout":
       return `Timeout: ${error.operation}`;
     case "CommandFailed":
@@ -74,6 +76,8 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
   switch (error._tag) {
     case "SessionNotFound":
     case "SessionExpired":
+    case "ElementNotFound":
+    case "StaleReference":
       return { errorType: "target_not_found" };
     case "ProfileUnavailable":
       return { errorType: "invalid_value" };
@@ -87,7 +91,7 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
       };
     case "CdpUnreachable":
     case "CdpDisconnected":
-    case "ElementNotFound":
+
     case "Timeout":
     case "CommandFailed":
     case "ValidationFailed":
@@ -266,6 +270,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
 
     cdpCache.delete(sessionId);
     clearSessionRuntimeState(sessionId);
+    refStore.clear(sessionId);
 
     let result: ContainerResult<void, ControllerError> = destroyResult;
     if (destroyResult._tag === "Ok" && closeFailure) {
