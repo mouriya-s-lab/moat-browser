@@ -35,6 +35,7 @@ pub fn local_command(request: &Value) -> Option<Result<Response, SdkError>> {
         success: true,
         data: Some(data),
         error: None,
+        error_type: None,
         warning: None,
     }))
 }
@@ -299,6 +300,9 @@ impl MoatClient {
     /// Init: register a new session (creates container + CDP).
     /// Opens ws, sends Register, receives session ID, closes ws.
     pub async fn init(url: &str, profile: Option<&str>) -> Result<Self, SdkError> {
+        if let Some(session_id) = session::read_session_id()? {
+            return Err(SdkError::SessionAlreadyActive { session_id });
+        }
         let (mut ws, _) = connect_async(url)
             .await
             .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
@@ -366,6 +370,7 @@ impl MoatClient {
                 success: true,
                 data: None,
                 error: None,
+                error_type: None,
                 warning: None,
             });
         }
@@ -390,38 +395,42 @@ impl MoatClient {
                 ..
             } => {
                 // Strip _tag from data (CLI doesn't need discriminant)
-                if let Some(ref mut d) = data {
+                if let Some(d) = &mut data {
                     if let Some(obj) = d.as_object_mut() {
                         obj.remove("_tag");
                     }
                 }
-                if let (Some(ref output), Some(ref mut d)) = (&screenshot_output, &mut data) {
+                if let (Some(output), Some(d)) = (&screenshot_output, &mut data) {
                     materialize_screenshot_response(d, output)?;
                 }
-                if let (Some(ref output), Some(ref mut d)) = (&binary_output, &mut data) {
+                if let (Some(output), Some(d)) = (&binary_output, &mut data) {
                     materialize_binary_response(d, output)?;
                 }
                 Ok(Response {
                     success: true,
                     data,
                     error: None,
+                    error_type: None,
                     warning: None,
                 })
             }
             WireResponse::CommandResult {
                 success: false,
                 error,
+                error_type,
                 ..
             } => Ok(Response {
                 success: false,
                 data: None,
                 error,
+                error_type,
                 warning: None,
             }),
             WireResponse::Error { error, .. } => Ok(Response {
                 success: false,
                 data: None,
                 error: Some(error),
+                error_type: Some("command_failed".into()),
                 warning: None,
             }),
             _ => Err(SdkError::CommandFailed {
@@ -445,11 +454,36 @@ impl MoatClient {
 
         let _ = ws.close(None).await;
 
-        session::clear_session_id()?;
-
         match resp {
-            WireResponse::DeregisterResult { success: true, .. } => Ok(()),
-            _ => Err(SdkError::DeregisterFailed),
+            WireResponse::DeregisterResult {
+                success: true, ..
+            } => {
+                // The retry handle is removed only after the controller proves
+                // that the owner-scoped remote cleanup succeeded.
+                session::clear_session_id()?;
+                Ok(())
+            }
+            WireResponse::DeregisterResult {
+                success: false,
+                error,
+                error_type,
+                code,
+                ..
+            } => Err(SdkError::DeregisterFailed {
+                error: error.unwrap_or_else(|| "Deregister failed".into()),
+                code: code.unwrap_or(1),
+                error_type,
+            }),
+            WireResponse::Error { error, code } => Err(SdkError::DeregisterFailed {
+                error,
+                code,
+                error_type: Some("command_failed".into()),
+            }),
+            _ => Err(SdkError::DeregisterFailed {
+                error: "unexpected response".into(),
+                code: 1,
+                error_type: Some("command_failed".into()),
+            }),
         }
     }
 
@@ -677,6 +711,7 @@ fn success(data: Value) -> Response {
         success: true,
         data: Some(data),
         error: None,
+        error_type: None,
         warning: None,
     }
 }

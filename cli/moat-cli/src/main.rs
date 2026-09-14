@@ -22,6 +22,7 @@ use flags::{clean_args, parse_flags, ControllerOverride};
 use fork_features::{command_help_text, help_text, unsupported_command, unsupported_flag};
 use output::{print_response_with_opts, OutputOptions};
 
+use moat_sdk::error::SdkError;
 use moat_sdk::MoatClient;
 
 const ERROR_UNSUPPORTED: &str = "unsupported_in_moat";
@@ -120,6 +121,34 @@ fn print_json_error_with_type(message: impl AsRef<str>, error_type: &str) {
             "success": false,
             "error": message.as_ref(),
             "errorType": error_type,
+        }))
+        .unwrap_or_default()
+    );
+}
+fn sdk_error_type(error: &SdkError) -> &'static str {
+    match error {
+        SdkError::DeregisterFailed { error_type, .. } => match error_type.as_deref() {
+            Some("target_not_found") => "target_not_found",
+            _ => "command_failed",
+        },
+        SdkError::NoSession => "target_not_found",
+        SdkError::SessionAlreadyActive { .. }
+        | SdkError::ConnectionFailed(_)
+        | SdkError::WebSocket(_)
+        | SdkError::RegisterFailed { .. }
+        | SdkError::CommandFailed { .. }
+        | SdkError::SessionFileError(_)
+        | SdkError::ConfigError(_) => "command_failed",
+    }
+}
+
+fn print_sdk_json_error(error: &SdkError) {
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "success": false,
+            "error": error.to_string(),
+            "errorType": sdk_error_type(error),
         }))
         .unwrap_or_default()
     );
@@ -355,7 +384,7 @@ async fn main() {
         }
 
         // destroy: deregister session, destroy container
-        "disconnect" | "destroy" | "close-session" => {
+        "disconnect" | "destroy" | "close-session" | "close" => {
             let url = match controller_url(&flags.controller) {
                 Ok(u) => u,
                 Err(e) => {
@@ -387,17 +416,13 @@ async fn main() {
                         println!("{} Disconnected.", color::success_indicator());
                     }
                 }
-                Err(e) => {
-                    // Session may already be gone — clean up local state
-                    let _ = moat_sdk::session::clear_session_id();
+                Err(error) => {
                     if flags.json {
-                        println!(r#"{{"success":true}}"#);
+                        print_sdk_json_error(&error);
                     } else {
-                        println!(
-                            "{} Cleaned up (session already gone).",
-                            color::success_indicator()
-                        );
+                        eprintln!("{} {}", color::error_indicator(), error);
                     }
+                    exit(1);
                 }
             }
             return;

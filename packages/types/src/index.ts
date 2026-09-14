@@ -344,6 +344,8 @@ export type ControllerError =
   | { readonly _tag: "CommandFailed"; readonly message: string }
   | { readonly _tag: "ValidationFailed"; readonly message: string };
 
+export type WireErrorType = "target_not_found" | "command_failed";
+
 // ─── SessionState ───
 
 export type SessionState =
@@ -577,6 +579,7 @@ export type WireResponse =
       readonly type: "register_result";
       readonly success: false;
       readonly error: string;
+      readonly errorType?: WireErrorType;
       readonly code: number;
     }
   | {
@@ -591,12 +594,16 @@ export type WireResponse =
       readonly sessionId: string;
       readonly success: false;
       readonly error: string;
+      readonly errorType?: WireErrorType;
       readonly code: number;
     }
   | {
       readonly type: "deregister_result";
       readonly sessionId: string;
       readonly success: boolean;
+      readonly error?: string;
+      readonly errorType?: WireErrorType;
+      readonly code?: number;
     };
 
 // ─── arktype schemas ───

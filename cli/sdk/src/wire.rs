@@ -35,6 +35,8 @@ pub enum WireResponse {
         #[serde(rename = "sessionId")]
         session_id: Option<String>,
         error: Option<String>,
+        #[serde(rename = "errorType")]
+        error_type: Option<String>,
         code: Option<u32>,
     },
     #[serde(rename = "command_result")]
@@ -44,6 +46,8 @@ pub enum WireResponse {
         success: bool,
         data: Option<Value>,
         error: Option<String>,
+        #[serde(rename = "errorType")]
+        error_type: Option<String>,
         code: Option<u32>,
     },
     #[serde(rename = "deregister_result")]
@@ -51,6 +55,10 @@ pub enum WireResponse {
         #[serde(rename = "sessionId")]
         session_id: String,
         success: bool,
+        error: Option<String>,
+        #[serde(rename = "errorType")]
+        error_type: Option<String>,
+        code: Option<u32>,
     },
     #[serde(rename = "error")]
     Error { error: String, code: u32 },
@@ -65,6 +73,8 @@ pub struct Response {
     pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(rename = "errorType", skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }

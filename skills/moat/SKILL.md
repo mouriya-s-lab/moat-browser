@@ -49,13 +49,21 @@ moat connect --profile default
 moat status
 ```
 
-Always disconnect when done:
+Clean up with any documented alias; all four commands share one owner-scoped
+cleanup contract:
 
 ```bash
 moat disconnect
+moat destroy
+moat close-session
+moat close
 ```
 
-`moat init` is an alias for `moat connect`, and `moat destroy` is an alias for `moat disconnect`.
+Only a confirmed remote cleanup clears `~/.moat/session` and exits
+successfully. A transport, Docker deletion, or unknown terminal state returns
+non-zero and retains the local session handle so the command can be retried.
+When a handle already exists, a second `connect` is rejected before remote
+registration and the existing session remains active.
 
 `moat status` is a local session/configuration view: it shows the session
 handle and the Controller URL resolved for this invocation, but does not probe

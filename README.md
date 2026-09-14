@@ -480,8 +480,8 @@ CLI 命令词汇完整继承自 agent-browser fork，详见上游文档：`githu
 
 | 命令 | 说明 |
 |------|------|
-| `moat connect [--profile <name>]` | 建立 session：Controller 拷贝 profile、创建 agent-chrome 容器、等待 CDP 就绪。session ID 写入 `~/.moat/session` |
-| `moat disconnect` | 销毁 session：Controller 停止并删除容器、清理 profile 拷贝。清除 `~/.moat/session` |
+| `moat connect [--profile <name>]` | 建立 session：Controller 拷贝 profile、创建带 owner/session 标签的 agent-chrome 容器、等待 CDP 就绪。session ID 写入 `~/.moat/session`；已有本地 session 时在远端注册前拒绝，保留原 handle。 |
+| `moat disconnect` / `moat destroy` / `moat close-session` / `moat close` | 共享同一清理终态：只有 Controller 确认当前 owner 的容器与 profile 已清理才返回成功并删除 `~/.moat/session`。传输、删除或终态未知时返回非零失败，保留本地 session handle 供重试。 |
 | `moat status` | 显示本地 session ID、按本次调用解析的 Controller 配置与 `local_session_config` 视图；不探测远端健康状态 |
 
 **与 agent-browser 的行为差异**：
@@ -575,19 +575,21 @@ moat find role button --name "Submit"
               └─ 查 Session Registry → 对应 agent-chrome → Patchright 执行
 ```
 
-收尾：
+收尾（`disconnect`、`destroy`、`close-session`、`close` 共用此路径）：
 
 ```
 moat disconnect
     │
-    └─ Rust SDK.disconnect()
+    └─ Rust SDK.destroy()
          │
          └─ WebSocket → Controller
               │
-              ├─ 停止并删除容器
-              └─ rm -rf /data/profiles/<session-id>/
-                 │
-                 └─ CLI 清除 ~/.moat/session
+              ├─ 以 owner + session 关联一次 cleanup
+              ├─ 停止并删除该 owner 的容器
+              └─ rm -rf 该 owner 的 profile 拷贝
+                   │
+                   ├─ 终态确认成功 → CLI 清除 ~/.moat/session，exit 0
+                   └─ 失败/未知 → CLI 返回非零，保留 ~/.moat/session 供重试
 ```
 
 **配置**：

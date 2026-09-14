@@ -1,6 +1,6 @@
 import { WebSocketServer } from "ws";
 import { createSessionRegistry } from "./session-registry.js";
-import { createContainerManager } from "./container-manager.js";
+import { createContainerManager, resolveControllerOwner } from "./container-manager.js";
 import { createRefStore } from "./ref-store.js";
 import { createWsHandler } from "./ws-server.js";
 
@@ -16,25 +16,35 @@ export type ControllerConfig = {
   readonly sessionIdleTimeout: number;
   readonly cdpReadyTimeout: number;
   readonly commandTimeout: number;
+  readonly controllerOwner: string;
 };
 
-function loadConfig(): ControllerConfig {
+async function loadConfig(): Promise<ControllerConfig> {
+  const port = parseInt(process.env.PORT ?? "3000", 10);
+  const dockerNetwork = process.env.DOCKER_NETWORK ?? "moat";
+  const ownerResult = await resolveControllerOwner(process.env.CONTROLLER_OWNER);
+  if (ownerResult._tag === "Err") {
+    console.error(`[controller-owner] ${ownerResult.error.message}`);
+    process.exit(78);
+  }
+
   return {
-    port: parseInt(process.env.PORT ?? "3000", 10),
+    port,
     profileSource: process.env.PROFILE_SOURCE ?? "/data/profile",
     profilesWork: process.env.PROFILES_WORK ?? "/data/profiles",
     profilesHostPath: process.env.PROFILES_HOST_PATH ?? process.env.PROFILES_WORK ?? "/data/profiles",
-    dockerNetwork: process.env.DOCKER_NETWORK ?? "moat",
+    dockerNetwork,
     agentChromeImage: process.env.AGENT_CHROME_IMAGE ?? "agent-chrome:latest",
     sessionIdleTimeout: parseInt(process.env.SESSION_IDLE_TIMEOUT ?? "600000", 10),
     cdpReadyTimeout: parseInt(process.env.CDP_READY_TIMEOUT ?? "30000", 10),
     commandTimeout: parseInt(process.env.COMMAND_TIMEOUT ?? "25000", 10),
+    controllerOwner: ownerResult.value,
   };
 }
 
 // ─── Entry ───
 
-const config = loadConfig();
+const config = await loadConfig();
 
 const containerManager = createContainerManager({
   profileSource: config.profileSource,
@@ -43,6 +53,7 @@ const containerManager = createContainerManager({
   dockerNetwork: config.dockerNetwork,
   agentChromeImage: config.agentChromeImage,
   cdpReadyTimeout: config.cdpReadyTimeout,
+  owner: config.controllerOwner,
 });
 
 const refStore = createRefStore();
@@ -63,15 +74,15 @@ const handler = createWsHandler({
   config,
 });
 
-// Startup reap: prior process spawned agent-chrome containers whose sessionId
-// mapping died with it. Label reverse-lookup + destroy them before accepting
-// new sessions so operators never see cross-restart orphans.
+// Startup reap is owner-scoped: this controller can only reclaim its own
+// agent-chrome containers. A missing owner is a startup error, never a reason
+// to fall back to a global role-label sweep.
 const reapResult = await containerManager.reap();
 if (reapResult._tag === "Ok") {
-  console.log(`[startup-reap] reaped=${reapResult.value.reaped}`);
+  console.log(`[startup-reap] owner=${config.controllerOwner} reaped=${reapResult.value.reaped}`);
 } else {
   console.warn(
-    `[startup-reap-failed] ${reapResult.error._tag}: ${
+    `[startup-reap-failed] owner=${config.controllerOwner} ${reapResult.error._tag}: ${
       "message" in reapResult.error ? reapResult.error.message : ""
     }`,
   );
