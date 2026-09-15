@@ -72,6 +72,11 @@ export type CdpConnection = {
   readonly context: BrowserContext;
 };
 
+export type CommandExecutionOptions = {
+  readonly deadline: number;
+  readonly budget: number;
+};
+
 const contextCdpUrls = new WeakMap<BrowserContext, string>();
 
 const REMOTE_DOWNLOAD_PATH = "/data/profile/.moat-downloads";
@@ -658,9 +663,44 @@ async function buildTabList(
   );
 }
 
-// ─── Error mapping (§8.7) ───
+function isWaitAction(action: BrowserCommand["action"] | undefined): boolean {
+  return action === "wait"
+    || action === "waitforurl"
+    || action === "waitforloadstate"
+    || action === "waitforfunction"
+    || action === "waitfordownload";
+}
 
-function mapPlaywrightError(e: unknown): ControllerError {
+// Keep inner Playwright timeouts ahead of the outer ws-server deadline race.
+// Invariant: inner timeout + guard <= outer command budget. The guard must
+// exceed normal CDP round-trip jitter so a handled TimeoutError can reach the
+// client before the outer fallback closes a genuinely unresponsive session.
+const CDP_DEADLINE_GUARD_MS = 100;
+
+function operationTimeout(
+  options: CommandExecutionOptions | undefined,
+  requested?: number,
+): number | undefined {
+  if (options === undefined) return requested;
+  const remaining = Math.max(1, options.deadline - Date.now() - CDP_DEADLINE_GUARD_MS);
+  return requested === undefined ? remaining : Math.min(requested, remaining);
+}
+
+function timeoutError(
+  action: BrowserCommand["action"],
+  options: CommandExecutionOptions,
+): ControllerError {
+  return {
+    _tag: "Timeout",
+    operation: `${action} exceeded ${options.budget}ms (result may include partial side effects)`,
+  };
+}
+
+function mapPlaywrightError(
+  e: unknown,
+  action?: BrowserCommand["action"],
+  options?: CommandExecutionOptions,
+): ControllerError {
   if (!(e instanceof Error)) {
     return { _tag: "CommandFailed", message: String(e) };
   }
@@ -668,10 +708,11 @@ function mapPlaywrightError(e: unknown): ControllerError {
   const msg = e.message;
 
   if (e.name === "TimeoutError" || msg.includes("Timeout")) {
-    if (msg.includes("waiting for locator") || msg.includes("waiting for selector")) {
+    if (!isWaitAction(action) && (msg.includes("waiting for locator") || msg.includes("waiting for selector"))) {
       return { _tag: "ElementNotFound", selector: undefined };
     }
-    return { _tag: "Timeout", operation: msg };
+    const budget = options === undefined ? "" : ` (budget ${options.budget}ms)`;
+    return { _tag: "Timeout", operation: `${action ?? "operation"}: ${msg}${budget}` };
   }
 
   if (msg.includes("Target closed") || msg.includes("Execution context destroyed")) {
@@ -688,7 +729,11 @@ export async function executeCommand(
   command: BrowserCommand,
   refStore: RefStore,
   sessionId: string,
+  options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
+  if (options !== undefined && options.deadline <= Date.now()) {
+    return err(timeoutError(command.action, options));
+  }
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
   const runtimeState = observePageRuntime(sessionId, page);
@@ -704,8 +749,10 @@ export async function executeCommand(
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         if (command.headers) await page.setExtraHTTPHeaders(command.headers);
+        const timeout = operationTimeout(options);
         await page.goto(command.url, {
           waitUntil: command.waitUntil === "none" ? "commit" : (command.waitUntil ?? "domcontentloaded"),
+          ...(timeout === undefined ? {} : { timeout }),
         });
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
@@ -715,13 +762,13 @@ export async function executeCommand(
         invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        const urlBefore = page.url();
-        try {
-          await page.goBack({ waitUntil: "domcontentloaded", timeout: 3000 });
-        } catch {
-          if (page.url() === urlBefore) {
-            return err({ _tag: "CommandFailed", message: "No back history" } as const);
-          }
+        const timeout = operationTimeout(options);
+        const response = await page.goBack({
+          waitUntil: "domcontentloaded",
+          ...(timeout === undefined ? {} : { timeout }),
+        });
+        if (response === null) {
+          return err({ _tag: "CommandFailed", message: "No back history" } as const);
         }
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
@@ -730,13 +777,13 @@ export async function executeCommand(
         invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        const urlBefore = page.url();
-        try {
-          await page.goForward({ waitUntil: "domcontentloaded", timeout: 3000 });
-        } catch {
-          if (page.url() === urlBefore) {
-            return err({ _tag: "CommandFailed", message: "No forward history" } as const);
-          }
+        const timeout = operationTimeout(options);
+        const response = await page.goForward({
+          waitUntil: "domcontentloaded",
+          ...(timeout === undefined ? {} : { timeout }),
+        });
+        if (response === null) {
+          return err({ _tag: "CommandFailed", message: "No forward history" } as const);
         }
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
@@ -745,7 +792,11 @@ export async function executeCommand(
         invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        await page.reload({ waitUntil: "domcontentloaded" });
+        const timeout = operationTimeout(options);
+        await page.reload({
+          waitUntil: "domcontentloaded",
+          ...(timeout === undefined ? {} : { timeout }),
+        });
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
@@ -911,7 +962,12 @@ export async function executeCommand(
       case "tab_new": {
         invalidateRefs(refStore, sessionId, "page");
         const newPage = await context.newPage();
-        if (command.url) await newPage.goto(command.url);
+        if (command.url) {
+          const timeout = operationTimeout(options);
+          await newPage.goto(command.url, {
+            ...(timeout === undefined ? {} : { timeout }),
+          });
+        }
         activeTabIndex = context.pages().length - 1;
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activePage = newPage;
@@ -988,37 +1044,54 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "wait": {
+        const timeout = operationTimeout(options, command.timeout);
         if (command.selector) {
           const state = (command.state ?? "visible") as "visible" | "hidden" | "attached" | "detached";
-          await scope.locator(command.selector).waitFor({ state, timeout: command.timeout });
+          await scope.locator(command.selector).waitFor({ state, timeout });
           const wr: WaitResult = { _tag: "WaitResult", waited: "selector" };
           return ok(wr);
         }
         if (command.text) {
-          await scope.getByText(command.text).waitFor({ timeout: command.timeout });
+          await scope.getByText(command.text).waitFor({ timeout });
           const wr: WaitResult = { _tag: "WaitResult", waited: "text" };
           return ok(wr);
         }
-        await new Promise<void>((r) => setTimeout(r, command.time ?? 1000));
+        const duration = command.time ?? 1000;
+        if (options === undefined) {
+          await new Promise<void>((resolve) => setTimeout(resolve, duration));
+        } else {
+          const remaining = options.deadline - Date.now();
+          if (remaining <= 0) return err(timeoutError(command.action, options));
+          if (duration > remaining) {
+            await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+            return err(timeoutError(command.action, options));
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, duration));
+          if (options.deadline <= Date.now()) return err(timeoutError(command.action, options));
+        }
         const wr: WaitResult = { _tag: "WaitResult", waited: "timeout" };
         return ok(wr);
       }
 
       case "waitforurl": {
-        await scope.waitForURL(command.url, { timeout: command.timeout });
+        await scope.waitForURL(command.url, { timeout: operationTimeout(options, command.timeout) });
         const wr: WaitResult = { _tag: "WaitResult", waited: "url", url: page.url() };
         return ok(wr);
       }
 
       case "waitforloadstate": {
         const state = command.state as "load" | "domcontentloaded" | "networkidle";
-        await scope.waitForLoadState(state, { timeout: command.timeout });
+        await scope.waitForLoadState(state, { timeout: operationTimeout(options, command.timeout) });
         const wr: WaitResult = { _tag: "WaitResult", waited: "loadstate", state: command.state };
         return ok(wr);
       }
 
       case "waitforfunction": {
-        const handle = await scope.waitForFunction(command.expression, undefined, { timeout: command.timeout });
+        const handle = await scope.waitForFunction(
+          command.expression,
+          undefined,
+          { timeout: operationTimeout(options, command.timeout) },
+        );
         const val = await handle.jsonValue();
         const wr: WaitResult = { _tag: "WaitResult", waited: "function", result: JSON.stringify(val) };
         return ok(wr);
@@ -1142,10 +1215,11 @@ export async function executeCommand(
       case "batch": {
         const entries: BatchResultEntry[] = [];
         for (const sub of command.commands) {
-          const subResult = await executeCommand(context, sub, refStore, sessionId);
+          const subResult = await executeCommand(context, sub, refStore, sessionId, options);
           if (subResult._tag === "Ok") {
             entries.push({ success: true, data: subResult.value });
           } else {
+            if (subResult.error._tag === "Timeout") return subResult;
             entries.push({ success: false, error: subResult.error._tag });
             if (command.bail) break;
           }
@@ -1429,11 +1503,22 @@ export async function executeCommand(
       case "download": {
         const resolved = resolveLocator(scope, refStore, sessionId, refScope, command.ref, command.selector);
         if (resolved._tag === "Err") return resolved;
-        return ok(await remoteDownload(context, page, sessionId, undefined, () => resolved.value.click()));
+        return ok(await remoteDownload(
+          context,
+          page,
+          sessionId,
+          operationTimeout(options),
+          () => resolved.value.click(),
+        ));
       }
 
       case "waitfordownload": {
-        return ok(await remoteDownload(context, page, sessionId, command.timeout));
+        return ok(await remoteDownload(
+          context,
+          page,
+          sessionId,
+          operationTimeout(options, command.timeout),
+        ));
       }
 
       case "pdf": {
@@ -1653,9 +1738,13 @@ export async function executeCommand(
         const cdp = runtimeState.profilerSession;
         if (!cdp) return err({ _tag: "CommandFailed", message: "No profiling in progress" });
         const completed = new Promise<{ stream?: string }>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error("Profiler stop timed out after 30s")), 30_000);
+          const timeout = operationTimeout(options, 30_000);
+          const timer = setTimeout(
+            () => reject(new Error("Profiler stop timed out")),
+            timeout ?? 30_000,
+          );
           cdp.once("Tracing.tracingComplete", (event) => {
-            clearTimeout(timeout);
+            clearTimeout(timer);
             resolve(event);
           });
         });
@@ -1780,7 +1869,9 @@ export async function executeCommand(
         // setTimeout) immediately before issuing `dialog accept`.  Waiting for
         // the next event here closes that unavoidable race instead of returning
         // "No dialog" and leaving a modal behind to block every later command.
-        const dialog = runtimeState.pendingDialog ?? await page.waitForEvent("dialog", { timeout: 5_000 });
+        const dialog = runtimeState.pendingDialog ?? await page.waitForEvent("dialog", {
+          timeout: operationTimeout(options) ?? 5_000,
+        });
         const accepted = command.response === "accept";
         if (accepted) await dialog.accept(command.promptText);
         else await dialog.dismiss();
@@ -1816,7 +1907,6 @@ export async function executeCommand(
         if (command.clear) {
           runtimeState.consoleMessages.splice(0);
           const r: ClearedResult = { _tag: "ClearedResult", cleared: true };
-          return ok(r);
         }
         const r: ConsoleResult = {
           _tag: "ConsoleResult",
@@ -1842,6 +1932,6 @@ export async function executeCommand(
         return exhaustive(command);
     }
   } catch (e) {
-    return err(mapPlaywrightError(e));
+    return err(mapPlaywrightError(e, command.action, options));
   }
 }

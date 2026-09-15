@@ -521,8 +521,10 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 | `invalid_value` | 参数值或形状非法 |
 | `target_not_found` | 引用的 session、tab、frame 或元素目标不存在 |
 | `command_failed` | 不属于上述类别的基础设施失败，并带结构化失败原因 |
+| `capacity_exceeded` | 会话准入配额已满，可在资源释放后重试 |
+| `timeout` | 调用超过服务端预算；命令预算耗尽不代表结果可回滚 |
 
-`capacity_exceeded`（配额已满，可在资源释放后重试）与 `timeout`（调用预算耗尽）是预留类别；它们不应被压成 `command_failed`。
+Controller 对普通命令和清理使用默认 25s 服务端预算，`register` 使用 45s。等待命令可用显式 `--timeout <ms>` 覆盖预算，取值必须是整数 `1`–`120000`ms；省略时使用默认 25s。客户端 deadline 始终在服务端预算之外额外保留 5s，用于覆盖 WebSocket 建连、发送、接收和关闭的网络收尾，避免服务端刚耗尽预算时客户端先误报为 `command_failed`/transport。任一预算耗尽都返回 `errorType: "timeout"`，且不带 `cause`；调用方应把结果视为可能已经产生部分副作用，而不是自动重试。
 
 ### 9.4 Wire 协议
 

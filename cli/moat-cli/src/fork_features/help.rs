@@ -15,6 +15,7 @@ Navigation and page actions:
   click | dblclick | type | fill | hover | focus | check | uncheck | select
   press | keyboard | drag | mouse | tap | swipe | scroll | scrollintoview
   wait | find | get | is | eval | highlight
+  wait --timeout <ms>          Integer 1-120000ms; default 25000ms
 
 Page artifacts and state:
   snapshot                     Accessibility snapshot; supports -i/-c/-d/-s
@@ -99,7 +100,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "keyboard" => "keyboard <type|inserttext> <text>",
         "scroll" => "scroll <up|down|left|right> [pixels]",
         "scrollintoview" | "scrollinto" => "scrollintoview <selector>",
-        "wait" => "wait <selector|milliseconds|--text|--url|--load|--fn|--download> [value]",
+        "wait" => "wait <selector|milliseconds|--text|--url|--load|--fn|--download> [value] [--timeout <ms>]  # integer 1-120000ms; default 25000ms",
         "screenshot" => "screenshot [selector] [output-path] [--full|-f] [--annotate]",
         "pdf" => "pdf [output-path]",
         "snapshot" => "snapshot [-i] [-c] [-d <depth>] [-s <selector>]",

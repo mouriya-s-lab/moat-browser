@@ -30,6 +30,7 @@ const ERROR_MISSING_ARGUMENTS: &str = "missing_arguments";
 const ERROR_INVALID_VALUE: &str = "invalid_value";
 const ERROR_TARGET_NOT_FOUND: &str = "target_not_found";
 const ERROR_COMMAND_FAILED: &str = "command_failed";
+const ERROR_TIMEOUT: &str = "timeout";
 
 enum ControllerUrlError {
     Missing(String),
@@ -131,6 +132,7 @@ fn sdk_error_type(error: &SdkError) -> &str {
         | SdkError::DeregisterFailed { error_type, .. } => {
             error_type.as_deref().unwrap_or(ERROR_COMMAND_FAILED)
         }
+        SdkError::Timeout { .. } => ERROR_TIMEOUT,
         SdkError::NoSession => ERROR_TARGET_NOT_FOUND,
         SdkError::SessionAlreadyActive { .. }
         | SdkError::ConnectionFailed(_)
