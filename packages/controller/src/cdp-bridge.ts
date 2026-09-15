@@ -1278,6 +1278,17 @@ async function stopNetworkHar(
 ): Promise<Result<NetworkArtifactResult, ControllerError>> {
   const requests = [...state.requests.values()];
   state.harActive = false;
+  const stopOptions = options === undefined
+    ? undefined
+    : { ...options, deadline: options.deadline - CDP_DEADLINE_GUARD_MS };
+  if (stopOptions !== undefined && stopOptions.deadline <= Date.now()) {
+    return ok(artifactIncomplete(
+      "restricted",
+      requests.length,
+      "HAR stop reached its bounded assembly budget (phase=stop)",
+      "retry HAR stop after request bodies settle; no HAR path was created",
+    ));
+  }
   for (const request of requests) {
     if (request.responseBody._tag === "Pending") {
       const capture = request.responsePromise;
@@ -1298,7 +1309,7 @@ async function stopNetworkHar(
         ));
       }
       try {
-        request.responseBody = await withOperationTimeout(() => capture, options);
+        request.responseBody = await withOperationTimeout(() => capture, stopOptions);
       } catch (error) {
         if (error instanceof OperationTimeoutError) {
           return ok(artifactIncomplete(
@@ -1324,6 +1335,14 @@ async function stopNetworkHar(
         request.responseBody.nextAction,
       ));
     }
+  }
+  if (stopOptions !== undefined && stopOptions.deadline <= Date.now()) {
+    return ok(artifactIncomplete(
+      "restricted",
+      requests.length,
+      "HAR stop reached its bounded assembly budget (phase=serialization)",
+      "retry HAR stop after request bodies settle; no HAR path was created",
+    ));
   }
 
   const harValue = {
@@ -1369,12 +1388,12 @@ async function stopNetworkHar(
   const temporaryPath = join(directory, `.${artifactId}.har.partial`);
   const digest = createHash("sha256").update(bytes).digest("hex");
   try {
-    await withOperationTimeout(() => mkdir(directory, { recursive: true }), options);
-    await withOperationTimeout(() => writeFile(temporaryPath, bytes, { flag: "wx" }), options);
-    await withOperationTimeout(() => rename(temporaryPath, finalPath), options);
-    const handle = await withOperationTimeout(() => open(finalPath, "r"), options);
+    await withOperationTimeout(() => mkdir(directory, { recursive: true }), stopOptions);
+    await withOperationTimeout(() => writeFile(temporaryPath, bytes, { flag: "wx" }), stopOptions);
+    await withOperationTimeout(() => rename(temporaryPath, finalPath), stopOptions);
+    const handle = await withOperationTimeout(() => open(finalPath, "r"), stopOptions);
     try {
-      const stat = await withOperationTimeout(() => handle.stat(), options);
+      const stat = await withOperationTimeout(() => handle.stat(), stopOptions);
       if (stat.size !== bytes.length) {
         await rm(finalPath, { force: true });
         return ok(artifactIncomplete(
@@ -1462,8 +1481,9 @@ async function readNetworkArtifact(
   if (artifact === undefined || artifact.expiresAt <= Date.now()) {
     if (artifact !== undefined) forgetNetworkArtifact(state, artifact.artifactId);
     return err({
-      _tag: "CommandFailed",
-      message: `HAR artifact ${command.artifactId} is unavailable or expired; retry network har start/stop in the owning session`,
+      _tag: "StaleReference",
+      ref: command.artifactId,
+      reason: "artifact",
     });
   }
   let offset = 0;
@@ -1476,8 +1496,9 @@ async function readNetworkArtifact(
       || continuation.expiresAt <= Date.now()
     ) {
       return err({
-        _tag: "ValidationFailed",
-        message: "HAR artifact continuation is expired or belongs to another session/artifact",
+        _tag: "StaleReference",
+        ref: command.artifactId,
+        reason: "artifact",
       });
     }
     offset = continuation.offset;
@@ -2031,6 +2052,7 @@ function dialogGuardTarget(
     case "credentials":
     case "requests":
     case "request_detail":
+    case "network_artifact_read":
     case "window_new":
     case "cdp_url":
     case "inspect":

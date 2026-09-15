@@ -618,6 +618,13 @@ impl MoatClient {
         request: Value,
         deadline: ClientDeadline,
     ) -> Result<Response, SdkError> {
+        let is_har_stop = request
+            .get("action")
+            .and_then(Value::as_str)
+            == Some("har_stop");
+        if is_har_stop {
+            return self.command_remote_inner(request, deadline).await;
+        }
         with_client_deadline(
             deadline,
             "command",
@@ -640,7 +647,7 @@ impl MoatClient {
         };
         send_json(&mut ws, &wire_req).await?;
         let response = recv_json(&mut ws, deadline).await?;
-        let _ = ws.close(None).await;
+        drop(ws);
         Ok(response)
     }
 
@@ -664,7 +671,6 @@ impl MoatClient {
                 operation_id: None,
                 dialog_id: None,
                 page: None,
-
                 owner: None,
                 current: None,
                 limit: None,
@@ -679,7 +685,17 @@ impl MoatClient {
             .get("action")
             .and_then(Value::as_str)
             .map(String::from);
-        let mut response = decode_wire_response(self.command_remote_wire(request, deadline).await?)?;
+        let wire_response = if action.as_deref() == Some("har_stop") {
+            with_client_deadline(
+                deadline,
+                "command",
+                self.command_remote_wire(request, deadline),
+            )
+            .await?
+        } else {
+            self.command_remote_wire(request, deadline).await?
+        };
+        let mut response = decode_wire_response(wire_response)?;
         if action.as_deref() == Some("har_stop") {
             if !response.success {
                 return Ok(response);
@@ -687,7 +703,7 @@ impl MoatClient {
             let output = binary_output
                 .as_ref()
                 .ok_or_else(|| command_error("HAR output path state is missing".into()))?;
-            return self.materialize_har_response(response.data.take(), output, deadline).await;
+            return self.materialize_har_response(response.data.take(), output).await;
         }
         // Strip _tag from data (CLI doesn't need discriminant)
         if let Some(data) = &mut response.data {
@@ -987,7 +1003,6 @@ impl MoatClient {
         &self,
         data: Option<Value>,
         output: &BinaryOutput,
-        deadline: ClientDeadline,
     ) -> Result<Response, SdkError> {
         let mut descriptor = data.ok_or_else(|| command_error(
             "HAR stop returned no artifact descriptor (phase=descriptor)".into(),
@@ -1060,7 +1075,15 @@ impl MoatClient {
                 if let Some(token) = continuation.take() {
                     command["continuation"] = Value::String(token);
                 }
-                let response = decode_wire_response(self.command_remote_wire(command, deadline).await?)?;
+                let chunk_deadline = ClientDeadline::new(command_server_budget(&command));
+                let response = decode_wire_response(
+                    with_client_deadline(
+                        chunk_deadline,
+                        "command",
+                        self.command_remote_wire(command, chunk_deadline),
+                    )
+                    .await?,
+                )?;
                 let chunk = require_success(response)?;
                 let chunk_offset = chunk
                     .get("offset")

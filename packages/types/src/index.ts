@@ -794,7 +794,7 @@ export type CommandResultData =
 
 export type ProfileUnavailableReason = "invalid_name" | "not_registered" | "source_unavailable";
 
-export type RefStaleReason = "snapshot" | "frame" | "page" | "navigation";
+export type RefStaleReason = "snapshot" | "frame" | "page" | "navigation" | "artifact";
 
 // ─── ControllerError ───
 export type ControllerError =
