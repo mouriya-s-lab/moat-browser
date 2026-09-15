@@ -141,7 +141,7 @@ fn state_directory() -> Result<PathBuf, SdkError> {
 
 fn state_path(name: &str) -> Result<PathBuf, SdkError> {
     let direct = PathBuf::from(name);
-    if direct.exists() || direct.is_absolute() || direct.components().count() > 1 {
+    if direct.is_absolute() || direct.components().count() > 1 {
         return Ok(direct);
     }
     let filename = if name.ends_with(".json") {
@@ -186,6 +186,8 @@ fn local_state_list() -> Result<Value, SdkError> {
             "size": metadata.len(),
             "modified": modified,
             "encrypted": false,
+            "managed": true,
+            "namespace": "default",
         }));
     }
     files.sort_by(|left, right| left["filename"].as_str().cmp(&right["filename"].as_str()));
@@ -223,17 +225,47 @@ fn local_state_show(request: &Value) -> Result<Value, SdkError> {
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
+    let tabs = state
+        .get("tabs")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let indexed_db = state
+        .get("origins")
+        .and_then(Value::as_array)
+        .map(|origins| {
+            origins
+                .iter()
+                .filter_map(|origin| origin.get("indexedDB").and_then(Value::as_array))
+                .map(Vec::len)
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    let default_directory = state_directory()?;
+    let managed = path.parent() == Some(default_directory.as_path());
     Ok(serde_json::json!({
         "path": path,
         "encrypted": false,
-        "summary": { "cookies": cookies, "origins": origins },
+        "managed": managed,
+        "namespace": if managed { "default" } else { "explicit" },
+        "summary": { "cookies": cookies, "origins": origins, "tabs": tabs, "indexedDB": indexed_db },
     }))
 }
 
 fn local_state_clear(request: &Value) -> Result<Value, SdkError> {
+    let all = request.get("all").and_then(Value::as_bool) == Some(true);
+    let confirmed = request.get("confirm").and_then(Value::as_bool) == Some(true);
+    if all && !confirmed {
+        return Err(SdkError::CommandFailed {
+            error: "state clear --all requires explicit confirmation; rerun with --confirm".into(),
+            code: 1,
+            cause: CommandFailureCause::Transport,
+        });
+    }
+
     let directory = state_directory()?;
     let mut cleared = 0_u64;
-    if request.get("all").and_then(Value::as_bool) == Some(true) {
+    if all {
         for entry in std::fs::read_dir(&directory).map_err(|e| SdkError::CommandFailed {
             error: format!("read state directory {}: {}", directory.display(), e),
             code: 1,
@@ -270,7 +302,11 @@ fn local_state_clear(request: &Value) -> Result<Value, SdkError> {
             cause: CommandFailureCause::Transport,
         });
     }
-    Ok(serde_json::json!({ "cleared": cleared }))
+    Ok(serde_json::json!({
+        "cleared": cleared,
+        "directory": directory,
+        "managed": true,
+    }))
 }
 
 fn local_state_clean(request: &Value) -> Result<Value, SdkError> {
@@ -1160,7 +1196,7 @@ fn prepare_command(
     }
 
     if obj.get("action").and_then(|v| v.as_str()) == Some("state_load") {
-        let path = obj
+        let requested_path = obj
             .get("path")
             .and_then(|value| value.as_str())
             .ok_or_else(|| SdkError::CommandFailed {
@@ -1168,14 +1204,15 @@ fn prepare_command(
                 code: 1,
                 cause: CommandFailureCause::Transport,
             })?;
-        let contents = std::fs::read_to_string(path).map_err(|e| SdkError::CommandFailed {
-            error: format!("read state file {}: {}", path, e),
+        let path = state_path(requested_path)?;
+        let contents = std::fs::read_to_string(&path).map_err(|e| SdkError::CommandFailed {
+            error: format!("read state file {}: {}", path.display(), e),
             code: 1,
             cause: CommandFailureCause::Transport,
         })?;
         let state =
             serde_json::from_str::<Value>(&contents).map_err(|e| SdkError::CommandFailed {
-                error: format!("parse state file {}: {}", path, e),
+                error: format!("parse state file {}: {}", path.display(), e),
                 code: 1,
                 cause: CommandFailureCause::Transport,
             })?;
@@ -1207,11 +1244,17 @@ fn prepare_command(
             obj.remove("path");
         }
         Some("state_save") => {
+            let requested_path = obj
+                .get("path")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| SdkError::CommandFailed {
+                    error: "state save requires a path".into(),
+                    code: 1,
+                    cause: CommandFailureCause::Transport,
+                })?;
+            let path = state_path(requested_path)?;
             binary_output = Some(BinaryOutput {
-                requested_path: obj
-                    .get("path")
-                    .and_then(|value| value.as_str())
-                    .map(String::from),
+                requested_path: Some(path.to_string_lossy().to_string()),
                 default_directory: "moat-states".into(),
                 default_filename: "state.json".into(),
             });
@@ -1637,7 +1680,7 @@ mod tests {
         assert_eq!(cleaned["cleaned"], 1);
 
         std::fs::write(states.join("third.json"), br#"{"cookies":[],"origins":[]}"#).unwrap();
-        let cleared = local_command(&json!({ "action": "state_clear", "all": true }))
+        let cleared = local_command(&json!({ "action": "state_clear", "all": true, "confirm": true }))
             .unwrap()
             .unwrap()
             .data

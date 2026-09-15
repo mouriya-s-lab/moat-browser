@@ -199,6 +199,37 @@ moat open https://app.example.com/dashboard
 moat snapshot
 ```
 
+## State and cookie fidelity
+
+State files preserve cookies, origin localStorage/IndexedDB, and sessionStorage
+for each open tab keyed by its exact URL. `state load` never guesses between
+duplicate or missing tabs: it returns an explicit `status` of `complete`,
+`incomplete`, or `unsupported`; only `complete` includes `loaded: true`.
+
+Bare state names use the shared `$HOME/.moat/states/` namespace:
+
+```bash
+moat state save alpha
+moat state list
+moat state show alpha
+moat state load alpha
+```
+
+Absolute and multi-component paths remain explicit paths and are not included in
+the default `state list` or `state clear --all` set. `state clear --all` only
+removes direct `.json` files in the default directory and requires explicit
+confirmation:
+
+```bash
+moat state clear --all --confirm
+```
+
+Without `--confirm` (or its `--yes` alias), the command fails immediately
+without reading stdin or changing files. Cookie scope is mutually exclusive:
+use either `--url <url>` or `--domain <domain>`/`--path <path>`. A conflicting
+combination is rejected with `errorType: "invalid_value"` before any cookie is
+written.
+
 ## Exit codes
 
 | Code | Meaning |

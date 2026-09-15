@@ -43,6 +43,9 @@ import type {
   CdpUrlResult,
   TouchResult,
   StateLoadResult,
+  BrowserStorageState,
+  IndexedDbDatabase,
+  StateLoadCounts,
   StartedResult,
   BooleanResult,
   BatchResult,
@@ -781,6 +784,190 @@ async function buildTabList(
     })),
   );
 }
+type StorageStateOrigin = {
+  readonly origin: string;
+  readonly localStorage: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  readonly indexedDB?: ReadonlyArray<IndexedDbDatabase>;
+};
+
+type StorageState = {
+  readonly cookies: ReadonlyArray<CookieEntry>;
+  readonly origins: ReadonlyArray<StorageStateOrigin>;
+};
+
+type StatePageTarget = {
+  readonly page: Page;
+};
+
+function stateOrigin(url: string): string | undefined {
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? undefined : origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function stateLoadCounts(state: BrowserStorageState): StateLoadCounts {
+  return {
+    cookies: state.cookies.length,
+    origins: state.origins.length,
+    tabs: state.tabs.length,
+    indexedDB: state.origins.reduce((count, origin) => count + origin.indexedDB.length, 0),
+  };
+}
+
+async function restoreIndexedDb(
+  page: Page,
+  databases: ReadonlyArray<IndexedDbDatabase>,
+  options?: CommandExecutionOptions,
+): Promise<boolean> {
+  if (databases.length === 0) return true;
+  return withOperationTimeout(() => page.evaluate(async (state) => {
+    const readProperty = (value: object, name: string): unknown =>
+      Object.getOwnPropertyDescriptor(value, name)?.value;
+
+    const decode = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map((item) => decode(item));
+      if (value === null || typeof value !== "object") return value;
+
+      const marker = readProperty(value, "v");
+      if (marker === "undefined") return undefined;
+      if (marker === "null") return null;
+      if (marker === "NaN") return Number.NaN;
+      if (marker === "Infinity") return Number.POSITIVE_INFINITY;
+      if (marker === "-Infinity") return Number.NEGATIVE_INFINITY;
+      if (marker === "-0") return -0;
+      const date = readProperty(value, "d");
+      if (typeof date === "string") return new Date(date);
+      const url = readProperty(value, "u");
+      if (typeof url === "string") return new URL(url);
+      const bigint = readProperty(value, "bi");
+      if (typeof bigint === "string") return BigInt(bigint);
+      const regexp = readProperty(value, "r");
+      if (regexp !== null && typeof regexp === "object") {
+        const pattern = readProperty(regexp, "p");
+        const flags = readProperty(regexp, "f");
+        if (typeof pattern === "string" && typeof flags === "string") return new RegExp(pattern, flags);
+      }
+      const encodedArray = readProperty(value, "a");
+      if (Array.isArray(encodedArray)) return encodedArray.map((item) => decode(item));
+      const encodedObject = readProperty(value, "o");
+      if (Array.isArray(encodedObject)) {
+        const result: Record<string, unknown> = {};
+        for (const entry of encodedObject) {
+          if (entry === null || typeof entry !== "object") continue;
+          const key = readProperty(entry, "k");
+          if (typeof key !== "string") continue;
+          result[key] = decode(readProperty(entry, "v"));
+        }
+        return result;
+      }
+      return value;
+    };
+
+    const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
+      new Promise((resolve, reject) => {
+        request.addEventListener("success", () => resolve(request.result));
+        request.addEventListener("error", () => reject(request.error));
+      });
+
+    const isValidKey = (value: unknown): value is IDBValidKey => {
+      if (typeof value === "string" || typeof value === "number") return true;
+      if (value instanceof Date) return true;
+      return Array.isArray(value) && value.every((item) => isValidKey(item));
+    };
+
+    const transactionResult = (transaction: IDBTransaction): Promise<void> =>
+      new Promise((resolve, reject) => {
+        transaction.addEventListener("complete", () => resolve());
+        transaction.addEventListener("error", () => reject(transaction.error));
+        transaction.addEventListener("abort", () => reject(transaction.error));
+      });
+
+    const currentDatabases = typeof indexedDB.databases === "function"
+      ? await indexedDB.databases()
+      : [];
+
+    for (const database of state) {
+      const currentVersion = currentDatabases.find((current) => current.name === database.name)?.version ?? 0;
+      const version = Math.max(database.version, currentVersion, 1);
+      const request = indexedDB.open(database.name, version);
+      request.addEventListener("upgradeneeded", () => {
+        const db = request.result;
+        for (const store of database.stores) {
+          if (db.objectStoreNames.contains(store.name)) continue;
+          const keyPath = store.keyPathArray === undefined
+            ? store.keyPath
+            : [...store.keyPathArray];
+          const options: IDBObjectStoreParameters = {
+            autoIncrement: store.autoIncrement,
+            ...(keyPath === undefined ? {} : { keyPath }),
+          };
+          const objectStore = db.createObjectStore(store.name, options);
+          for (const index of store.indexes) {
+            const indexKeyPath = index.keyPathArray === undefined
+              ? index.keyPath
+              : [...index.keyPathArray];
+            if (indexKeyPath === undefined) continue;
+            objectStore.createIndex(index.name, indexKeyPath, {
+              multiEntry: index.multiEntry,
+              unique: index.unique,
+            });
+          }
+        }
+      });
+      const db = await requestResult(request);
+      const storeNames = database.stores
+        .map((store) => store.name)
+        .filter((name) => db.objectStoreNames.contains(name));
+      if (storeNames.length === 0) {
+        db.close();
+        continue;
+      }
+      const transaction = db.transaction(storeNames, "readwrite");
+      const requests: Array<Promise<unknown>> = [];
+      for (const store of database.stores) {
+        if (!db.objectStoreNames.contains(store.name)) continue;
+        const objectStore = transaction.objectStore(store.name);
+        requests.push(requestResult(objectStore.clear()));
+        for (const record of store.records) {
+          const value = record.value !== undefined
+            ? decode(record.value)
+            : decode(record.valueEncoded);
+          const key = record.key !== undefined
+            ? decode(record.key)
+            : decode(record.keyEncoded);
+          if (store.keyPath === undefined && store.keyPathArray === undefined) {
+            if (!isValidKey(key)) throw new Error(`IndexedDB record in ${store.name} has an invalid key`);
+            requests.push(requestResult(objectStore.put(value, key)));
+          } else {
+            requests.push(requestResult(objectStore.put(value)));
+          }
+        }
+      }
+      await Promise.all(requests);
+      await transactionResult(transaction);
+      db.close();
+    }
+    return true;
+  }, databases), options);
+}
+async function restoreOriginStorage(
+  page: Page,
+  origin: BrowserStorageState["origins"][number],
+  options?: CommandExecutionOptions,
+): Promise<boolean> {
+  const idbSupported = origin.indexedDB.length === 0
+    || await withOperationTimeout(() => page.evaluate(() => typeof indexedDB !== "undefined"), options);
+  if (!idbSupported) return false;
+  await withOperationTimeout(() => page.evaluate((entries) => {
+    window.localStorage.clear();
+    for (const entry of entries) window.localStorage.setItem(entry.name, entry.value);
+  }, origin.localStorage), options);
+  return restoreIndexedDb(page, origin.indexedDB, options);
+}
+
 
 function isWaitAction(action: BrowserCommand["action"] | undefined): boolean {
   return action === "wait"
@@ -803,6 +990,40 @@ function operationTimeout(
   if (options === undefined) return requested;
   const remaining = Math.max(1, options.deadline - Date.now() - CDP_DEADLINE_GUARD_MS);
   return requested === undefined ? remaining : Math.min(requested, remaining);
+}
+
+class OperationTimeoutError extends Error {
+  constructor() {
+    super("Operation exceeded the remaining command deadline");
+    this.name = "TimeoutError";
+  }
+}
+
+function withOperationTimeout<T>(
+  start: () => Promise<T>,
+  options: CommandExecutionOptions | undefined,
+): Promise<T> {
+  const timeout = operationTimeout(options);
+  let operation: Promise<T>;
+  try {
+    operation = start();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (timeout === undefined) return operation;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new OperationTimeoutError()), timeout);
+    operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function timeoutError(
@@ -1799,30 +2020,37 @@ export async function executeCommand(
         });
 
       case "state_save": {
-        const playwrightState = await context.storageState();
-        const sessionStorageByOrigin = new Map<string, ReadonlyArray<{ name: string; value: string }>>();
-        for (const statePage of context.pages()) {
-          let origin: string;
-          try {
-            origin = new URL(statePage.url()).origin;
-          } catch {
-            continue;
-          }
-          if (origin === "null") continue;
-          const entries = await statePage.evaluate(() =>
+        const playwrightState: StorageState = await withOperationTimeout(
+          () => context.storageState({ indexedDB: true }),
+          options,
+        );
+        const tabs = await Promise.all(context.pages().map(async (statePage) => ({
+          url: statePage.url(),
+          sessionStorage: await withOperationTimeout(() => statePage.evaluate(() =>
             Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
               .filter((name): name is string => name !== null)
               .map((name) => ({ name, value: sessionStorage.getItem(name) ?? "" })),
-          );
-          sessionStorageByOrigin.set(origin, entries);
-        }
-        const localOrigins = new Map(playwrightState.origins.map((entry) => [entry.origin, entry.localStorage]));
-        const origins = [...new Set([...localOrigins.keys(), ...sessionStorageByOrigin.keys()])].map((origin) => ({
-          origin,
-          localStorage: localOrigins.get(origin) ?? [],
-          sessionStorage: sessionStorageByOrigin.get(origin) ?? [],
-        }));
-        const bytes = Buffer.from(JSON.stringify({ cookies: playwrightState.cookies, origins }));
+          ), options),
+        })));
+        const localOrigins = new Map(playwrightState.origins.map((entry) => [entry.origin, entry]));
+        const originsByPage = tabs
+          .map((tab) => stateOrigin(tab.url))
+          .filter((origin): origin is string => origin !== undefined);
+        const origins = [...new Set([...localOrigins.keys(), ...originsByPage])].map((origin) => {
+          const stored = localOrigins.get(origin);
+          return {
+            origin,
+            localStorage: stored?.localStorage ?? [],
+            indexedDB: stored?.indexedDB ?? [],
+          };
+        });
+        const state: BrowserStorageState = {
+          schemaVersion: 2,
+          cookies: playwrightState.cookies,
+          origins,
+          tabs,
+        };
+        const bytes = Buffer.from(JSON.stringify(state));
         const r: BinaryFileResult = {
           _tag: "BinaryFileResult",
           base64: bytes.toString("base64"),
@@ -1832,35 +2060,95 @@ export async function executeCommand(
       }
 
       case "state_load": {
-        await context.clearCookies();
-        await context.addCookies(command.state.cookies);
-        const cdp = await context.newCDPSession(page);
-        await cdp.send("DOMStorage.enable");
+        const counts = stateLoadCounts(command.state);
+        const pages = context.pages();
+        const tabTargets: StatePageTarget[] = [];
+        for (const tab of command.state.tabs) {
+          const matches = pages.filter((candidate) => candidate.url() === tab.url);
+          if (matches.length === 0) {
+            const r: StateLoadResult = {
+              _tag: "StateLoadResult",
+              status: "incomplete",
+              reason: "missing_tab",
+              ...counts,
+            };
+            return ok(r);
+          }
+          if (matches.length > 1) {
+            const r: StateLoadResult = {
+              _tag: "StateLoadResult",
+              status: "incomplete",
+              reason: "ambiguous_tab",
+              ...counts,
+            };
+            return ok(r);
+          }
+          tabTargets.push({ page: matches[0] });
+        }
+
+        const originTargets: Array<readonly [BrowserStorageState["origins"][number], Page]> = [];
         for (const origin of command.state.origins) {
-          for (const [isLocalStorage, entries] of [
-            [true, origin.localStorage],
-            [false, origin.sessionStorage],
-          ] as const) {
-            const storageId = { securityOrigin: origin.origin, isLocalStorage };
-            await cdp.send("DOMStorage.clear", { storageId });
-            for (const entry of entries) {
-              await cdp.send("DOMStorage.setDOMStorageItem", {
-                storageId,
-                key: entry.name,
-                value: entry.value,
-              });
-            }
+          const matches = pages.filter((candidate) => stateOrigin(candidate.url()) === origin.origin);
+          if (matches.length === 0) {
+            const r: StateLoadResult = {
+              _tag: "StateLoadResult",
+              status: "incomplete",
+              reason: "missing_origin",
+              ...counts,
+            };
+            return ok(r);
+          }
+          originTargets.push([origin, matches[0]]);
+        }
+
+        for (const [origin, originPage] of originTargets) {
+          if (origin.indexedDB.length === 0) continue;
+          const supported = await withOperationTimeout(
+            () => originPage.evaluate(() => typeof indexedDB !== "undefined"),
+            options,
+          );
+          if (!supported) {
+            const r: StateLoadResult = {
+              _tag: "StateLoadResult",
+              status: "unsupported",
+              reason: "indexeddb",
+              ...counts,
+            };
+            return ok(r);
           }
         }
-        await cdp.detach();
+
+        await withOperationTimeout(() => context.addCookies(command.state.cookies), options);
+        for (const [origin, originPage] of originTargets) {
+          const restored = await restoreOriginStorage(originPage, origin, options);
+          if (!restored) {
+            const r: StateLoadResult = {
+              _tag: "StateLoadResult",
+              status: "unsupported",
+              reason: "indexeddb",
+              ...counts,
+            };
+            return ok(r);
+          }
+        }
+        for (let index = 0; index < tabTargets.length; index += 1) {
+          const target = tabTargets[index];
+          const stateTab = command.state.tabs[index];
+          if (!target || !stateTab) continue;
+          await withOperationTimeout(() => target.page.evaluate((entries) => {
+            window.sessionStorage.clear();
+            for (const entry of entries) window.sessionStorage.setItem(entry.name, entry.value);
+          }, stateTab.sessionStorage), options);
+        }
         const r: StateLoadResult = {
           _tag: "StateLoadResult",
+          status: "complete",
           loaded: true,
-          cookies: command.state.cookies.length,
-          origins: command.state.origins.length,
+          ...counts,
         };
         return ok(r);
       }
+
 
       case "trace_start": {
         if (runtimeState.traceActive) {

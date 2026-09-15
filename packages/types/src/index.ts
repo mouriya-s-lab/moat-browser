@@ -256,7 +256,46 @@ export type TouchResult = {
   readonly swiped?: "up" | "down" | "left" | "right";
 };
 
+export type IndexedDbSerializedValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ReadonlyArray<IndexedDbSerializedValue>
+  | { readonly [key: string]: IndexedDbSerializedValue };
+
+export type IndexedDbRecord = {
+  readonly key?: IndexedDbSerializedValue;
+  readonly keyEncoded?: IndexedDbSerializedValue;
+  readonly value?: IndexedDbSerializedValue;
+  readonly valueEncoded?: IndexedDbSerializedValue;
+};
+
+export type IndexedDbIndex = {
+  readonly name: string;
+  readonly keyPath?: string;
+  readonly keyPathArray?: ReadonlyArray<string>;
+  readonly multiEntry: boolean;
+  readonly unique: boolean;
+};
+
+export type IndexedDbObjectStore = {
+  readonly name: string;
+  readonly autoIncrement: boolean;
+  readonly keyPath?: string;
+  readonly keyPathArray?: ReadonlyArray<string>;
+  readonly records: ReadonlyArray<IndexedDbRecord>;
+  readonly indexes: ReadonlyArray<IndexedDbIndex>;
+};
+
+export type IndexedDbDatabase = {
+  readonly name: string;
+  readonly version: number;
+  readonly stores: ReadonlyArray<IndexedDbObjectStore>;
+};
+
 export type BrowserStorageState = {
+  readonly schemaVersion: 2;
   readonly cookies: ReadonlyArray<{
     readonly name: string;
     readonly value: string;
@@ -270,16 +309,37 @@ export type BrowserStorageState = {
   readonly origins: ReadonlyArray<{
     readonly origin: string;
     readonly localStorage: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+    readonly indexedDB: ReadonlyArray<IndexedDbDatabase>;
+  }>;
+  readonly tabs: ReadonlyArray<{
+    readonly url: string;
     readonly sessionStorage: ReadonlyArray<{ readonly name: string; readonly value: string }>;
   }>;
 };
 
-export type StateLoadResult = {
-  readonly _tag: "StateLoadResult";
-  readonly loaded: true;
+export type StateLoadCounts = {
   readonly cookies: number;
   readonly origins: number;
+  readonly tabs: number;
+  readonly indexedDB: number;
 };
+
+export type StateLoadResult =
+  | ({
+      readonly _tag: "StateLoadResult";
+      readonly status: "complete";
+      readonly loaded: true;
+    } & StateLoadCounts)
+  | ({
+      readonly _tag: "StateLoadResult";
+      readonly status: "incomplete";
+      readonly reason: "missing_tab" | "ambiguous_tab" | "missing_origin";
+    } & StateLoadCounts)
+  | ({
+      readonly _tag: "StateLoadResult";
+      readonly status: "unsupported";
+      readonly reason: "indexeddb" | "session_storage";
+    } & StateLoadCounts);
 
 export type BooleanResult = {
   readonly _tag: "BooleanResult";
@@ -686,6 +746,63 @@ export type WireResponse =
 
 // ─── arktype schemas ───
 
+const indexedDbRecordSchema = type({
+  "key?": "unknown",
+  "keyEncoded?": "unknown",
+  "value?": "unknown",
+  "valueEncoded?": "unknown",
+});
+
+const indexedDbIndexSchema = type({
+  name: "string",
+  "keyPath?": "string",
+  "keyPathArray?": "string[]",
+  multiEntry: "boolean",
+  unique: "boolean",
+});
+
+const indexedDbStoreSchema = type({
+  name: "string",
+  autoIncrement: "boolean",
+  "keyPath?": "string",
+  "keyPathArray?": "string[]",
+  records: indexedDbRecordSchema.array(),
+  indexes: indexedDbIndexSchema.array(),
+});
+
+const indexedDbDatabaseSchema = type({
+  name: "string",
+  version: "number",
+  stores: indexedDbStoreSchema.array(),
+});
+
+const stateOriginSchema = type({
+  origin: "string",
+  localStorage: type({ name: "string", value: "string" }).array(),
+  indexedDB: indexedDbDatabaseSchema.array(),
+});
+
+const stateTabSchema = type({
+  url: "string",
+  sessionStorage: type({ name: "string", value: "string" }).array(),
+});
+
+const browserStorageStateSchema = type({
+  schemaVersion: "2",
+  cookies: type({
+    name: "string",
+    value: "string",
+    domain: "string",
+    path: "string",
+    expires: "number",
+    httpOnly: "boolean",
+    secure: "boolean",
+    sameSite: "'Strict' | 'Lax' | 'None'",
+  }).array(),
+  origins: stateOriginSchema.array(),
+  tabs: stateTabSchema.array(),
+});
+
 const browserCommandSchema = type({
   action: "'navigate'",
   url: "string",
@@ -839,23 +956,7 @@ const browserCommandSchema = type({
   .or({ action: "'state_save'" })
   .or({
     action: "'state_load'",
-    state: {
-      cookies: type({
-        name: "string",
-        value: "string",
-        domain: "string",
-        path: "string",
-        expires: "number",
-        httpOnly: "boolean",
-        secure: "boolean",
-        sameSite: "'Strict' | 'Lax' | 'None'",
-      }).array(),
-      origins: type({
-        origin: "string",
-        localStorage: type({ name: "string", value: "string" }).array(),
-        sessionStorage: type({ name: "string", value: "string" }).array(),
-      }).array(),
-    },
+    state: browserStorageStateSchema,
   })
   .or({ action: "'cookies_set'", cookies: type({
     name: "string",

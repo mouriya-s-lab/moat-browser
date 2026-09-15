@@ -530,7 +530,32 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 
 Controller 对普通命令和清理使用默认 25s 服务端预算，`register` 使用 45s。等待命令可用显式 `--timeout <ms>` 覆盖预算，取值必须是整数 `1`–`120000`ms；省略时使用默认 25s。客户端 deadline 始终在服务端预算之外额外保留 5s，用于覆盖 WebSocket 建连、发送、接收和关闭的网络收尾，避免服务端刚耗尽预算时客户端先误报为 `command_failed`/transport。任一预算耗尽都返回 `errorType: "timeout"`，且不带 `cause`；调用方应把结果视为可能已经产生部分副作用，而不是自动重试。
 
-### 9.4 Wire 协议
+### 9.4 State 与 cookie scope
+
+`state save` 保存 cookies、origin 级 localStorage/IndexedDB，以及每个打开
+tab 的 URL 与 sessionStorage。加载时必须先存在与保存记录匹配的页面；同一 URL
+对应多个 tab 或缺少目标页面会返回 `status: "incomplete"`，不会猜测 tab
+顺序。IndexedDB 或 sessionStorage 在候选浏览器不支持时返回
+`status: "unsupported"`，不能用 `loaded: true` 冒充完整恢复；完整恢复才返回
+`status: "complete"` 与 `loaded: true`。
+
+state 文件寻址规则只有一套：
+
+- 单段裸名（`alpha` 或 `alpha.json`）位于 `$HOME/.moat/states/`；
+- 绝对路径或多段路径保持显式路径，不会自动加入默认目录；
+- `state list` 只列默认命名空间，`state show/load` 可按裸名或显式路径读取；
+- `state clear --all` 只管理默认目录内的直接 `.json` 文件。
+
+`state clear --all` 是破坏性操作，必须显式传 `--confirm`（`--yes` 是同义
+写法）；缺少确认会立即失败且不读取 stdin、不改文件。非 JSON 文件和显式路径
+始终不属于该集合。
+
+Cookie 设置只能使用一种 scope：`--url <url>`，或
+`--domain <domain>`/`--path <path>`。同时提供 URL 与 domain/path 会在任何
+浏览器写入前返回 `errorType: "invalid_value"`；合法的 URL-only 与
+domain/path-only 组合保留各自 scope。
+
+### 9.5 Wire 协议
 
 CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 + session envelope**：
 
@@ -564,7 +589,7 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 }
 ```
 
-### 9.5 Session 管理（moat 新增）
+### 9.6 Session 管理（moat 新增）
 
 agent-browser 的 daemon 是本地进程，启动即绑定到本地 Chrome，不需要显式 session 管理。moat 因为容器在远程，必须显式管理 session 生命周期。Session 管理由 SDK 层实现，CLI 只是调用 SDK 的 session API：
 
@@ -630,7 +655,7 @@ export MOAT_PROFILE="default"
 # 优先级：本次 --controller > 非空 MOAT_CONTROLLER > 配置文件 controller
 ```
 
-### 9.6 增强（来自 opencli / CLI-Anything）
+### 9.7 增强（来自 opencli / CLI-Anything）
 
 opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借鉴**：
 
@@ -639,7 +664,7 @@ opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借�
 
 因为 SDK 是通用的 RPC 抽象，第三方可以基于 TS SDK 构建任意风格的 CLI 包装（opencli 风格、CLI-Anything 风格等），不需要碰 moat CLI 或 Rust SDK。
 
-### 9.7 SKILL.md
+### 9.8 SKILL.md
 
 `skills/moat/SKILL.md`，随包分发，Claude Code / Cursor 自动加载：
 
