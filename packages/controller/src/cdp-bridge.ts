@@ -893,6 +893,10 @@ function markEvalTimeout(sessionId: string, state: SessionRuntimeState, operatio
   });
   state.evalByPage.delete(operation.page);
   clearEvalLifecycle(state, operationId);
+  // The modal itself keeps the page evaluation blocked, but the operation is
+  // now terminal and no longer needs a state-held promise reference. An
+  // explicit dialog handler may still release the browser-side evaluation.
+  state.evalPromises.delete(operationId);
 
   const pendingResolver = state.evalPendingResolvers.get(operationId);
   if (pendingResolver !== undefined) {
@@ -905,10 +909,6 @@ function markEvalTimeout(sessionId: string, state: SessionRuntimeState, operatio
     completionResolver({ _tag: "Rejected", error });
   }
 
-  const browser = state.activeContext?.browser();
-  if (browser !== null && browser !== undefined) {
-    void browser.close().catch(() => {});
-  }
 }
 
 function scheduleDialogTimers(
