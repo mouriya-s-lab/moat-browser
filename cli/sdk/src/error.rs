@@ -19,6 +19,7 @@ pub enum SdkError {
         cause: Option<CommandFailureCause>,
         capacity: Option<CapacityDetails>,
     },
+    MissingArguments { error: String },
     CommandFailed {
         error: String,
         code: u32,
@@ -43,7 +44,7 @@ impl SdkError {
             }
             Self::RegisterFailed { cause, .. } | Self::DeregisterFailed { cause, .. } => *cause,
             Self::CommandFailed { cause, .. } => Some(*cause),
-            Self::NoSession | Self::Timeout { .. } => None,
+            Self::NoSession | Self::Timeout { .. } | Self::MissingArguments { .. } => None,
             Self::SessionAlreadyActive { .. }
             | Self::SessionFileError(_)
             | Self::ConfigError(_) => Some(CommandFailureCause::Transport),
@@ -83,6 +84,7 @@ impl fmt::Display for SdkError {
             Self::RegisterFailed { error, code, .. } => {
                 write!(f, "Register failed (code {}): {}", code, error)
             }
+            Self::MissingArguments { error } => write!(f, "Missing arguments: {}", error),
             Self::CommandFailed { error, code, .. } => {
                 write!(f, "Command failed (code {}): {}", code, error)
             }

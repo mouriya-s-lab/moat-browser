@@ -117,7 +117,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "set" => "set <viewport|device|geo|offline|headers|credentials|media> ...",
         "network" => "network <route|unroute|requests|request|har> ...",
         "storage" => "storage <local|session> <get|set|clear> ...",
-        "cookies" => "cookies <get|set|clear> ...",
+        "cookies" => "cookies <get|set|clear> ... (set uses either --url or --domain/--path, never both)",
         "tab" => "tab <new|list|switch|close> ...",
         "window" => "window new",
         "frame" => "frame <selector|main>",
@@ -128,7 +128,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "errors" => "errors [--clear]",
         "highlight" => "highlight <selector>",
         "clipboard" => "clipboard <read|write> [text]",
-        "state" => "state <save|load|list|show|rename|clean|clear> ...",
+        "state" => "state <save|load|list|show|rename|clean|clear> ... (clear --all requires --confirm/--yes; missing confirmation: missing_arguments)",
         "tap" => "tap <selector>",
         "swipe" => "swipe <up|down|left|right> [distance]",
         "diff" => {
@@ -175,6 +175,12 @@ pub fn command_help_text(command: &str) -> Option<String> {
         },
         "status" => {
             "Show the local session/config view; this command does not probe remote Controller health."
+        },
+        "cookies" => {
+            "Cookie scope is URL-only or domain/path-only; combining --url with --domain or --path is rejected before writing."
+        },
+        "state" => {
+            "State names resolve under ~/.moat/states; explicit paths stay explicit. State save/load preserves IndexedDB and per-tab sessionStorage. `state clear --all` requires --confirm (or --yes); missing confirmation returns `errorType: \"missing_arguments\"` without reading stdin or changing files."
         },
         _ => "This command runs against the active Controller-managed session.",
     };

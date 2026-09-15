@@ -1055,7 +1055,14 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                             }
                         }
                     }
-
+                    if cookie.get("url").is_some()
+                        && (cookie.get("domain").is_some() || cookie.get("path").is_some())
+                    {
+                        return Err(ParseError::InvalidValue {
+                            message: "cookies set --url cannot be combined with --domain or --path".to_string(),
+                            usage: "cookies set <name> <value> [--url <url>] [--domain <domain>] [--path <path>]",
+                        });
+                    }
                     Ok(json!({ "id": id, "action": "cookies_set", "cookies": [cookie] }))
                 }
                 "clear" => Ok(json!({ "id": id, "action": "cookies_clear" })),
@@ -1328,6 +1335,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 Some("clear") => {
                     let mut session_name: Option<&str> = None;
                     let mut all = false;
+                    let mut confirm = false;
 
                     let mut i = 1;
                     while i < rest.len() {
@@ -1335,12 +1343,21 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                             "--all" | "-a" => {
                                 all = true;
                             }
+                            "--confirm" | "--yes" => {
+                                confirm = true;
+                            }
                             arg if !arg.starts_with('-') => {
                                 session_name = Some(arg);
                             }
                             _ => {}
                         }
                         i += 1;
+                    }
+                    if all && !confirm {
+                        return Err(ParseError::MissingArguments {
+                            context: "state clear --all".to_string(),
+                            usage: "state clear --all --confirm",
+                        });
                     }
 
                     if let Some(name) = session_name {
@@ -1354,6 +1371,9 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                     let mut cmd = json!({ "id": id, "action": "state_clear" });
                     if all {
                         cmd["all"] = json!(true);
+                    }
+                    if confirm {
+                        cmd["confirm"] = json!(true);
                     }
                     if let Some(name) = session_name {
                         cmd["sessionName"] = json!(name);
@@ -2737,18 +2757,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cookies_set_with_all_flags() {
-        let cmd = parse_command(&args("cookies set mycookie myvalue --url https://example.com --domain example.com --path /api --httpOnly --secure --sameSite None --expires 9999999999"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "cookies_set");
-        assert_eq!(cmd["cookies"][0]["name"], "mycookie");
-        assert_eq!(cmd["cookies"][0]["value"], "myvalue");
-        assert_eq!(cmd["cookies"][0]["url"], "https://example.com");
-        assert_eq!(cmd["cookies"][0]["domain"], "example.com");
-        assert_eq!(cmd["cookies"][0]["path"], "/api");
-        assert_eq!(cmd["cookies"][0]["httpOnly"], true);
-        assert_eq!(cmd["cookies"][0]["secure"], true);
-        assert_eq!(cmd["cookies"][0]["sameSite"], "None");
-        assert_eq!(cmd["cookies"][0]["expires"], 9999999999i64);
+    fn test_cookies_set_rejects_conflicting_scope() {
+        let result = parse_command(
+            &args("cookies set mycookie myvalue --url https://example.com --domain example.com --path /api"),
+            &default_flags(),
+        );
+        assert!(matches!(result, Err(ParseError::InvalidValue { .. })));
     }
 
     #[test]

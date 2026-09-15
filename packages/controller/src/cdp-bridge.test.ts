@@ -1007,7 +1007,7 @@ describe("cdp-bridge", () => {
   });
 
   describe("browser state transfer", () => {
-    it("state_save serializes cookies plus local and session storage", async () => {
+    it("state_save serializes cookies plus local and per-tab session storage", async () => {
       page = mockPage({
         url: mock(() => "https://example.com/page"),
         evaluate: mock(() => Promise.resolve([{ name: "session-key", value: "session-value" }])),
@@ -1027,6 +1027,7 @@ describe("cdp-bridge", () => {
           origins: [{
             origin: "https://example.com",
             localStorage: [{ name: "local-key", value: "local-value" }],
+            indexedDB: [],
           }],
         })),
       });
@@ -1036,19 +1037,17 @@ describe("cdp-bridge", () => {
       expect(data._tag).toBe("BinaryFileResult");
       if (data._tag === "BinaryFileResult") {
         const state = JSON.parse(Buffer.from(data.base64, "base64").toString());
+        expect(state.schemaVersion).toBe(2);
         expect(state.cookies[0].name).toBe("sid");
         expect(state.origins[0].localStorage[0]).toEqual({ name: "local-key", value: "local-value" });
-        expect(state.origins[0].sessionStorage[0]).toEqual({ name: "session-key", value: "session-value" });
+        expect(state.tabs[0].sessionStorage[0]).toEqual({ name: "session-key", value: "session-value" });
       }
     });
 
-    it("state_load replaces cookies and restores local and session storage through CDP", async () => {
-      const send = mock(() => Promise.resolve());
-      const detach = mock(() => Promise.resolve());
-      ctx = mockContext([page], {
-        newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
-      });
+    it("state_load preserves unrelated cookies and restores storage per matched tab", async () => {
+      ctx = mockContext([page]);
       const state = {
+        schemaVersion: 2 as const,
         cookies: [{
           name: "sid",
           value: "cookie-value",
@@ -1062,26 +1061,27 @@ describe("cdp-bridge", () => {
         origins: [{
           origin: "https://example.com",
           localStorage: [{ name: "local-key", value: "local-value" }],
+          indexedDB: [],
+        }],
+        tabs: [{
+          url: "https://example.com",
           sessionStorage: [{ name: "session-key", value: "session-value" }],
         }],
       };
 
       const data = assertOk(await executeCommand(ctx, { action: "state_load", state }, refStore, SESSION));
 
-      expect(data).toEqual({ _tag: "StateLoadResult", loaded: true, cookies: 1, origins: 1 });
-      expect(ctx.clearCookies).toHaveBeenCalledTimes(1);
+      expect(data).toEqual({
+        _tag: "StateLoadResult",
+        status: "complete",
+        loaded: true,
+        cookies: 1,
+        origins: 1,
+        tabs: 1,
+        indexedDB: 0,
+      });
+      expect(ctx.clearCookies).not.toHaveBeenCalled();
       expect(ctx.addCookies).toHaveBeenCalledWith(state.cookies);
-      expect(send).toHaveBeenCalledWith("DOMStorage.setDOMStorageItem", {
-        storageId: { securityOrigin: "https://example.com", isLocalStorage: true },
-        key: "local-key",
-        value: "local-value",
-      });
-      expect(send).toHaveBeenCalledWith("DOMStorage.setDOMStorageItem", {
-        storageId: { securityOrigin: "https://example.com", isLocalStorage: false },
-        key: "session-key",
-        value: "session-value",
-      });
-      expect(detach).toHaveBeenCalledTimes(1);
     });
   });
 

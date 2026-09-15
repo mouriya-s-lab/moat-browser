@@ -775,6 +775,49 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             }
         }
 
+        if action == Some("state_load") {
+            if let Some(status) = data.get("status").and_then(|v| v.as_str()) {
+                let cookies = data.get("cookies").and_then(|v| v.as_i64()).unwrap_or(0);
+                let origins = data.get("origins").and_then(|v| v.as_i64()).unwrap_or(0);
+                let tabs = data.get("tabs").and_then(|v| v.as_i64()).unwrap_or(0);
+                let indexed_db = data.get("indexedDB").and_then(|v| v.as_i64()).unwrap_or(0);
+                match status {
+                    "complete" => println!(
+                        "{} State restored completely (cookies: {}, origins: {}, tabs: {}, IndexedDB: {})",
+                        color::success_indicator(),
+                        cookies,
+                        origins,
+                        tabs,
+                        indexed_db
+                    ),
+                    "incomplete" => println!(
+                        "{} State restore incomplete ({}, cookies: {}, origins: {}, tabs: {}, IndexedDB: {})",
+                        color::warning_indicator(),
+                        data.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                        cookies,
+                        origins,
+                        tabs,
+                        indexed_db
+                    ),
+                    "unsupported" => println!(
+                        "{} State restore unsupported ({}, cookies: {}, origins: {}, tabs: {}, IndexedDB: {})",
+                        color::warning_indicator(),
+                        data.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                        cookies,
+                        origins,
+                        tabs,
+                        indexed_db
+                    ),
+                    _ => println!(
+                        "{} State restore returned unknown status {}",
+                        color::warning_indicator(),
+                        status
+                    ),
+                }
+                return;
+            }
+        }
+
         // State list
         if let Some(files) = data.get("files").and_then(|v| v.as_array()) {
             if let Some(dir) = data.get("directory").and_then(|v| v.as_str()) {
@@ -791,6 +834,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                         .get("encrypted")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
+                    let managed = file.get("managed").and_then(|v| v.as_bool()).unwrap_or(false);
                     let size_str = if size > 1024 {
                         format!("{:.1}KB", size as f64 / 1024.0)
                     } else {
@@ -798,10 +842,11 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                     };
                     let date_str = modified.split('T').next().unwrap_or(modified);
                     let enc_str = if encrypted { " [encrypted]" } else { "" };
+                    let namespace = if managed { "default" } else { "explicit" };
                     println!(
                         "  {} {}",
                         filename,
-                        color::dim(&format!("({}, {}){}", size_str, date_str, enc_str))
+                        color::dim(&format!("({}, {}, {}){}", size_str, date_str, namespace, enc_str))
                     );
                 }
             }
@@ -835,14 +880,23 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
         if let Some(summary) = data.get("summary") {
             let cookies = summary.get("cookies").and_then(|v| v.as_i64()).unwrap_or(0);
             let origins = summary.get("origins").and_then(|v| v.as_i64()).unwrap_or(0);
+            let tabs = summary.get("tabs").and_then(|v| v.as_i64()).unwrap_or(0);
+            let indexed_db = summary.get("indexedDB").and_then(|v| v.as_i64()).unwrap_or(0);
             let encrypted = data
                 .get("encrypted")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let managed = data
+                .get("managed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let enc_str = if encrypted { " (encrypted)" } else { "" };
-            println!("State file summary{}:", enc_str);
+            let namespace = if managed { "default namespace" } else { "explicit path" };
+            println!("State file summary{} [{}]:", enc_str, namespace);
             println!("  Cookies: {}", cookies);
             println!("  Origins with localStorage: {}", origins);
+            println!("  Tabs with sessionStorage: {}", tabs);
+            println!("  IndexedDB databases: {}", indexed_db);
             return;
         }
 
