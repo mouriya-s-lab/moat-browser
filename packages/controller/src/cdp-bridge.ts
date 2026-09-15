@@ -191,6 +191,10 @@ type CdpFrameIdentity = {
   readonly frameUrl: string;
 };
 
+type RecentConsoleFrame = CdpFrameIdentity & {
+  readonly timestamp: number;
+};
+
 type CdpRequestIdentity = {
   readonly url: string;
   readonly frameId?: string;
@@ -273,6 +277,7 @@ type SessionRuntimeState = {
   readonly frameIds: WeakMap<Frame, string>;
   readonly cdpFrameUrls: Map<string, string>;
   readonly executionContexts: Map<number, CdpFrameIdentity>;
+  readonly recentConsoleFrames: WeakMap<Page, RecentConsoleFrame>;
   readonly cdpRequests: Map<string, CdpRequestIdentity>;
   activePage?: Page;
   readonly heldModifiers: Set<string>;
@@ -349,6 +354,7 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     frameIds: new WeakMap<Frame, string>(),
     cdpFrameUrls: new Map<string, string>(),
     executionContexts: new Map<number, CdpFrameIdentity>(),
+    recentConsoleFrames: new WeakMap<Page, RecentConsoleFrame>(),
     cdpRequests: new Map<string, CdpRequestIdentity>(),
     nextRefNumber: 1,
     heldModifiers: new Set<string>(),
@@ -709,16 +715,25 @@ async function ensureCdpRuntimeObserver(
       const frame = event.executionContextId === undefined
         ? undefined
         : state.executionContexts.get(event.executionContextId);
+      if (frame) {
+        state.recentConsoleFrames.set(page, { ...frame, timestamp: Date.now() });
+      }
       const contextInfo = cdpFrameOverrides(state, page, frame?.frameId, frame?.frameUrl);
       const context = diagnosticContext(state, sessionId, page, undefined, contextInfo);
       recordConsole(state, consoleDiagnostic(context, event.type, text));
     });
     cdp.on("Runtime.exceptionThrown", (event: CdpExceptionEvent) => {
       const details = event.exceptionDetails;
-      const frameId = details.executionContextId === undefined
+      const directFrame = details.executionContextId === undefined
         ? undefined
         : state.executionContexts.get(details.executionContextId);
-      const contextInfo = cdpFrameOverrides(state, page, frameId?.frameId, details.url ?? frameId?.frameUrl);
+      const recentFrame = state.recentConsoleFrames.get(page);
+      const frame = recentFrame !== undefined
+        && Date.now() - recentFrame.timestamp <= 500
+        && directFrame?.frameId !== recentFrame.frameId
+        ? recentFrame
+        : directFrame;
+      const contextInfo = cdpFrameOverrides(state, page, frame?.frameId, details.url ?? frame?.frameUrl);
       const context = diagnosticContext(state, sessionId, page, undefined, contextInfo);
       recordPageError(state, {
         ...context,
