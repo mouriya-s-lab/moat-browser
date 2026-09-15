@@ -475,21 +475,28 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
         return;
     }
     if !resp.success {
-if matches!(resp.cause.as_ref(), Some(CommandFailureCause::DialogPending)) {
-            let operation_id = resp.operation_id.as_deref().unwrap_or("unknown");
+        if matches!(resp.cause.as_ref(), Some(CommandFailureCause::DialogPending)) {
             let dialog_id = resp.dialog_id.as_deref().unwrap_or("unknown");
             let page_id = resp
                 .page
                 .as_ref()
                 .map(|page| page.page_id.as_str())
                 .unwrap_or("unknown");
-            eprintln!(
-                "{} Dialog pending (operation={}, dialog={}, page={}); run `dialog accept|dismiss`",
-                color::error_indicator(),
-                operation_id,
-                dialog_id,
-                page_id,
-            );
+            match resp.operation_id.as_deref() {
+                Some(operation_id) => eprintln!(
+                    "{} Dialog pending (operation={}, dialog={}, page={}); run `dialog accept|dismiss`",
+                    color::error_indicator(),
+                    operation_id,
+                    dialog_id,
+                    page_id,
+                ),
+                None => eprintln!(
+                    "{} Dialog pending (dialog={}, page={}); run `dialog accept|dismiss`",
+                    color::error_indicator(),
+                    dialog_id,
+                    page_id,
+                ),
+            }
         } else {
             eprintln!(
                 "{} {}",
@@ -519,6 +526,61 @@ if matches!(resp.cause.as_ref(), Some(CommandFailureCause::DialogPending)) {
     }
 
     if let Some(data) = &resp.data {
+        if data.get("_tag").and_then(|v| v.as_str()) == Some("BatchResult") {
+            let entries = data
+                .get("results")
+                .and_then(|v| v.as_array())
+                .map(|values| values.as_slice())
+                .unwrap_or(&[]);
+            for (index, entry) in entries.iter().enumerate() {
+                let child = index.saturating_add(1);
+                if entry.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    println!("  Batch child {} completed", child);
+                    continue;
+                }
+                if entry.get("cause").and_then(|v| v.as_str()) == Some("dialog_pending") {
+                    let dialog_id = entry
+                        .get("dialogId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let page_id = entry
+                        .get("page")
+                        .and_then(|v| v.get("pageId"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    if let Some(operation_id) = entry.get("operationId").and_then(|v| v.as_str()) {
+                        println!(
+                            "  Batch child {} blocked: Dialog pending (operation={}, dialog={}, page={}); run `dialog accept|dismiss`, then retry this child",
+                            child, operation_id, dialog_id, page_id
+                        );
+                    } else {
+                        println!(
+                            "  Batch child {} blocked: Dialog pending (dialog={}, page={}); run `dialog accept|dismiss`, then retry this child",
+                            child, dialog_id, page_id
+                        );
+                    }
+                } else {
+                    let error = entry
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    println!("  Batch child {} failed: {}", child, error);
+                }
+            }
+            if let Some(stopped_at) = data.get("stoppedAt").and_then(|v| v.as_u64()) {
+                println!(
+                    "{} Batch stopped at child {} (index {}) because the dialog is pending",
+                    color::warning_indicator(),
+                    stopped_at.saturating_add(1),
+                    stopped_at
+                );
+            } else {
+                println!("{} Batch completed", color::success_indicator());
+            }
+            print_warning(resp);
+            return;
+        }
+
         // Dialog results carry explicit Page/dialog and operation identity.
         if action == Some("dialog") {
             if data.get("state").and_then(|v| v.as_str()) == Some("handled") {

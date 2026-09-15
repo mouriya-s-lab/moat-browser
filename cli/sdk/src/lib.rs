@@ -463,12 +463,10 @@ fn validate_dialog_pending_failure(
             "dialog_pending cause requires errorType=command_failed",
         ));
     }
-    match (operation_id, dialog_id, page) {
-        (Some(operation_id), Some(dialog_id), Some(page)) => {
-            Ok((Some(operation_id), Some(dialog_id), Some(page)))
-        }
+    match (dialog_id, page) {
+        (Some(dialog_id), Some(page)) => Ok((operation_id, Some(dialog_id), Some(page))),
         _ => Err(protocol_error(
-            "dialog_pending response missing operation/page identity",
+            "dialog_pending response missing dialog/page identity",
         )),
     }
 }

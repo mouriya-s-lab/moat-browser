@@ -1044,6 +1044,214 @@ function findDialog(
   }
   return undefined;
 }
+type DialogGuardExemption =
+  | { readonly _tag: "EvalManaged" }
+  | { readonly _tag: "DialogLifecycle" }
+  | { readonly _tag: "Composite" }
+  | { readonly _tag: "NoExistingPageTarget" };
+
+type DialogGuardTarget =
+  | { readonly _tag: "Exempt"; readonly exemption: DialogGuardExemption }
+  | { readonly _tag: "Page"; readonly page: Page }
+  | { readonly _tag: "Pages"; readonly pages: ReadonlyArray<Page> };
+
+function dialogGuardTarget(
+  command: BrowserCommand,
+  context: BrowserContext,
+  page: Page,
+  activeTabIndex: number,
+): Result<DialogGuardTarget, ControllerError> {
+  switch (command.action) {
+    case "eval":
+    case "evaluate":
+      return ok({ _tag: "Exempt", exemption: { _tag: "EvalManaged" } });
+    case "dialog":
+      return ok({ _tag: "Exempt", exemption: { _tag: "DialogLifecycle" } });
+    case "batch":
+      return ok({ _tag: "Exempt", exemption: { _tag: "Composite" } });
+    case "close":
+      return ok({ _tag: "Exempt", exemption: { _tag: "NoExistingPageTarget" } });
+
+    case "tab_switch":
+      return ok({ _tag: "Exempt", exemption: { _tag: "NoExistingPageTarget" } });
+    case "tab_close": {
+      const closeIndex = command.index ?? activeTabIndex;
+      const pages = context.pages();
+      const target = pages[closeIndex];
+      if (
+        !Number.isInteger(closeIndex)
+        || closeIndex < 0
+        || target === undefined
+      ) {
+        return err({ _tag: "ElementNotFound", selector: `tab:${closeIndex}` });
+      }
+      return ok({ _tag: "Page", page: target });
+    }
+
+    case "navigate":
+    case "back":
+    case "forward":
+    case "reload":
+    case "getbyrole":
+    case "getbylabel":
+    case "getbyplaceholder":
+    case "getbytext":
+    case "getbyalttext":
+    case "getbytitle":
+    case "getbytestid":
+    case "click":
+    case "fill":
+    case "type":
+    case "hover":
+    case "snapshot":
+    case "screenshot":
+    case "press":
+    case "scroll":
+    case "wait":
+    case "waitforurl":
+    case "waitforloadstate":
+    case "waitforfunction":
+    case "gettext":
+    case "innertext":
+    case "innerhtml":
+    case "inputvalue":
+    case "getattribute":
+    case "url":
+    case "title":
+    case "count":
+    case "boundingbox":
+    case "styles":
+    case "isvisible":
+    case "isenabled":
+    case "ischecked":
+    case "dblclick":
+    case "check":
+    case "uncheck":
+    case "select":
+    case "focus":
+    case "keyboard":
+    case "keydown":
+    case "keyup":
+    case "scrollintoview":
+    case "drag":
+    case "mousemove":
+    case "mousedown":
+    case "mouseup":
+    case "wheel":
+    case "highlight":
+    case "storage_get":
+    case "storage_set":
+    case "storage_clear":
+    case "route":
+    case "unroute":
+    case "profiler_start":
+    case "profiler_stop":
+    case "nth":
+    case "upload":
+    case "download":
+    case "waitfordownload":
+    case "pdf":
+    case "clipboard":
+    case "tap":
+    case "swipe":
+    case "frame":
+    case "mainframe":
+      return ok({ _tag: "Page", page });
+
+    case "viewport":
+    case "device":
+    case "headers":
+    case "emulatemedia":
+    case "state_save":
+      return ok({ _tag: "Pages", pages: context.pages() });
+    case "state_load":
+      return command.state.tabs.length === 0 && command.state.origins.length === 0
+        ? ok({ _tag: "Exempt", exemption: { _tag: "NoExistingPageTarget" } })
+        : ok({ _tag: "Pages", pages: context.pages() });
+    case "cookies_set":
+      for (const cookie of command.cookies) {
+        if (cookie.url === undefined && cookie.domain === undefined) {
+          return ok({ _tag: "Page", page });
+        }
+      }
+      return ok({ _tag: "Exempt", exemption: { _tag: "NoExistingPageTarget" } });
+
+    case "tab_new":
+    case "tab_list":
+    case "cookies_get":
+    case "cookies_clear":
+    case "geolocation":
+    case "offline":
+    case "credentials":
+    case "requests":
+    case "request_detail":
+    case "window_new":
+    case "cdp_url":
+    case "inspect":
+    case "device_list":
+    case "trace_start":
+    case "trace_stop":
+    case "har_start":
+    case "har_stop":
+    case "console":
+    case "errors":
+      return ok({ _tag: "Exempt", exemption: { _tag: "NoExistingPageTarget" } });
+
+    default:
+      return exhaustive(command);
+  }
+}
+
+function dialogPendingErrorForRecord(
+  state: SessionRuntimeState,
+  context: BrowserContext,
+  record: DialogRecord,
+): ControllerError {
+  switch (record.initiator._tag) {
+    case "Eval":
+      return {
+        _tag: "DialogPending",
+        operationId: record.initiator.operationId,
+        dialogId: record.dialogId,
+        page: dialogPageFor(state, context, record.page),
+      };
+    case "NoEval":
+      // There is no evaluation operation to resume for a dialog opened by
+      // another Page action. Keep operationId absent instead of aliasing the
+      // dialog identity into a different correlation namespace.
+      return {
+        _tag: "DialogPending",
+        dialogId: record.dialogId,
+        page: dialogPageFor(state, context, record.page),
+      };
+    default:
+      return exhaustive(record.initiator);
+  }
+}
+
+function dialogGuardErrorForTarget(
+  state: SessionRuntimeState,
+  context: BrowserContext,
+  target: DialogGuardTarget,
+): ControllerError | undefined {
+  switch (target._tag) {
+    case "Exempt":
+      return undefined;
+    case "Page": {
+      const dialog = findDialog(state, target.page, {});
+      return dialog === undefined ? undefined : dialogPendingErrorForRecord(state, context, dialog);
+    }
+    case "Pages":
+      for (const page of target.pages) {
+        const dialog = findDialog(state, page, {});
+        if (dialog !== undefined) return dialogPendingErrorForRecord(state, context, dialog);
+      }
+      return undefined;
+    default:
+      return exhaustive(target);
+  }
+}
+
 
 function dialogResultFor(
   state: SessionRuntimeState,
@@ -2582,6 +2790,48 @@ function mapPlaywrightError(
 
   return { _tag: "CommandFailed", message: msg };
 }
+async function executeBatchCommand(
+  context: BrowserContext,
+  command: Extract<BrowserCommand, { readonly action: "batch" }>,
+  refStore: RefStore,
+  sessionId: string,
+  options?: CommandExecutionOptions,
+): Promise<Result<CommandResultData, ControllerError>> {
+  const entries: BatchResultEntry[] = [];
+  for (let index = 0; index < command.commands.length; index += 1) {
+    const sub = command.commands[index];
+    if (sub === undefined) continue;
+    const subResult = await executeCommand(context, sub, refStore, sessionId, options);
+    if (subResult._tag === "Ok") {
+      entries.push({ success: true, data: subResult.value });
+      if (subResult.value._tag === "BatchResult" && subResult.value.stoppedAt !== undefined) {
+        const result: BatchResult = { _tag: "BatchResult", results: entries, stoppedAt: index };
+        return ok(result);
+      }
+      continue;
+    }
+
+    const error = subResult.error;
+    if (error._tag === "DialogPending") {
+      entries.push({
+        success: false,
+        error: error._tag,
+        cause: "dialog_pending",
+        operationId: error.operationId,
+        dialogId: error.dialogId,
+        page: error.page,
+      });
+      const result: BatchResult = { _tag: "BatchResult", results: entries, stoppedAt: index };
+      return ok(result);
+    }
+    if (error._tag === "Timeout") return subResult;
+    entries.push({ success: false, error: error._tag });
+    if (command.bail) break;
+  }
+  const result: BatchResult = { _tag: "BatchResult", results: entries };
+  return ok(result);
+}
+
 
 // ─── executeCommand ───
 
@@ -2592,15 +2842,17 @@ export async function executeCommand(
   sessionId: string,
   options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
-  if (options !== undefined && options.deadline <= Date.now()) {
-    return err(timeoutError(command.action, options));
-  }
-  if (command.action === "device" && normalizeDeviceDescriptor(command.device) === undefined) {
-    return err(unknownDeviceError(command.device));
+  if (command.action === "batch") {
+    return executeBatchCommand(context, command, refStore, sessionId, options);
   }
   const runtimeState = observeContextRuntime(sessionId, context);
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
-  const page = context.pages()[activeTabIndex] ?? context.pages()[0];
+  const pages = context.pages();
+  const page = pages[activeTabIndex] ?? pages[0];
+  const target = dialogGuardTarget(command, context, page, activeTabIndex);
+  if (target._tag === "Err") return target;
+  const dialogError = dialogGuardErrorForTarget(runtimeState, context, target.value);
+  if (dialogError !== undefined) return err(dialogError);
   runtimeState.activePage = page;
   await ensureCdpRuntimeObserver(sessionId, context, page, options);
   const scope = runtimeState.activeFrame ?? page;
@@ -3188,23 +3440,6 @@ export async function executeCommand(
       case "evaluate":
         return executeEvalWithDialog(sessionId, context, page, scope, command.script, options);
 
-      // ─── batch ───
-
-      case "batch": {
-        const entries: BatchResultEntry[] = [];
-        for (const sub of command.commands) {
-          const subResult = await executeCommand(context, sub, refStore, sessionId, options);
-          if (subResult._tag === "Ok") {
-            entries.push({ success: true, data: subResult.value });
-          } else {
-            if (subResult.error._tag === "Timeout") return subResult;
-            entries.push({ success: false, error: subResult.error._tag });
-            if (command.bail) break;
-          }
-        }
-        const r: BatchResult = { _tag: "BatchResult", results: entries };
-        return ok(r);
-      }
 
       // ─── close (handled by ws-server as deregister) ───
 
