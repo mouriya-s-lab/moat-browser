@@ -647,7 +647,7 @@ impl MoatClient {
         };
         send_json(&mut ws, &wire_req).await?;
         let response = recv_json(&mut ws, deadline).await?;
-        drop(ws);
+        let _ = ws.close(None).await;
         Ok(response)
     }
 
