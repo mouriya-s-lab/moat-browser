@@ -19,6 +19,8 @@ Navigation and page actions:
                                  output reports measured movement and clipping
   keydown/keyup                 Explicit held-key pairing; high-level input
                                rejects while a modifier remains held
+  mouse down/up                 Explicit held-button pairing; high-level input
+                                 rejects while a mouse button remains held
   wait | find | get | is | eval | highlight
   get text <selector> [--all|--nth <index>]
                                Strict by default; --all reads all matches in order
@@ -193,6 +195,9 @@ pub fn command_help_text(command: &str) -> Option<String> {
         },
         "keydown" | "keyup" => {
             "Low-level key state is explicit and paired; high-level input rejects while a modifier remains held."
+        },
+        "mouse" => {
+            "Low-level mouse down/up operations are explicitly paired and return the currently held buttons in `heldMouseButtons`; high-level input rejects while a button remains held, while mouse move, wheel, and up stay available for drag gestures."
         },
         "device" => "List remote Chromium descriptors usable by `set device`.",
         "tab" => {
