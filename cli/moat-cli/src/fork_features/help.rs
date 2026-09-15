@@ -190,6 +190,9 @@ pub fn command_help_text(command: &str) -> Option<String> {
             "Low-level key state is explicit and paired; high-level input rejects while a modifier remains held."
         },
         "device" => "List remote Chromium descriptors usable by `set device`.",
+        "tab" => {
+            "Closing the last remaining tab is rejected before page close with `errorType: \"invalid_value\"` and the stable message `Validation failed: Cannot close the last tab; at least one tab must remain open`; use `moat disconnect` when the whole session should be destroyed. If browser-side events leave no open pages, commands return `errorType: \"target_not_found\"` for `page` without ending the session."
+        },
         "dialog" => {
             "Dialog status and handling are Page-scoped. An eval-triggered modal waits up to 3s for explicit accept/dismiss so a concurrent client receives the original result; within grace eval returns its script result, otherwise eval returns a pending operation handle. Complete it with `dialog accept|dismiss`, then inspect the settled value with `dialog result <operation-id>`. If the command deadline wins first, `dialog result <operation-id>` returns a structured `TimedOutOperation` with phase, budget, possible side effects, session, dialog, operation, and Page identity; the modal remains handleable and the session stays usable. A command sent to the same Page while its modal is pending is rejected before page side effects with `cause: \"dialog_pending\"` and the operation/dialog/Page identities."
         },

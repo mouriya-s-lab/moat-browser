@@ -1297,6 +1297,31 @@ describe("cdp-bridge", () => {
       const r = await executeCommand(multiCtx, { action: "tab_close", index: 1 }, refStore, SESSION);
       expect(assertOk(r)._tag).toBe("TabResult");
     });
+
+    it("tab_close rejects the final tab without closing it", async () => {
+      const pages = [mockPage()];
+      const singleCtx = mockContext(pages);
+      const error = assertErr(await executeCommand(singleCtx, {
+        action: "tab_close",
+        index: 0,
+      }, refStore, SESSION));
+
+      expect(error).toEqual({
+        _tag: "ValidationFailed",
+        message: "Cannot close the last tab; at least one tab must remain open",
+      });
+      expect(pages[0]?.close).not.toHaveBeenCalled();
+    });
+
+    it("returns target_not_found when no page remains", async () => {
+      const emptyCtx = mockContext([]);
+      const error = assertErr(await executeCommand(emptyCtx, {
+        action: "eval",
+        code: "1+1",
+      }, refStore, SESSION));
+
+      expect(error).toEqual({ _tag: "ElementNotFound", selector: "page" });
+    });
   });
 
   // ─── Cookie actions ───

@@ -2627,6 +2627,13 @@ Operations:
   close [index]        Close tab (current if no index)
   <index>              Switch to tab by index
 
+Closing the last remaining tab is rejected before any page is closed. The JSON
+response uses `errorType: "invalid_value"` and the stable message
+`Validation failed: Cannot close the last tab; at least one tab must remain open`.
+Use `moat disconnect` when the whole session should be destroyed.
+If browser-side events leave no open pages, commands return
+`errorType: "target_not_found"` for `page` without ending the session.
+
 Global Options:
   --json               Output as JSON
   --session <name>     Use specific session

@@ -511,6 +511,7 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 - `moat window new` 保留同一 BrowserContext 的能力，但创建的是当前共享会话中的新 tab，不是隔离 browser context 或操作系统窗口。
 - `moat get cdp-url` 在 moat 架构中不可用，返回 `unsupported_in_moat`；agent-chrome 的 CDP 端口仅供 Controller 在 Docker 内部网络访问，CLI 不返回容器地址。
 - `moat click <selector> --new-tab` 会把带非空 HTTP(S) `href` 的链接打开到新的活动 tab，并保留原 tab；没有可打开链接时在导航前返回错误。
+- `moat tab close [index]` 在关闭前校验至少保留一个 tab；关闭最后一个 tab 会在页面关闭前返回 `errorType: "invalid_value"` 与稳定文案 `Validation failed: Cannot close the last tab; at least one tab must remain open`，原 tab 与 session 保持可用。需要结束整个 session 时使用 `moat disconnect`（或 `moat close`）。若浏览器侧事件使 context 变成零页面，后续命令返回 `errorType: "target_not_found"`（目标 `page`），不会泄漏引擎错误或让 session 过期。
 - `moat network route` 目前只接受 `--abort` 与 `--body <json>`；`--status`、`--delay`、`--headers` 等不支持选项会在安装 route 前返回 `unsupported_in_moat`。
 - `find first`、`find last`、`find nth` 只接受已登记的动作名；未知动作、缺少动作值和越界 occurrence 会在页面副作用前失败，`fill ""` 仍表示清空输入。`keydown`/`keyup` 是显式配对的低层操作；未释放 modifier 时，高层输入会在副作用前拒绝并返回当前 held modifiers。
 
@@ -788,6 +789,14 @@ fail before page side effects.
 `moat click <selector> --new-tab` opens a non-empty HTTP(S) link in a new
 active tab and leaves the original tab unchanged. Elements without an openable
 link are rejected before navigation.
+
+`moat tab close [index]` rejects an attempt to close the last remaining tab
+before closing the page. It returns `errorType: "invalid_value"` with the stable
+message `Validation failed: Cannot close the last tab; at least one tab must remain open`;
+the session and tab remain usable. Use `moat disconnect` (or `moat close`) to
+destroy the whole session instead. If browser-side events leave no open pages,
+a command sent in that state returns `errorType: "target_not_found"` for
+`page`; it does not leak an engine error or expire the session.
 
 `moat is visible <selector>` reports layout visibility only. It does not prove
 opacity-adjusted or perceptual visibility, freedom from occlusion,
