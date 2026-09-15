@@ -10,6 +10,8 @@ import type {
   ControllerError,
   CookieEntry,
   KeyStateResult,
+  DeviceDescriptor,
+  DeviceListResult,
   EvalResult,
   LocatorResult,
   NavigateResult,
@@ -56,6 +58,10 @@ import type {
   BooleanResult,
   BatchResult,
   BatchResultEntry,
+  SessionEmulation,
+  SessionEnvironmentSettings,
+  UserAgentMetadata,
+  ViewportOverride,
 } from "@moat-browser/types";
 import { exhaustive } from "@moat-browser/types";
 import type {
@@ -266,6 +272,9 @@ type SessionRuntimeState = {
   readonly cdpObservedPages: WeakSet<Page>;
   readonly pageObservers: WeakMap<Page, Promise<void>>;
   readonly pageNavigationGenerations: WeakMap<Page, number>;
+  readonly environmentPages: WeakSet<Page>;
+  readonly environmentPageSessions: WeakMap<Page, CDPSession>;
+  readonly environmentSessions: Set<CDPSession>;
   readonly observerSessions: Set<CDPSession>;
   readonly pendingConsoleKeys: Set<string>;
   readonly pendingErrorMessages: Set<string>;
@@ -279,6 +288,7 @@ type SessionRuntimeState = {
   readonly executionContexts: WeakMap<Page, Map<number, CdpFrameIdentity>>;
   readonly recentConsoleFrames: WeakMap<Page, RecentConsoleFrame>;
   readonly cdpRequests: WeakMap<Page, Map<string, CdpRequestIdentity>>;
+  environment: SessionEnvironmentSettings;
   activePage?: Page;
   readonly heldModifiers: Set<string>;
   activeFrame?: Frame;
@@ -335,6 +345,15 @@ async function releaseHeldModifiers(
 
 const sessionRuntimeState = new Map<string, SessionRuntimeState>();
 
+function initialSessionEnvironment(): SessionEnvironmentSettings {
+  return {
+    emulation: { _tag: "DefaultEmulation" },
+    offline: { _tag: "Unset" },
+    headers: { _tag: "Unset" },
+    media: { _tag: "Unset" },
+  };
+}
+
 function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
   const existing = sessionRuntimeState.get(sessionId);
   if (existing) return existing;
@@ -343,6 +362,9 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     cdpObservedPages: new WeakSet<Page>(),
     pageObservers: new WeakMap<Page, Promise<void>>(),
     pageNavigationGenerations: new WeakMap<Page, number>(),
+    environmentPages: new WeakSet<Page>(),
+    environmentPageSessions: new WeakMap<Page, CDPSession>(),
+    environmentSessions: new Set<CDPSession>(),
     observerSessions: new Set<CDPSession>(),
     pendingConsoleKeys: new Set<string>(),
     pendingErrorMessages: new Set<string>(),
@@ -356,6 +378,7 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     executionContexts: new WeakMap<Page, Map<number, CdpFrameIdentity>>(),
     recentConsoleFrames: new WeakMap<Page, RecentConsoleFrame>(),
     cdpRequests: new WeakMap<Page, Map<string, CdpRequestIdentity>>(),
+    environment: initialSessionEnvironment(),
     nextRefNumber: 1,
     heldModifiers: new Set<string>(),
     nextPageId: 1,
@@ -851,6 +874,7 @@ export function clearSessionRuntimeState(sessionId: string): void {
   if (state) {
     for (const cdp of state.observerSessions) void cdp.detach().catch(() => {});
     state.heldModifiers.clear();
+    for (const cdp of state.environmentSessions) void cdp.detach().catch(() => {});
   }
   sessionRuntimeState.delete(sessionId);
   sessionTabIndex.delete(sessionId);
@@ -1007,6 +1031,7 @@ async function executeNewTabClick(
   page: Page,
   locator: Locator,
   sessionId: string,
+  runtimeState: SessionRuntimeState,
   options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
   const href = await locator.getAttribute("href", { timeout: operationTimeout(options) });
@@ -1033,11 +1058,23 @@ async function executeNewTabClick(
     });
   }
 
-  const newPage = await context.newPage();
+  const newPage = await withOperationTimeout(() => context.newPage(), options);
   observePageRuntime(sessionId, newPage);
   await ensureCdpRuntimeObserver(sessionId, context, newPage, options);
   try {
-    await newPage.goto(targetUrl.toString(), { timeout: operationTimeout(options) });
+    await applySessionEnvironmentToNewPage(
+      context,
+      newPage,
+      runtimeState,
+      runtimeState.environment,
+      options,
+    );
+    runtimeState.environmentPages.add(newPage);
+    await withOperationTimeout(
+      () => newPage.goto(targetUrl.toString(), { timeout: operationTimeout(options) }),
+      options,
+    );
+    await reapplySessionPageEnvironment(context, newPage, runtimeState, options);
   } catch (error) {
     await newPage.close().catch(() => {});
     return err(mapPlaywrightError(error, "click", options));
@@ -1472,6 +1509,267 @@ function withOperationTimeout<T>(
     );
   });
 }
+function normalizedUserAgentVersion(userAgent: string): string {
+  return userAgent.replace(/_/g, ".");
+}
+
+function userAgentMetadataFor(
+  userAgent: string,
+  mobile: boolean,
+): UserAgentMetadata {
+  const chromeVersion = /(?:Chrome|Chromium|CriOS)\/([0-9.]+)/.exec(userAgent)?.[1] ?? "";
+  const majorVersion = chromeVersion.split(".")[0] ?? "";
+  const brands = chromeVersion === ""
+    ? []
+    : [
+        { brand: "Not_A Brand", version: "99" },
+        { brand: "Chromium", version: majorVersion },
+        { brand: "Google Chrome", version: majorVersion },
+      ];
+  const fullVersionList = chromeVersion === ""
+    ? []
+    : [
+        { brand: "Not_A Brand", version: "99.0.0.0" },
+        { brand: "Chromium", version: chromeVersion },
+        { brand: "Google Chrome", version: chromeVersion },
+      ];
+  const iosVersion = /(?:iPhone|CPU) OS ([0-9_]+)/.exec(userAgent)?.[1];
+  const androidVersion = /Android ([^;)]+)/.exec(userAgent)?.[1];
+  const windowsVersion = /Windows NT ([0-9.]+)/.exec(userAgent)?.[1];
+  const macVersion = /Mac OS X ([0-9_]+)/.exec(userAgent)?.[1];
+  const platform = iosVersion !== undefined
+    ? "iOS"
+    : androidVersion !== undefined
+      ? "Android"
+      : windowsVersion !== undefined
+        ? "Windows"
+        : macVersion !== undefined
+          ? "macOS"
+          : /Linux/.test(userAgent)
+            ? "Linux"
+            : "";
+  const platformVersion = iosVersion !== undefined
+    ? normalizedUserAgentVersion(iosVersion)
+    : androidVersion
+      ?? windowsVersion
+      ?? (macVersion === undefined ? "" : normalizedUserAgentVersion(macVersion));
+  const model = /Android [^;]+; ([^;)]+?)(?: Build\/[^;)]+)?[;)]/.exec(userAgent)?.[1]
+    ?? (iosVersion === undefined ? "" : /iPad|iPhone|iPod/.exec(userAgent)?.[0] ?? "");
+  const architecture = /(?:x86_64|x64)/.test(userAgent)
+    ? "x86"
+    : /(?:arm64|aarch64)/.test(userAgent)
+      ? "arm"
+      : "";
+  return {
+    brands,
+    fullVersionList,
+    platform,
+    platformVersion,
+    architecture,
+    model,
+    mobile,
+  };
+}
+
+function normalizeDeviceDescriptor(name: string): DeviceDescriptor | undefined {
+  const descriptor = devices[name];
+  if (!descriptor) return undefined;
+  const screen = descriptor.viewport;
+  return {
+    name,
+    userAgent: descriptor.userAgent,
+    userAgentMetadata: userAgentMetadataFor(descriptor.userAgent, descriptor.isMobile),
+    viewport: {
+      width: descriptor.viewport.width,
+      height: descriptor.viewport.height,
+    },
+    screen: {
+      width: screen.width,
+      height: screen.height,
+    },
+    deviceScaleFactor: descriptor.deviceScaleFactor,
+    isMobile: descriptor.isMobile,
+    hasTouch: descriptor.hasTouch,
+  };
+}
+
+function availableDeviceDescriptors(): ReadonlyArray<DeviceDescriptor> {
+  return Object.keys(devices)
+    .map((name) => normalizeDeviceDescriptor(name))
+    .filter((descriptor): descriptor is DeviceDescriptor => descriptor !== undefined)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function unknownDeviceError(name: string): ControllerError {
+  return {
+    _tag: "ValidationFailed",
+    message: `Unknown device: ${name}; run \`moat device list\` to list available remote Chromium descriptors`,
+  };
+}
+
+async function applySessionEmulation(
+  context: BrowserContext,
+  page: Page,
+  runtimeState: SessionRuntimeState,
+  emulation: SessionEmulation,
+  options: CommandExecutionOptions | undefined,
+): Promise<void> {
+  let descriptor: DeviceDescriptor | undefined;
+  let viewport: ViewportOverride | undefined;
+  switch (emulation._tag) {
+    case "DefaultEmulation":
+      return;
+    case "ViewportEmulation":
+      viewport = emulation.viewport;
+      break;
+    case "DeviceEmulation":
+      descriptor = emulation.descriptor;
+      viewport = emulation.viewport;
+      break;
+    default:
+      return exhaustive(emulation);
+  }
+
+  const existing = runtimeState.environmentPageSessions.get(page);
+  const cdp = existing ?? await withOperationTimeout(
+    () => context.newCDPSession(page),
+    options,
+  );
+  if (existing === undefined) {
+    runtimeState.environmentPageSessions.set(page, cdp);
+    runtimeState.environmentSessions.add(cdp);
+  }
+
+  // Playwright's setViewportSize() re-applies a desktop viewport and resets
+  // the CDP scale factor. Keep all emulation in one raw CDP application.
+  // A mobile descriptor intentionally keeps mobile:true. Pages without a
+  // viewport meta tag then expose Chromium's standards-defined 980 CSS-pixel
+  // layout viewport; pages declaring width=device-width expose the descriptor
+  // viewport dimensions.
+  const metrics = descriptor === undefined
+    ? {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: viewport.deviceScaleFactor,
+        mobile: false,
+      }
+    : {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: viewport.deviceScaleFactor,
+        mobile: descriptor.isMobile,
+        screenWidth: descriptor.screen.width,
+        screenHeight: descriptor.screen.height,
+      };
+  await withOperationTimeout(
+    () => cdp.send("Emulation.setDeviceMetricsOverride", metrics),
+    options,
+  );
+  if (descriptor !== undefined) {
+    await withOperationTimeout(
+      () => cdp.send("Emulation.setTouchEmulationEnabled", {
+        enabled: descriptor.hasTouch,
+      }),
+      options,
+    );
+    await withOperationTimeout(
+      () => cdp.send("Network.setUserAgentOverride", {
+        userAgent: descriptor.userAgent,
+        userAgentMetadata: {
+          ...descriptor.userAgentMetadata,
+          brands: [...descriptor.userAgentMetadata.brands],
+          fullVersionList: [...descriptor.userAgentMetadata.fullVersionList],
+        },
+      }),
+      options,
+    );
+  }
+}
+
+async function applySessionPageEnvironment(
+  context: BrowserContext,
+  page: Page,
+  runtimeState: SessionRuntimeState,
+  environment: SessionEnvironmentSettings,
+  options: CommandExecutionOptions | undefined,
+): Promise<void> {
+  await applySessionEmulation(context, page, runtimeState, environment.emulation, options);
+  switch (environment.headers._tag) {
+    case "Unset":
+      break;
+    case "Set": {
+      const headers = environment.headers.value;
+      await withOperationTimeout(
+        () => page.setExtraHTTPHeaders(headers),
+        options,
+      );
+      break;
+    }
+    default:
+      return exhaustive(environment.headers);
+  }
+  switch (environment.media._tag) {
+    case "Unset":
+      return;
+    case "Set": {
+      const media = environment.media.value;
+      await withOperationTimeout(
+        () => page.emulateMedia(media),
+        options,
+      );
+      return;
+    }
+    default:
+      return exhaustive(environment.media);
+  }
+}
+
+async function applySessionEnvironmentToNewPage(
+  context: BrowserContext,
+  page: Page,
+  runtimeState: SessionRuntimeState,
+  environment: SessionEnvironmentSettings,
+  options: CommandExecutionOptions | undefined,
+): Promise<void> {
+  switch (environment.offline._tag) {
+    case "Unset":
+      break;
+    case "Set": {
+      const offline = environment.offline.value;
+      await withOperationTimeout(
+        () => context.setOffline(offline),
+        options,
+      );
+      break;
+    }
+    default:
+      return exhaustive(environment.offline);
+  }
+  await applySessionPageEnvironment(context, page, runtimeState, environment, options);
+}
+
+async function applySessionPageEnvironmentToAll(
+  context: BrowserContext,
+  runtimeState: SessionRuntimeState,
+  environment: SessionEnvironmentSettings,
+  options: CommandExecutionOptions | undefined,
+): Promise<void> {
+  for (const target of context.pages()) {
+    await applySessionPageEnvironment(context, target, runtimeState, environment, options);
+  }
+}
+
+async function reapplySessionPageEnvironment(
+  context: BrowserContext,
+  page: Page,
+  runtimeState: SessionRuntimeState,
+  options: CommandExecutionOptions | undefined,
+): Promise<void> {
+  await applySessionPageEnvironment(context, page, runtimeState, runtimeState.environment, options);
+  runtimeState.environmentPages.add(page);
+}
+
+
 
 function timeoutError(
   action: BrowserCommand["action"],
@@ -1521,6 +1819,9 @@ export async function executeCommand(
   if (options !== undefined && options.deadline <= Date.now()) {
     return err(timeoutError(command.action, options));
   }
+  if (command.action === "device" && normalizeDeviceDescriptor(command.device) === undefined) {
+    return err(unknownDeviceError(command.device));
+  }
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
   const runtimeState = observePageRuntime(sessionId, page);
@@ -1530,17 +1831,30 @@ export async function executeCommand(
   const refScope = currentRefScope(runtimeState, page);
 
   try {
+    if (!runtimeState.environmentPages.has(page)) {
+      await applySessionPageEnvironment(context, page, runtimeState, runtimeState.environment, options);
+      runtimeState.environmentPages.add(page);
+    }
     switch (command.action) {
       case "navigate": {
         invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        if (command.headers) await page.setExtraHTTPHeaders(command.headers);
+        if (command.headers) {
+          const headers = runtimeState.environment.headers._tag === "Set"
+            ? { ...runtimeState.environment.headers.value, ...command.headers }
+            : command.headers;
+          await withOperationTimeout(
+            () => page.setExtraHTTPHeaders(headers),
+            options,
+          );
+        }
         const timeout = operationTimeout(options);
         await page.goto(command.url, {
           waitUntil: command.waitUntil === "none" ? "commit" : (command.waitUntil ?? "domcontentloaded"),
           ...(timeout === undefined ? {} : { timeout }),
         });
+        await reapplySessionPageEnvironment(context, page, runtimeState, options);
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
@@ -1557,6 +1871,7 @@ export async function executeCommand(
         if (response === null) {
           return err({ _tag: "CommandFailed", message: "No back history" } as const);
         }
+        await reapplySessionPageEnvironment(context, page, runtimeState, options);
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
@@ -1572,6 +1887,7 @@ export async function executeCommand(
         if (response === null) {
           return err({ _tag: "CommandFailed", message: "No forward history" } as const);
         }
+        await reapplySessionPageEnvironment(context, page, runtimeState, options);
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
@@ -1584,6 +1900,7 @@ export async function executeCommand(
           waitUntil: "domcontentloaded",
           ...(timeout === undefined ? {} : { timeout }),
         });
+        await reapplySessionPageEnvironment(context, page, runtimeState, options);
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
@@ -1648,7 +1965,7 @@ export async function executeCommand(
             command.selector,
           );
           if (resolved._tag === "Err") return resolved;
-          return executeNewTabClick(context, page, resolved.value, sessionId, options);
+          return executeNewTabClick(context, page, resolved.value, sessionId, runtimeState, options);
         }
         return executeElementAction(
           scope,
@@ -1788,14 +2105,22 @@ export async function executeCommand(
 
       case "tab_new": {
         invalidateRefs(refStore, sessionId, "page");
-        const newPage = await context.newPage();
+        const newPage = await withOperationTimeout(
+          () => context.newPage(),
+          options,
+        );
         observePageRuntime(sessionId, newPage);
         await ensureCdpRuntimeObserver(sessionId, context, newPage, options);
+        await applySessionEnvironmentToNewPage(context, newPage, runtimeState, runtimeState.environment, options);
+        runtimeState.environmentPages.add(newPage);
         if (command.url) {
           const timeout = operationTimeout(options);
           await newPage.goto(command.url, {
             ...(timeout === undefined ? {} : { timeout }),
           });
+        }
+        if (command.url) {
+          await reapplySessionPageEnvironment(context, newPage, runtimeState, options);
         }
         activeTabIndex = context.pages().length - 1;
         sessionTabIndex.set(sessionId, activeTabIndex);
@@ -2149,41 +2474,46 @@ export async function executeCommand(
         await page.mouse.wheel(command.deltaX, command.deltaY);
         return ok({ _tag: "VoidResult" } as const);
 
+      case "highlight":
+        await scope.locator(command.selector).highlight();
+        return ok({ _tag: "VoidResult" } as const);
+
       case "viewport": {
-        await page.setViewportSize({ width: command.width, height: command.height });
-        if (command.deviceScaleFactor !== undefined) {
-          const cdp = await context.newCDPSession(page);
-          await cdp.send("Emulation.setDeviceMetricsOverride", {
-            width: command.width,
-            height: command.height,
-            deviceScaleFactor: command.deviceScaleFactor,
-            mobile: false,
-          });
-          await cdp.detach();
-        }
+        const viewport: ViewportOverride = {
+          width: command.width,
+          height: command.height,
+          deviceScaleFactor: command.deviceScaleFactor ?? 1,
+        };
+        const emulation: SessionEmulation = runtimeState.environment.emulation._tag === "DeviceEmulation"
+          ? { ...runtimeState.environment.emulation, viewport }
+          : { _tag: "ViewportEmulation", viewport };
+        const environment: SessionEnvironmentSettings = {
+          ...runtimeState.environment,
+          emulation,
+        };
+        await applySessionPageEnvironmentToAll(context, runtimeState, environment, options);
+        for (const target of context.pages()) runtimeState.environmentPages.add(target);
+        runtimeState.environment = environment;
         return ok({ _tag: "VoidResult" } as const);
       }
 
       case "device": {
-        const descriptor = devices[command.device];
-        if (!descriptor) {
-          return err({ _tag: "CommandFailed", message: `Unknown device: ${command.device}` });
+        const descriptor = normalizeDeviceDescriptor(command.device);
+        if (descriptor === undefined) {
+          return err(unknownDeviceError(command.device));
         }
-        const cdp = await context.newCDPSession(page);
-        await cdp.send("Emulation.setDeviceMetricsOverride", {
+        const viewport: ViewportOverride = {
           width: descriptor.viewport.width,
           height: descriptor.viewport.height,
           deviceScaleFactor: descriptor.deviceScaleFactor,
-          mobile: descriptor.isMobile,
-        });
-        await cdp.send("Emulation.setTouchEmulationEnabled", {
-          enabled: descriptor.hasTouch,
-        });
-        await cdp.send("Network.setUserAgentOverride", {
-          userAgent: descriptor.userAgent,
-        });
-        await cdp.detach();
-        await page.setViewportSize(descriptor.viewport);
+        };
+        const environment: SessionEnvironmentSettings = {
+          ...runtimeState.environment,
+          emulation: { _tag: "DeviceEmulation", descriptor, viewport },
+        };
+        await applySessionPageEnvironmentToAll(context, runtimeState, environment, options);
+        for (const target of context.pages()) runtimeState.environmentPages.add(target);
+        runtimeState.environment = environment;
         return ok({ _tag: "VoidResult" } as const);
       }
 
@@ -2193,23 +2523,48 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "offline":
-        await context.setOffline(command.offline);
+        await withOperationTimeout(
+          () => context.setOffline(command.offline),
+          options,
+        );
+        runtimeState.environment = {
+          ...runtimeState.environment,
+          offline: { _tag: "Set", value: command.offline },
+        };
         return ok({ _tag: "VoidResult" } as const);
 
-      case "headers":
-        await page.setExtraHTTPHeaders(command.headers);
+      case "headers": {
+        const environment: SessionEnvironmentSettings = {
+          ...runtimeState.environment,
+          headers: { _tag: "Set", value: { ...command.headers } },
+        };
+        await applySessionPageEnvironmentToAll(context, runtimeState, environment, options);
+        for (const target of context.pages()) runtimeState.environmentPages.add(target);
+        runtimeState.environment = environment;
         return ok({ _tag: "VoidResult" } as const);
+      }
 
       case "credentials":
         await context.setHTTPCredentials({ username: command.username, password: command.password });
         return ok({ _tag: "VoidResult" } as const);
 
-      case "emulatemedia":
-        await page.emulateMedia({
-          colorScheme: command.colorScheme,
-          reducedMotion: command.reducedMotion,
-        });
+      case "emulatemedia": {
+        const environment: SessionEnvironmentSettings = {
+          ...runtimeState.environment,
+          media: {
+            _tag: "Set",
+            value: {
+              colorScheme: command.colorScheme,
+              reducedMotion: command.reducedMotion,
+            },
+          },
+        };
+        await applySessionPageEnvironmentToAll(context, runtimeState, environment, options);
+        for (const target of context.pages()) runtimeState.environmentPages.add(target);
+        runtimeState.environment = environment;
         return ok({ _tag: "VoidResult" } as const);
+      }
+
 
       case "storage_get": {
         const storageName = command.type === "local" ? "localStorage" : "sessionStorage";
@@ -2294,15 +2649,16 @@ export async function executeCommand(
         return ok(r);
       }
 
-      case "highlight":
-        await scope.locator(command.selector).highlight();
-        return ok({ _tag: "VoidResult" } as const);
-
       case "window_new": {
         invalidateRefs(refStore, sessionId, "page");
-        const newPage = await context.newPage();
+        const newPage = await withOperationTimeout(
+          () => context.newPage(),
+          options,
+        );
         observePageRuntime(sessionId, newPage);
         await ensureCdpRuntimeObserver(sessionId, context, newPage, options);
+        await applySessionEnvironmentToNewPage(context, newPage, runtimeState, runtimeState.environment, options);
+        runtimeState.environmentPages.add(newPage);
         activeTabIndex = context.pages().indexOf(newPage);
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activePage = newPage;
@@ -2465,11 +2821,13 @@ export async function executeCommand(
           message: "unsupported_in_moat: inspect requires a local DevTools proxy, but moat sessions use private remote CDP",
         });
 
-      case "device_list":
-        return err({
-          _tag: "CommandFailed",
-          message: "unsupported_in_moat: device list requires local Xcode/Appium, which moat-browser does not provide",
-        });
+      case "device_list": {
+        const result: DeviceListResult = {
+          _tag: "DeviceListResult",
+          devices: availableDeviceDescriptors(),
+        };
+        return ok(result);
+      }
 
       case "state_save": {
         const playwrightState: StorageState = await withOperationTimeout(

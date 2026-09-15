@@ -517,6 +517,51 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             print_with_boundaries(&formatted, origin, opts);
             return;
         }
+        if action == Some("device_list") {
+            let descriptors = data
+                .get("devices")
+                .and_then(|value| value.as_array())
+                .map(|values| values.as_slice())
+                .unwrap_or(&[]);
+            if descriptors.is_empty() {
+                println!("No remote Chromium device descriptors available.");
+                return;
+            }
+            println!("Remote Chromium device descriptors:");
+            for descriptor in descriptors {
+                let name = descriptor
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Unknown");
+                let viewport = descriptor.get("viewport").and_then(|value| value.as_object());
+                let width = viewport
+                    .and_then(|value| value.get("width"))
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0);
+                let height = viewport
+                    .and_then(|value| value.get("height"))
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0);
+                let dpr = descriptor
+                    .get("deviceScaleFactor")
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(1.0);
+                let touch = descriptor
+                    .get("hasTouch")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                let mobile = descriptor
+                    .get("isMobile")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                println!(
+                    "  {} ({}x{}, DPR {}, touch {}, mobile {})",
+                    name, width, height, dpr, touch, mobile
+                );
+            }
+            return;
+        }
+
         // iOS Devices
         if let Some(devices) = data.get("devices").and_then(|v| v.as_array()) {
             if devices.is_empty() {
@@ -2054,17 +2099,23 @@ agent-browser set - Configure browser settings
 
 Usage: agent-browser set <setting> [args]
 
-Configures various browser settings and emulation options.
+Configures session-scoped browser settings. Existing tabs and tabs created
+later in the same session inherit viewport/device, offline, headers, and media
+settings. A later `open --headers` call is a one-navigation override.
 
 Settings:
-  viewport <w> <h> [scale]   Set viewport size (scale = deviceScaleFactor, e.g. 2 for retina)
-  device <name>              Emulate device (e.g., "iPhone 12")
+  viewport <w> <h> [scale]   Set viewport size and deviceScaleFactor
+  device <name>              Emulate a remote Chromium descriptor
   geo <lat> <lng>            Set geolocation
-  offline [on|off]           Toggle offline mode
-  headers <json>             Set extra HTTP headers
+  offline <on|off|true|false>
+                              Toggle offline mode (case-insensitive)
+  headers <json>              Set extra HTTP headers
   credentials <user> <pass>  Set HTTP authentication
-  media [dark|light]         Set color scheme preference
-        [reduced-motion]     Enable reduced motion
+  media [dark|light]          Set color scheme preference
+        [reduced-motion]      Enable reduced motion
+
+Use `moat device list` to discover descriptor names accepted by `set device`.
+Unknown devices and offline values are rejected before changing browser state.
 
 Global Options:
   --json               Output as JSON
@@ -2072,10 +2123,11 @@ Global Options:
 
 Examples:
   agent-browser set viewport 1920 1080
-  agent-browser set viewport 1920 1080 2    # 2x retina
+  agent-browser set viewport 1920 1080 2    # 2x device scale factor
   agent-browser set device "iPhone 12"
   agent-browser set geo 37.7749 -122.4194
-  agent-browser set offline on
+  agent-browser set offline ON
+  agent-browser set offline false
   agent-browser set headers '{"X-Custom": "value"}'
   agent-browser set credentials admin secret123
   agent-browser set media dark
@@ -2690,12 +2742,13 @@ Examples:
         }
         "device" => {
             r##"
-moat device - unavailable
+moat device - List remote Chromium emulation descriptors
 
 Usage: moat device list
 
-unsupported_in_moat: device discovery requires local Xcode/Appium. moat-browser
-controls remote Chromium containers and does not provide an iOS device backend.
+The descriptor names and metrics come from the remote Chromium runtime.
+Pass one of the listed names to `moat set device <name>`. The setting applies
+to every existing tab and tabs created later in the same session.
 "##
         }
 

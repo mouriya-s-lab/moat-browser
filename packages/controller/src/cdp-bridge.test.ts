@@ -551,7 +551,12 @@ describe("cdp-bridge", () => {
       expect(page.mouse.wheel).toHaveBeenCalledWith(3, 4);
     });
 
-    it("viewport applies dimensions and device scale factor", async () => {
+    it("viewport applies dimensions and device scale factor through CDP", async () => {
+      const send = mock(() => Promise.resolve());
+      const detach = mock(() => Promise.resolve());
+      ctx = mockContext([page], {
+        newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
+      });
       const data = assertOk(await executeCommand(ctx, {
         action: "viewport",
         width: 800,
@@ -559,11 +564,17 @@ describe("cdp-bridge", () => {
         deviceScaleFactor: 2,
       }, refStore, SESSION));
       expect(data._tag).toBe("VoidResult");
-      expect(page.setViewportSize).toHaveBeenCalledWith({ width: 800, height: 600 });
-      expect(ctx.newCDPSession).toHaveBeenCalledWith(page);
+      expect(send).toHaveBeenCalledWith("Emulation.setDeviceMetricsOverride", {
+        width: 800,
+        height: 600,
+        deviceScaleFactor: 2,
+        mobile: false,
+      });
+      expect(page.setViewportSize).not.toHaveBeenCalled();
+      expect(detach).toHaveBeenCalledTimes(0);
     });
 
-    it("device applies metrics, touch, user agent, and viewport", async () => {
+    it("device applies metrics, touch, user agent metadata, and viewport", async () => {
       const send = mock(() => Promise.resolve());
       const detach = mock(() => Promise.resolve());
       ctx = mockContext([page], {
@@ -578,10 +589,20 @@ describe("cdp-bridge", () => {
       expect(data._tag).toBe("VoidResult");
       expect(send).toHaveBeenCalledTimes(3);
       expect(send.mock.calls[0][0]).toBe("Emulation.setDeviceMetricsOverride");
+      expect(send.mock.calls[0][1]).toMatchObject({
+        width: 390,
+        height: 664,
+        deviceScaleFactor: 3,
+        mobile: true,
+      });
       expect(send.mock.calls[1]).toEqual(["Emulation.setTouchEmulationEnabled", { enabled: true }]);
       expect(send.mock.calls[2][0]).toBe("Network.setUserAgentOverride");
-      expect(page.setViewportSize).toHaveBeenCalledWith({ width: 390, height: 664 });
-      expect(detach).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[2][1]).toMatchObject({
+        userAgent: expect.any(String),
+        userAgentMetadata: { mobile: true },
+      });
+      expect(page.setViewportSize).not.toHaveBeenCalled();
+      expect(detach).toHaveBeenCalledTimes(0);
     });
 
     it("device rejects an unknown descriptor without changing the page", async () => {
@@ -591,8 +612,8 @@ describe("cdp-bridge", () => {
       }, refStore, SESSION));
 
       expect(error).toEqual({
-        _tag: "CommandFailed",
-        message: "Unknown device: Definitely Not A Device",
+        _tag: "ValidationFailed",
+        message: "Unknown device: Definitely Not A Device; run `moat device list` to list available remote Chromium descriptors",
       });
       expect(ctx.newCDPSession).not.toHaveBeenCalled();
       expect(page.setViewportSize).not.toHaveBeenCalled();
@@ -1021,13 +1042,22 @@ describe("cdp-bridge", () => {
       }, refStore, SESSION))).toEqual({ _tag: "GetTextResult", text: "outside" });
     });
 
-    it("returns stable moat-specific errors for local-only commands", async () => {
+    it("returns stable moat errors and remote device descriptors", async () => {
       const inspect = assertErr(await executeCommand(ctx, { action: "inspect" }, refStore, SESSION));
-      const devices = assertErr(await executeCommand(ctx, { action: "device_list" }, refStore, SESSION));
+      const devices = assertOk(await executeCommand(ctx, { action: "device_list" }, refStore, SESSION));
       expect(inspect._tag).toBe("CommandFailed");
-      expect(devices._tag).toBe("CommandFailed");
       if (inspect._tag === "CommandFailed") expect(inspect.message).toStartWith("unsupported_in_moat:");
-      if (devices._tag === "CommandFailed") expect(devices.message).toStartWith("unsupported_in_moat:");
+      expect(devices._tag).toBe("DeviceListResult");
+      if (devices._tag === "DeviceListResult") {
+        expect(devices.devices.length).toBeGreaterThan(0);
+        expect(devices.devices[0]).toMatchObject({
+          name: expect.any(String),
+          userAgent: expect.any(String),
+          viewport: { width: expect.any(Number), height: expect.any(Number) },
+          screen: { width: expect.any(Number), height: expect.any(Number) },
+          userAgentMetadata: expect.objectContaining({ mobile: expect.any(Boolean) }),
+        });
+      }
     });
   });
 

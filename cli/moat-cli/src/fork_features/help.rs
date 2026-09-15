@@ -30,6 +30,7 @@ Page artifacts and state:
 Browser and runtime state:
   tab | window | frame | dialog | clipboard
   window new                   Open a new tab in the shared browser context
+  device list                  List remote Chromium emulation descriptors
   set viewport|device|geo|offline|headers|credentials|media
   network route|unroute|requests|request
                                  route accepts only --abort/--body; unsupported
@@ -43,7 +44,6 @@ Unavailable in moat architecture (stable unsupported_in_moat error):
   launch | connect <port|url>  Controller creates CDP targets
   record                       Video recording is outside the Controller contract
   stream                       Live viewing uses neko WebRTC
-  device list                  No local Xcode/Appium device backend
   get cdp-url                  Private container CDP is Controller-only
   install | upgrade | dashboard | profiles | session
 
@@ -114,6 +114,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "is" => "is <visible|enabled|checked> <selector>",
         "find" => "find <role|text|label|placeholder|alt|title|testid|first|last|nth> ...",
         "mouse" => "mouse <move|down|up|wheel> ...",
+        "device" => "device list",
         "set" => "set <viewport|device|geo|offline|headers|credentials|media> ...",
         "network" => "network <route|unroute|requests|request|har> ...",
         "storage" => "storage <local|session> <get|set|clear> ...",
@@ -148,7 +149,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
             );
         }
         "batch" => "batch  # reads a JSON command array from stdin",
-        "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "device" | "install"
+        "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "install"
         | "upgrade" | "dashboard" | "profiles" | "session" | "launch" => {
             return Some(format!(
                 "moat {command} - unavailable in the moat Controller architecture\n\n\
@@ -176,6 +177,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "keydown" | "keyup" => {
             "Low-level key state is explicit and paired; high-level input rejects while a modifier remains held."
         },
+        "device" => "List remote Chromium descriptors usable by `set device`.",
         "status" => {
             "Show the local session/config view; this command does not probe remote Controller health."
         },
