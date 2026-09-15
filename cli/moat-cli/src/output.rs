@@ -378,8 +378,50 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
     }
 
     if let Some(data) = &resp.data {
-        // Dialog status response
+        // Dialog results carry explicit Page/dialog and operation identity.
         if action == Some("dialog") {
+            if data.get("state").and_then(|v| v.as_str()) == Some("handled") {
+                let accepted = data.get("accepted").and_then(|v| v.as_bool()).unwrap_or(false);
+                let action_name = if accepted { "accepted" } else { "dismissed" };
+                let dialog_id = data.get("dialogId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let page_id = data
+                    .get("page")
+                    .and_then(|v| v.get("pageId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                println!(
+                    "{} Dialog {} (dialog={}, page={})",
+                    color::success_indicator(),
+                    action_name,
+                    dialog_id,
+                    page_id
+                );
+                if let Some(operation) = data.get("operation") {
+                    if let Some(result) = operation.get("result") {
+                        println!("  Evaluation result: {}", serde_json::to_string_pretty(result).unwrap_or_default());
+                    } else if let Some(operation_id) = operation.get("operationId").and_then(|v| v.as_str()) {
+                        println!("  Operation {} remains pending; run `dialog result {}`", operation_id, operation_id);
+                    }
+                }
+                print_warning(resp);
+                return;
+            }
+            if data.get("state").and_then(|v| v.as_str()) == Some("operation") {
+                let operation_id = data
+                    .get("operationId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                println!("{} Operation {}", color::warning_indicator(), operation_id);
+                if let Some(operation) = data.get("operation") {
+                    if let Some(result) = operation.get("result") {
+                        println!("  Evaluation result: {}", serde_json::to_string_pretty(result).unwrap_or_default());
+                    } else {
+                        println!("  {}", serde_json::to_string(operation).unwrap_or_default());
+                    }
+                }
+                print_warning(resp);
+                return;
+            }
             if let Some(has_dialog) = data.get("hasDialog").and_then(|v| v.as_bool()) {
                 if has_dialog {
                     let dtype = data
@@ -387,15 +429,36 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
                     let message = data.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let dialog_id = data.get("dialogId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let page_id = data
+                        .get("page")
+                        .and_then(|v| v.get("pageId"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let page_index = data
+                        .get("page")
+                        .and_then(|v| v.get("pageIndex"))
+                        .and_then(|v| v.as_i64())
+                        .map(|index| index.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
                     println!(
-                        "{} JavaScript {} dialog is open: \"{}\"",
+                        "{} JavaScript {} dialog is open: \"{}\" (dialog={}, page={} index={})",
                         color::warning_indicator(),
                         dtype,
-                        message
+                        message,
+                        dialog_id,
+                        page_id,
+                        page_index
                     );
-                    if let Some(default_prompt) = data.get("defaultPrompt").and_then(|v| v.as_str())
-                    {
+                    if let Some(default_prompt) = data.get("defaultPrompt").and_then(|v| v.as_str()) {
                         println!("  Default prompt text: \"{}\"", default_prompt);
+                    }
+                    if let Some(operation_id) = data
+                        .get("operation")
+                        .and_then(|v| v.get("operationId"))
+                        .and_then(|v| v.as_str())
+                    {
+                        println!("  Evaluation operation: {}", operation_id);
                     }
                     println!("  Use `dialog accept [text]` or `dialog dismiss` to resolve it");
                 } else {
@@ -404,6 +467,28 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 print_warning(resp);
                 return;
             }
+        }
+        if data.get("state").and_then(|v| v.as_str()) == Some("pending") {
+            let operation_id = data
+                .get("operation")
+                .and_then(|v| v.get("operationId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let dialog_id = data.get("dialogId").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let page_id = data
+                .get("page")
+                .and_then(|v| v.get("pageId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            println!(
+                "{} Evaluation is pending on dialog {} (page={}); run `dialog accept|dismiss`, then `dialog result {}`",
+                color::warning_indicator(),
+                dialog_id,
+                page_id,
+                operation_id
+            );
+            print_warning(resp);
+            return;
         }
         if let Some(output) = format_stream_status_text(action, data) {
             println!("{}", output);
@@ -2369,14 +2454,20 @@ Controller authorization and session isolation are the security boundary.
             r##"
 agent-browser dialog - Handle browser dialogs
 
-Usage: agent-browser dialog <accept|dismiss|status> [text]
+Usage: agent-browser dialog <accept|dismiss|status|result> [text|operation-id]
 
-Respond to or check for browser dialogs (alert, confirm, prompt).
+Respond to or check for Page-scoped browser dialogs (alert, confirm, prompt).
 
 Operations:
   accept [text]        Accept dialog, optionally with prompt text
   dismiss              Dismiss/cancel dialog
-  status               Check if a dialog is currently open
+  status               Check the active Page for an open dialog
+  result <operation>   Retrieve a settled eval result by operation handle
+
+An eval-triggered dialog waits up to 3s for an explicit handler. A handler
+within that grace returns the original eval result to its caller. If the grace
+expires first, eval returns a pending operation handle; accept or dismiss it,
+then run `dialog result <operation-id>` when the settled result is not included.
 
 Global Options:
   --json               Output as JSON
@@ -2387,6 +2478,7 @@ Examples:
   agent-browser dialog accept "my input"
   agent-browser dialog dismiss
   agent-browser dialog status
+  agent-browser dialog result operation-1
 "##
         }
 

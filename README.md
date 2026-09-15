@@ -514,6 +514,12 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 - `moat network route` 目前只接受 `--abort` 与 `--body <json>`；`--status`、`--delay`、`--headers` 等不支持选项会在安装 route 前返回 `unsupported_in_moat`。
 - `find first`、`find last`、`find nth` 只接受已登记的动作名；未知动作、缺少动作值和越界 occurrence 会在页面副作用前失败，`fill ""` 仍表示清空输入。`keydown`/`keyup` 是显式配对的低层操作；未释放 modifier 时，高层输入会在副作用前拒绝并返回当前 held modifiers。
 
+**JavaScript dialog 归属与结算（M23）**：
+
+- `dialog status`、`dialog accept`、`dialog dismiss` 始终作用于当前 active Page 的具体 modal，并返回 `pageId`、当前 tab index、`dialogId` 与 modal 类型/消息；后创建的 tab 不会覆盖先创建的 modal。
+- `eval` 触发 modal 后，Controller 最多等待 **3s handler grace**。grace 内显式处理会让原始 `eval` 调用直接返回脚本结果；无人处理时原调用在 grace 到期返回 `pending`，其中的 `operationId` 可交给 `dialog accept|dismiss`，再用 `dialog result <operationId>` 取回原始 `eval` 结果。
+- 不自动 accept/dismiss。`prompt` 的 `dialog accept "<text>"` 会把完全相同的文本传回页面。操作在服务端普通命令预算内仍未处理时，operation 进入可追踪的 `timeout` 终态，错误包含 dialog/eval 阶段、预算、session、Page 和 operation 标识。
+
 - `moat --json --help`、`-h`、`help`、`--version` 与 `-V` 都返回单个 JSON 值。错误对象的 `errorType` 是机器判别字段，`error` 只用于展示。
 
 机器错误分类使用结构化 `errorType`，而不是匹配 `error` 文案：
@@ -736,11 +742,27 @@ active tab and leaves the original tab unchanged. Elements without an openable
 link are rejected before navigation.
 
 Network routing accepts only `--abort` and `--body <json>`. Unsupported options
+
 such as `--status`, `--delay`, and `--headers` are rejected before installation.
 
 `keydown` and `keyup` are explicit paired low-level operations. High-level
 `type`, `fill`, and `click` actions reject while a modifier is held; use `keyup`
 to release it. Key-state results show the currently held modifiers.
+## JavaScript dialogs
+
+Dialogs are owned by the real Page that opened them. `dialog status`,
+`dialog accept`, and `dialog dismiss` operate on the active Page and report
+`pageId`, tab index, `dialogId`, type, message, and prompt default. A modal in
+another tab remains independently visible until that Page is selected.
+
+When `eval` opens a dialog, the Controller waits up to a 3s handler grace.
+Explicit `accept`/`dismiss` during that grace lets the original eval command
+return its script result. If the grace expires first, the eval returns a
+pending `operationId`; resolve it with `dialog accept [text]` or
+`dialog dismiss`, then retrieve the original result with
+`dialog result <operationId>` if it was not included in the handler response.
+No dialog is accepted or dismissed automatically. Prompt text is passed to
+the page unchanged.
 
 ## Fallback commands (exploration)
 
