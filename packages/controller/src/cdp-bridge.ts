@@ -6,12 +6,14 @@ import { join } from "node:path";
 import type {
   BrowserCommand,
   CommandResultData,
+  CommandFailureCause,
   ControllerError,
   CookieEntry,
   KeyStateResult,
   EvalResult,
   LocatorResult,
   NavigateResult,
+  NthSubaction,
   ScreenshotResult,
   SnapshotResult,
   TabInfo,
@@ -443,7 +445,7 @@ async function readCdpStream(cdp: CDPSession, handle: string): Promise<Buffer> {
 
 // ─── Locator subaction type ───
 
-type LocatorSubaction = "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+type LocatorSubaction = NthSubaction;
 
 // ─── executeLocatorAction ───
 
@@ -452,11 +454,13 @@ async function executeLocatorAction(
   subaction: LocatorSubaction | undefined,
   state: SessionRuntimeState,
   value?: string,
+  options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
   if (subaction !== undefined) {
     const conflict = modifierConflict(state);
     if (conflict) return err(conflict);
   }
+  const timeout = operationTimeout(options);
   switch (subaction) {
     case undefined: {
       const count = await locator.count();
@@ -466,27 +470,42 @@ async function executeLocatorAction(
     }
 
     case "click":
-      await locator.click();
+      await locator.click({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "fill":
-      await locator.fill(value!);
+      await locator.fill(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!);
+      await locator.pressSequentially(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "check":
-      await locator.check();
+      await locator.check({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "uncheck":
-      await locator.uncheck();
+      await locator.uncheck({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "hover":
-      await locator.hover();
+      await locator.hover({ timeout });
+      return ok({ _tag: "VoidResult" } as const);
+
+    case "dblclick":
+      await locator.dblclick({ timeout });
+      return ok({ _tag: "VoidResult" } as const);
+
+    case "focus":
+      await locator.focus({ timeout });
+      return ok({ _tag: "VoidResult" } as const);
+
+    case "select":
+      if (value === undefined) {
+        return err({ _tag: "ValidationFailed", message: "select requires a value" });
+      }
+      await locator.selectOption([value], { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     default:
@@ -520,28 +539,30 @@ async function executeElementAction(
   action: "click" | "fill" | "type" | "hover",
   state: SessionRuntimeState,
   value?: string,
+  options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
   const resolved = resolveLocator(scope, refStore, sessionId, refScope, ref, selector);
   if (resolved._tag === "Err") return resolved;
   const conflict = modifierConflict(state);
   if (conflict) return err(conflict);
   const locator = resolved.value;
+  const timeout = operationTimeout(options);
 
   switch (action) {
     case "click":
-      await locator.click();
+      await locator.click({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "fill":
-      await locator.fill(value!);
+      await locator.fill(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!);
+      await locator.pressSequentially(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "hover":
-      await locator.hover();
+      await locator.hover({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     default:
@@ -553,8 +574,9 @@ async function executeNewTabClick(
   page: Page,
   locator: Locator,
   sessionId: string,
+  options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
-  const href = await locator.getAttribute("href");
+  const href = await locator.getAttribute("href", { timeout: operationTimeout(options) });
   if (href === null || href.trim() === "") {
     return err({
       _tag: "CommandFailed",
@@ -580,10 +602,10 @@ async function executeNewTabClick(
 
   const newPage = await context.newPage();
   try {
-    await newPage.goto(targetUrl.toString());
+    await newPage.goto(targetUrl.toString(), { timeout: operationTimeout(options) });
   } catch (error) {
     await newPage.close().catch(() => {});
-    return err(mapPlaywrightError(error));
+    return err(mapPlaywrightError(error, "click", options));
   }
 
   const newIndex = context.pages().indexOf(newPage);
@@ -906,43 +928,43 @@ export async function executeCommand(
         if (command.nth !== undefined) {
           loc = loc.nth(command.nth);
         }
-        return executeLocatorAction(loc, command.subaction, runtimeState, command.value);
+        return executeLocatorAction(loc, command.subaction, runtimeState, command.value, options);
       }
 
       case "getbylabel":
         return executeLocatorAction(
           scope.getByLabel(command.label, { exact: command.exact }),
-          command.subaction, runtimeState, command.value,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "getbyplaceholder":
         return executeLocatorAction(
           scope.getByPlaceholder(command.placeholder, { exact: command.exact }),
-          command.subaction, runtimeState, command.value,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "getbytext":
         return executeLocatorAction(
           scope.getByText(command.text, { exact: command.exact }),
-          command.subaction, runtimeState,
+          command.subaction, runtimeState, undefined, options,
         );
 
       case "getbyalttext":
         return executeLocatorAction(
           scope.getByAltText(command.text, { exact: command.exact }),
-          command.subaction, runtimeState,
+          command.subaction, runtimeState, undefined, options,
         );
 
       case "getbytitle":
         return executeLocatorAction(
           scope.getByTitle(command.text, { exact: command.exact }),
-          command.subaction, runtimeState,
+          command.subaction, runtimeState, undefined, options,
         );
 
       case "getbytestid":
         return executeLocatorAction(
           scope.getByTestId(command.testId),
-          command.subaction, runtimeState, command.value,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "click": {
@@ -958,7 +980,7 @@ export async function executeCommand(
             command.selector,
           );
           if (resolved._tag === "Err") return resolved;
-          return executeNewTabClick(context, page, resolved.value, sessionId);
+          return executeNewTabClick(context, page, resolved.value, sessionId, options);
         }
         return executeElementAction(
           scope,
@@ -969,6 +991,8 @@ export async function executeCommand(
           command.selector,
           "click",
           runtimeState,
+          undefined,
+          options,
         );
       }
 
@@ -983,6 +1007,7 @@ export async function executeCommand(
           "fill",
           runtimeState,
           command.value,
+          options,
         );
 
       case "type":
@@ -996,6 +1021,7 @@ export async function executeCommand(
           "type",
           runtimeState,
           command.text,
+          options,
         );
 
       case "hover":
@@ -1008,6 +1034,8 @@ export async function executeCommand(
           command.selector,
           "hover",
           runtimeState,
+          undefined,
+          options,
         );
       case "snapshot": {
         const snapshotResult = await buildAriaSnapshot(scope, refStore, sessionId, refScope, command);
@@ -1631,51 +1659,18 @@ export async function executeCommand(
           return ok(result);
         }
 
-        const conflict = modifierConflict(runtimeState);
-        if (conflict) return err(conflict);
         const target = loc.nth(index);
         const subaction = command.subaction;
-        switch (subaction) {
-          case "click":
-            await target.click();
-            break;
-          case "fill":
-            if (command.value === undefined) {
-              return err({ _tag: "ValidationFailed", message: "nth fill requires a value" });
-            }
-            await target.fill(command.value);
-            break;
-          case "type":
-            if (command.value === undefined) {
-              return err({ _tag: "ValidationFailed", message: "nth type requires a value" });
-            }
-            await target.pressSequentially(command.value);
-            break;
-          case "hover":
-            await target.hover();
-            break;
-          case "dblclick":
-            await target.dblclick();
-            break;
-          case "focus":
-            await target.focus();
-            break;
-          case "select":
-            if (command.value === undefined) {
-              return err({ _tag: "ValidationFailed", message: "nth select requires a value" });
-            }
-            await target.selectOption([command.value]);
-            break;
-          case "check":
-            await target.check();
-            break;
-          case "uncheck":
-            await target.uncheck();
-            break;
-          default:
-            return exhaustive(subaction);
+        if (
+          command.value === undefined
+          && (subaction === "fill" || subaction === "type" || subaction === "select")
+        ) {
+          return err({
+            _tag: "ValidationFailed",
+            message: `nth ${subaction} requires a value`,
+          });
         }
-        return ok({ _tag: "VoidResult" } as const);
+        return executeLocatorAction(target, subaction, runtimeState, command.value, options);
       }
 
       case "upload":
