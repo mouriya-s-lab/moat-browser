@@ -647,7 +647,7 @@ impl MoatClient {
         };
         send_json(&mut ws, &wire_req).await?;
         let response = recv_json(&mut ws, deadline).await?;
-        let _ = ws.close(None).await;
+        drop(ws);
         Ok(response)
     }
 
@@ -1059,6 +1059,19 @@ impl MoatClient {
             .map_err(|error| command_error(format!("HAR temp name clock failed (phase=prepare): {error}")))?
             .as_nanos();
         let temporary = PathBuf::from(format!("{}.part-{}", destination.display(), nonce));
+        // Reuse one stateless command socket for every artifact chunk. Closing each
+        // intermediate socket can race the server's response write.
+        let connect_deadline = ClientDeadline::new(DEFAULT_SERVER_COMMAND_BUDGET_MS);
+        let (mut artifact_ws, _) = with_client_deadline(
+            connect_deadline,
+            "command",
+            async {
+                connect_async(&self.url)
+                    .await
+                    .map_err(|error| SdkError::ConnectionFailed(error.to_string()))
+            },
+        )
+        .await?;
         let result: Result<(), SdkError> = async {
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
@@ -1080,7 +1093,14 @@ impl MoatClient {
                     with_client_deadline(
                         chunk_deadline,
                         "command",
-                        self.command_remote_wire(command, chunk_deadline),
+                        async {
+                            let wire_req = WireRequest::Command {
+                                session_id: self.session_id.clone(),
+                                command,
+                            };
+                            send_json(&mut artifact_ws, &wire_req).await?;
+                            recv_json(&mut artifact_ws, chunk_deadline).await
+                        },
                     )
                     .await?,
                 )?;
@@ -1164,6 +1184,7 @@ impl MoatClient {
             Ok(())
         }
         .await;
+        drop(artifact_ws);
         if let Err(error) = result {
             let _ = std::fs::remove_file(&temporary);
             return Err(error);
