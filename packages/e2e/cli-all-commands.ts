@@ -55,7 +55,7 @@ const cases: Case[] = [
   C("waitfordownload",["wait","--download",join(artifacts,"wait-download.txt"),"--timeout","10000"],undefined,undefined,undefined,[join(artifacts,"wait-download.txt")]),
   C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
   C("gettext",["get","text","h1"],undefined,"Moat CLI Matrix"), C("innerhtml",["get","html","h1"]), C("inputvalue",["get","value","#input"]),
-  C("getattribute",["get","attr","h1","title"],undefined,"matrix-title"), C("count",["get","count","button"]), C("boundingbox",["get","box","h1"]), C("styles",["get","styles","h1"]), C("cdp_url",["get","cdp-url"]),
+  C("getattribute",["get","attr","h1","title"],undefined,"matrix-title"), C("count",["get","count","button"]), C("boundingbox",["get","box","h1"]), C("styles",["get","styles","h1"]), U("cdp_url",["get","cdp-url"]),
   C("isvisible",["is","visible","h1"],undefined,"true"), C("isenabled",["is","enabled","#button"],undefined,"true"), C("ischecked",["is","checked","#check"]),
   C("getbyrole",["find","role","heading","--name","Moat CLI Matrix"]), C("getbytext",["find","text","Moat CLI Matrix"]), C("getbylabel",["find","label","Name"]),
   C("getbyplaceholder",["find","placeholder","Your name"]), C("getbyalttext",["find","alt","pixel"]), C("getbytitle",["find","title","matrix-title"]), C("getbytestid",["find","testid","name"]), C("nth",["find","nth","0","button"]),
@@ -77,7 +77,8 @@ const cases: Case[] = [
   O("diff_snapshot",["diff","snapshot"]), O("diff_screenshot",["diff","screenshot","--baseline",shot,"--output",join(artifacts,"diff.png")],[join(artifacts,"diff.png")]), O("diff_url",["diff","url",`data:text/html,${encodeURIComponent("<title>First</title><h1>First</h1>")}`,`data:text/html,${encodeURIComponent("<title>Different</title><h1>Different</h1>")}`]),
   ...[["auth_save",["auth","save","x"]],["auth_list",["auth","list"]],["auth_show",["auth","show","x"]],["auth_delete",["auth","delete","x"]],["auth_login",["auth","login","x"]],
     ["confirm",["confirm"]],["deny",["deny"]],["inspect",["inspect"]],["launch",["launch"]],["stream_enable",["stream","enable"]],["stream_disable",["stream","disable"]],["stream_status",["stream","status"]],
-    ["recording_start",["record","start"]],["recording_stop",["record","stop"]],["recording_restart",["record","restart"]],["device_list",["device","list"]]] .map(([a,v])=>U(a as string,v as string[])),
+    ["recording_start",["record","start"]],["recording_stop",["record","stop"]],["recording_restart",["record","restart"]]] .map(([a,v])=>U(a as string,v as string[])),
+  C("device_list",["device","list"]),
   C("close",["close"]),
 ];
 
