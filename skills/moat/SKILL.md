@@ -224,11 +224,11 @@ confirmation:
 moat state clear --all --confirm
 ```
 
-Without `--confirm` (or its `--yes` alias), the command fails immediately
-without reading stdin or changing files. Cookie scope is mutually exclusive:
-use either `--url <url>` or `--domain <domain>`/`--path <path>`. A conflicting
-combination is rejected with `errorType: "invalid_value"` before any cookie is
-written.
+Without `--confirm` (or its `--yes` alias), the command fails immediately with
+`errorType: "missing_arguments"` without reading stdin or changing files. Cookie
+scope is mutually exclusive: use either `--url <url>` or
+`--domain <domain>`/`--path <path>`. A conflicting combination is rejected with
+`errorType: "invalid_value"` before any cookie is written.
 
 ## Exit codes
 

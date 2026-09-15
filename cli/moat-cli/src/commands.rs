@@ -1353,6 +1353,12 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                         }
                         i += 1;
                     }
+                    if all && !confirm {
+                        return Err(ParseError::MissingArguments {
+                            context: "state clear --all".to_string(),
+                            usage: "state clear --all --confirm",
+                        });
+                    }
 
                     if let Some(name) = session_name {
                         if !is_valid_session_name(name) {

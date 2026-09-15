@@ -547,8 +547,8 @@ state 文件寻址规则只有一套：
 - `state clear --all` 只管理默认目录内的直接 `.json` 文件。
 
 `state clear --all` 是破坏性操作，必须显式传 `--confirm`（`--yes` 是同义
-写法）；缺少确认会立即失败且不读取 stdin、不改文件。非 JSON 文件和显式路径
-始终不属于该集合。
+写法）；缺少确认会立即失败并返回 `errorType: "missing_arguments"`，不读取
+stdin、不改文件。非 JSON 文件和显式路径始终不属于该集合。
 
 Cookie 设置只能使用一种 scope：`--url <url>`，或
 `--domain <domain>`/`--path <path>`。同时提供 URL 与 domain/path 会在任何

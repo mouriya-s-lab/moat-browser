@@ -134,6 +134,7 @@ fn sdk_error_type(error: &SdkError) -> &str {
         }
         SdkError::Timeout { .. } => ERROR_TIMEOUT,
         SdkError::NoSession => ERROR_TARGET_NOT_FOUND,
+        SdkError::MissingArguments { .. } => ERROR_MISSING_ARGUMENTS,
         SdkError::SessionAlreadyActive { .. }
         | SdkError::ConnectionFailed(_)
         | SdkError::WebSocket(_)

@@ -256,10 +256,8 @@ fn local_state_clear(request: &Value) -> Result<Value, SdkError> {
     let all = request.get("all").and_then(Value::as_bool) == Some(true);
     let confirmed = request.get("confirm").and_then(Value::as_bool) == Some(true);
     if all && !confirmed {
-        return Err(SdkError::CommandFailed {
+        return Err(SdkError::MissingArguments {
             error: "state clear --all requires explicit confirmation; rerun with --confirm".into(),
-            code: 1,
-            cause: CommandFailureCause::Transport,
         });
     }
 
