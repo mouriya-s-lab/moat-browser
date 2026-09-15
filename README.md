@@ -555,7 +555,13 @@ Cookie 设置只能使用一种 scope：`--url <url>`，或
 浏览器写入前返回 `errorType: "invalid_value"`；合法的 URL-only 与
 domain/path-only 组合保留各自 scope。
 
-### 9.5 Wire 协议
+### 9.5 C9 诊断与网络详情
+
+- `moat console` 与 `moat errors` 的每条记录都带 `_tag` 类别、`sessionId`、稳定的 `pageId`/`frameId`、事件发生时的 `pageUrl`/`frameUrl` 和 Unix 毫秒 `timestamp`。`ResourceFailureDiagnostic` 表示资源加载失败（含 URL、资源类型和可用的 HTTP 状态或失败原因）；`PolicyBlockedDiagnostic` 表示 CSP/其他安全策略拦截（含被拦截 URL 和策略文本）。这些记录来自远程浏览器本身，不要求页面预先写诊断标记；跨导航和 iframe 记录不会改写成当前页面。
+- `moat network request <id>` 的人类输出与 `--json` 使用同一份 Controller detail：URL、method、resource type、status、请求/响应 headers、请求 body，以及 response body 或明确的 `pending`/`absent`/其他 Controller 提供的完整性状态。人类模式不以 `✓ Done` 替代 detail，也不把缺失 body 当作成功正文。
+- wire failure 的 `code` 是 Controller/SDK 内部编号；为保持 agent-browser 兼容的 `Response` JSON 形状，CLI 不暴露该字段，也不把它当作进程退出码。机器判别请使用 `errorType`（基础设施失败再读取 `cause`），错误文案只用于展示。
+
+### 9.6 Wire 协议
 
 CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 + session envelope**：
 

@@ -179,6 +179,26 @@ does not use this flag. A `timeout` response has no `cause`; treat the result
 as potentially partially applied and inspect state before deciding whether to
 retry.
 
+## Diagnostics and network details
+
+`moat console` and `moat errors` expose browser diagnostics with `_tag`,
+`sessionId`, stable `pageId`/`frameId`, event-time `pageUrl`/`frameUrl`, and a
+Unix-millisecond `timestamp`. `ResourceFailureDiagnostic` identifies failed
+resource loads with their URL, resource type, and available status or failure
+reason. `PolicyBlockedDiagnostic` identifies CSP/security-policy blocks with
+the blocked URL and policy text. Records remain attributable across
+navigation and iframes; they do not depend on DOM markers.
+
+`moat network request <id>` prints the same request detail represented by
+`--json`: URL, method, resource type, status, request/response headers, request
+body, and response body or an explicit `pending`/`absent`/controller-provided
+completeness state. Human output never replaces detail with only `Done`.
+
+The wire `code` is a Controller/SDK internal number. The CLI deliberately does
+not expose it in the agent-browser-compatible `Response` shape or use it as
+the process exit code. Agents must branch on `errorType` (and `cause` for
+`command_failed`); `error` is display text.
+
 ## Neko login URL
 
 The neko WebRTC UI (for humans to log in interactively) is served by the `user-chrome` container on the Controller host's HTTP port `8080`. Given `MOAT_CONTROLLER=ws://<host>:3000`, the neko URL is:
