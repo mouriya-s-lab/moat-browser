@@ -1135,7 +1135,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
 
         // === Dialog ===
         "dialog" => {
-            const VALID: &[&str] = &["accept", "dismiss", "status"];
+            const VALID: &[&str] = &["accept", "dismiss", "status", "result"];
             match rest.first().copied() {
                 Some("accept") => {
                     let mut cmd = json!({ "id": id, "action": "dialog", "response": "accept" });
@@ -1152,13 +1152,25 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                     Ok(cmd)
                 }
                 Some("status") => Ok(json!({ "id": id, "action": "dialog", "response": "status" })),
+                Some("result") => {
+                    let operation_id = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
+                        context: "dialog result".to_string(),
+                        usage: "dialog result <operation-id>",
+                    })?;
+                    Ok(json!({
+                        "id": id,
+                        "action": "dialog",
+                        "response": "result",
+                        "operationId": operation_id,
+                    }))
+                }
                 Some(sub) => Err(ParseError::UnknownSubcommand {
                     subcommand: sub.to_string(),
                     valid_options: VALID,
                 }),
                 None => Err(ParseError::MissingArguments {
                     context: "dialog".to_string(),
-                    usage: "dialog <accept|dismiss|status> [text]",
+                    usage: "dialog <accept|dismiss|status|result> [text|operation-id]",
                 }),
             }
         }

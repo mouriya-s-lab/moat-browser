@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::{timeout_at, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use wire::{CapacityDetails, CommandFailureCause, Response, WireRequest, WireResponse};
+use wire::{CapacityDetails, CommandFailureCause, DialogPage, Response, WireRequest, WireResponse};
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -97,6 +97,10 @@ pub fn local_command(request: &Value) -> Option<Result<Response, SdkError>> {
         error: None,
         error_type: None,
         cause: None,
+        operation_id: None,
+        dialog_id: None,
+        page: None,
+
         owner: None,
         current: None,
         limit: None,
@@ -443,6 +447,31 @@ fn validate_wire_failure(
         (None, None) => Err(protocol_error("wire failure missing errorType")),
     }
 }
+fn validate_dialog_pending_failure(
+    error_type: Option<&str>,
+    cause: Option<&CommandFailureCause>,
+    operation_id: Option<String>,
+    dialog_id: Option<String>,
+    page: Option<DialogPage>,
+) -> Result<(Option<String>, Option<String>, Option<DialogPage>), SdkError> {
+    if !matches!(cause, Some(CommandFailureCause::DialogPending)) {
+        return Ok((operation_id, dialog_id, page));
+    }
+    if error_type != Some("command_failed") {
+        return Err(protocol_error(
+            "dialog_pending cause requires errorType=command_failed",
+        ));
+    }
+    match (operation_id, dialog_id, page) {
+        (Some(operation_id), Some(dialog_id), Some(page)) => {
+            Ok((Some(operation_id), Some(dialog_id), Some(page)))
+        }
+        _ => Err(protocol_error(
+            "dialog_pending response missing operation/page identity",
+        )),
+    }
+}
+
 
 fn parse_capacity_details(
     error_type: Option<&str>,
@@ -605,6 +634,10 @@ impl MoatClient {
                 error: None,
                 error_type: None,
                 cause: None,
+                operation_id: None,
+                dialog_id: None,
+                page: None,
+
                 owner: None,
                 current: None,
                 limit: None,
@@ -652,6 +685,10 @@ impl MoatClient {
                     error: None,
                     error_type: None,
                     cause: None,
+                    operation_id: None,
+                    dialog_id: None,
+                    page: None,
+
                     owner: None,
                     current: None,
                     limit: None,
@@ -666,6 +703,9 @@ impl MoatClient {
                 error,
                 error_type,
                 cause,
+                operation_id,
+                dialog_id,
+                page,
                 owner,
                 current,
                 limit,
@@ -675,12 +715,22 @@ impl MoatClient {
                 ..
             } => {
                 let cause = validate_wire_failure(error_type.as_deref(), cause)?;
+                let (operation_id, dialog_id, page) = validate_dialog_pending_failure(
+                    error_type.as_deref(),
+                    cause.as_ref(),
+                    operation_id,
+                    dialog_id,
+                    page,
+                )?;
                 Ok(Response {
                     success: false,
                     data: None,
                     error,
                     error_type,
                     cause,
+                    operation_id,
+                    dialog_id,
+                    page,
                     owner,
                     current,
                     limit,
@@ -696,6 +746,10 @@ impl MoatClient {
                 error: Some(error),
                 error_type: Some("command_failed".into()),
                 cause: Some(CommandFailureCause::Transport),
+                operation_id: None,
+                dialog_id: None,
+                page: None,
+
                 owner: None,
                 current: None,
                 limit: None,
@@ -1018,6 +1072,9 @@ fn success(data: Value) -> Response {
         success: true,
         data: Some(data),
         error: None,
+        operation_id: None,
+        dialog_id: None,
+        page: None,
         error_type: None,
         cause: None,
         owner: None,

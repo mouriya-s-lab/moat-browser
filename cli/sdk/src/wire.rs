@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 // ─── WireRequest (sent to Controller) ───
@@ -26,15 +26,59 @@ pub enum WireRequest {
 
 // ─── WireResponse (received from Controller) ───
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandFailureCause {
     ContainerCreation,
     Cdp,
     Cleanup,
     Transport,
+    DialogPending,
+    Unknown(String),
 }
 
+impl Serialize for CommandFailureCause {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = match self {
+            Self::ContainerCreation => "container_creation",
+            Self::Cdp => "cdp",
+            Self::Cleanup => "cleanup",
+            Self::Transport => "transport",
+            Self::DialogPending => "dialog_pending",
+            Self::Unknown(value) => value,
+        };
+        serializer.serialize_str(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for CommandFailureCause {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "container_creation" => Self::ContainerCreation,
+            "cdp" => Self::Cdp,
+            "cleanup" => Self::Cleanup,
+            "transport" => Self::Transport,
+            "dialog_pending" => Self::DialogPending,
+            _ => Self::Unknown(value),
+        })
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DialogPage {
+    #[serde(rename = "pageId")]
+    pub page_id: String,
+    #[serde(rename = "pageIndex")]
+    pub page_index: i64,
+    #[serde(rename = "pageUrl")]
+    pub page_url: String,
+}
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct CapacityDetails {
     pub owner: String,
@@ -61,6 +105,12 @@ pub enum WireResponse {
         error_type: Option<String>,
         code: Option<u32>,
         cause: Option<CommandFailureCause>,
+        #[serde(rename = "operationId")]
+        operation_id: Option<String>,
+        #[serde(rename = "dialogId")]
+        dialog_id: Option<String>,
+        page: Option<DialogPage>,
+
         owner: Option<String>,
         current: Option<u32>,
         limit: Option<u32>,
@@ -82,6 +132,12 @@ pub enum WireResponse {
         error_type: Option<String>,
         code: Option<u32>,
         cause: Option<CommandFailureCause>,
+        #[serde(rename = "operationId")]
+        operation_id: Option<String>,
+        #[serde(rename = "dialogId")]
+        dialog_id: Option<String>,
+        page: Option<DialogPage>,
+
         owner: Option<String>,
         current: Option<u32>,
         limit: Option<u32>,
@@ -102,6 +158,12 @@ pub enum WireResponse {
         error_type: Option<String>,
         code: Option<u32>,
         cause: Option<CommandFailureCause>,
+        #[serde(rename = "operationId")]
+        operation_id: Option<String>,
+        #[serde(rename = "dialogId")]
+        dialog_id: Option<String>,
+        page: Option<DialogPage>,
+
         owner: Option<String>,
         current: Option<u32>,
         limit: Option<u32>,
@@ -129,6 +191,12 @@ pub struct Response {
     pub error_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<CommandFailureCause>,
+    #[serde(rename = "operationId", skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(rename = "dialogId", skip_serializing_if = "Option::is_none")]
+    pub dialog_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<DialogPage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

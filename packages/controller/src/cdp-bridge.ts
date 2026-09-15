@@ -6,7 +6,6 @@ import { join } from "node:path";
 import type {
   BrowserCommand,
   CommandResultData,
-  CommandFailureCause,
   ControllerError,
   CookieEntry,
   KeyStateResult,
@@ -47,6 +46,9 @@ import type {
   BinaryFileResult,
   ClipboardResult,
   DialogResult,
+  DialogOperation,
+  DialogPage,
+  DialogType,
   FrameResult,
   CdpUrlResult,
   TouchResult,
@@ -266,9 +268,89 @@ type CdpFrameNavigatedEvent = {
     readonly url: string;
   };
 };
+type DialogInitiator =
+  | { readonly _tag: "NoEval" }
+  | { readonly _tag: "Eval"; readonly operationId: string };
+
+type DialogRecord = {
+  readonly dialogId: string;
+  readonly pageId: string;
+  readonly page: Page;
+  readonly dialog: Dialog;
+  readonly type: DialogType;
+  readonly message: string;
+  readonly defaultPrompt: string;
+  readonly initiator: DialogInitiator;
+};
+
+type EvalCompletion =
+  | { readonly _tag: "Resolved"; readonly result: EvalResult }
+  | { readonly _tag: "Rejected"; readonly error: ControllerError };
+
+type EvalOperation =
+  | {
+      readonly _tag: "Running";
+      readonly operationId: string;
+      readonly page: Page;
+      readonly completion: Promise<EvalCompletion>;
+    }
+  | {
+      readonly _tag: "DialogObserved";
+      readonly operationId: string;
+      readonly page: Page;
+      readonly dialogId: string;
+      readonly completion: Promise<EvalCompletion>;
+    }
+  | {
+      readonly _tag: "Pending";
+      readonly operationId: string;
+      readonly page: Page;
+      readonly dialogId: string;
+      readonly completion: Promise<EvalCompletion>;
+    }
+  | {
+      readonly _tag: "Settled";
+      readonly operationId: string;
+      readonly page: Page;
+      readonly dialogId: string;
+      readonly result: EvalResult;
+    }
+  | {
+      readonly _tag: "Failed";
+      readonly operationId: string;
+      readonly page: Page;
+      readonly dialogId: string;
+      readonly error: ControllerError;
+    }
+  | {
+      readonly _tag: "TimedOut";
+      readonly operationId: string;
+      readonly page: Page;
+      readonly dialogId: string;
+      readonly operation: string;
+      readonly phase: "dialog-handler";
+      readonly budget: number;
+      readonly sideEffects: "possible";
+      readonly sessionId: string;
+      readonly pageInfo: DialogPage;
+    };
+
+type EvalDeadline =
+  | { readonly _tag: "NoDeadline" }
+  | { readonly _tag: "Deadline"; readonly at: number; readonly budget: number };
+
+type EvalDeadlineTimer =
+  | { readonly _tag: "NoTimer" }
+  | { readonly _tag: "Timer"; readonly handle: NodeJS.Timeout };
+
+type EvalTimers = {
+  readonly grace: NodeJS.Timeout;
+  readonly deadline: EvalDeadlineTimer;
+};
 
 type SessionRuntimeState = {
   readonly observedPages: WeakSet<Page>;
+  readonly observedContexts: WeakSet<BrowserContext>;
   readonly cdpObservedPages: WeakSet<Page>;
   readonly pageObservers: WeakMap<Page, Promise<void>>;
   readonly pageNavigationGenerations: WeakMap<Page, number>;
@@ -289,19 +371,25 @@ type SessionRuntimeState = {
   readonly recentConsoleFrames: WeakMap<Page, RecentConsoleFrame>;
   readonly cdpRequests: WeakMap<Page, Map<string, CdpRequestIdentity>>;
   environment: SessionEnvironmentSettings;
+  readonly pendingDialogs: Map<string, DialogRecord>;
+  readonly pendingDialogIdsByPage: Map<string, Array<string>>;
+  readonly evalOperations: Map<string, EvalOperation>;
+  readonly evalPromises: Map<string, Promise<EvalCompletion>>;
+  readonly evalCompletionResolvers: Map<string, (completion: EvalCompletion) => void>;
+  readonly evalPendingResolvers: Map<string, (dialogId: string) => void>;
+  readonly evalByPage: WeakMap<Page, string>;
+  readonly evalDeadlines: Map<string, EvalDeadline>;
+  readonly evalTimers: Map<string, EvalTimers>;
   activePage?: Page;
+  activeContext?: BrowserContext;
   readonly heldModifiers: Set<string>;
   activeFrame?: Frame;
   activeFrameSelector?: string;
   nextRefNumber: number;
   nextPageId: number;
   nextFrameId: number;
-  pendingDialog?: Dialog;
-  dialogInfo?: {
-    readonly type: string;
-    readonly message: string;
-    readonly defaultPrompt: string;
-  };
+  nextDialogId: number;
+  nextOperationId: number;
   traceActive: boolean;
   profilerSession?: CDPSession;
   harActive: boolean;
@@ -359,12 +447,14 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
   if (existing) return existing;
   const created: SessionRuntimeState = {
     observedPages: new WeakSet<Page>(),
+    observedContexts: new WeakSet<BrowserContext>(),
     cdpObservedPages: new WeakSet<Page>(),
     pageObservers: new WeakMap<Page, Promise<void>>(),
     pageNavigationGenerations: new WeakMap<Page, number>(),
     environmentPages: new WeakSet<Page>(),
     environmentPageSessions: new WeakMap<Page, CDPSession>(),
     environmentSessions: new Set<CDPSession>(),
+    pageIds: new WeakMap<Page, string>(),
     observerSessions: new Set<CDPSession>(),
     pendingConsoleKeys: new Set<string>(),
     pendingErrorMessages: new Set<string>(),
@@ -372,16 +462,26 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     pageErrors: [],
     requestIds: new WeakMap<Request, string>(),
     requests: new Map<string, NetworkRequestEntry>(),
-    pageIds: new WeakMap<Page, string>(),
     frameIds: new WeakMap<Frame, string>(),
     cdpFrameUrls: new WeakMap<Page, Map<string, string>>(),
     executionContexts: new WeakMap<Page, Map<number, CdpFrameIdentity>>(),
     recentConsoleFrames: new WeakMap<Page, RecentConsoleFrame>(),
     cdpRequests: new WeakMap<Page, Map<string, CdpRequestIdentity>>(),
     environment: initialSessionEnvironment(),
+    pendingDialogs: new Map<string, DialogRecord>(),
+    pendingDialogIdsByPage: new Map<string, Array<string>>(),
+    evalOperations: new Map<string, EvalOperation>(),
+    evalPromises: new Map<string, Promise<EvalCompletion>>(),
+    evalCompletionResolvers: new Map<string, (completion: EvalCompletion) => void>(),
+    evalPendingResolvers: new Map<string, (dialogId: string) => void>(),
+    evalByPage: new WeakMap<Page, string>(),
+    evalDeadlines: new Map<string, EvalDeadline>(),
+    evalTimers: new Map<string, EvalTimers>(),
     nextRefNumber: 1,
-    heldModifiers: new Set<string>(),
     nextPageId: 1,
+    nextDialogId: 1,
+    nextOperationId: 1,
+    heldModifiers: new Set<string>(),
     nextFrameId: 1,
     traceActive: false,
     harActive: false,
@@ -603,6 +703,394 @@ function cdpFrameOverrides(
   };
 }
 
+type DialogTarget = {
+  readonly dialogId?: string;
+  readonly pageId?: string;
+};
+
+const DIALOG_HANDLER_GRACE_MS = 3_000;
+
+function pageIdFor(state: SessionRuntimeState, page: Page): string {
+  const existing = state.pageIds.get(page);
+  if (existing !== undefined) return existing;
+  const id = `page-${state.nextPageId++}`;
+  state.pageIds.set(page, id);
+  return id;
+}
+
+function pageUrlFor(page: Page): string {
+  try {
+    return page.url();
+  } catch {
+    return "closed";
+  }
+}
+function dialogTypeFor(dialog: Dialog): DialogType {
+  const value = dialog.type();
+  if (
+    value === "alert"
+    || value === "beforeunload"
+    || value === "confirm"
+    || value === "prompt"
+  ) {
+    return value;
+  }
+  return "unknown";
+}
+
+
+function dialogPageFor(
+  state: SessionRuntimeState,
+  context: BrowserContext,
+  page: Page,
+): DialogPage {
+  return {
+    pageId: pageIdFor(state, page),
+    pageIndex: context.pages().indexOf(page),
+    pageUrl: pageUrlFor(page),
+  };
+}
+
+function evalOperationForPage(
+  state: SessionRuntimeState,
+  page: Page,
+): EvalOperation | undefined {
+  const operationId = state.evalByPage.get(page);
+  return operationId === undefined ? undefined : state.evalOperations.get(operationId);
+}
+
+function clearEvalLifecycle(state: SessionRuntimeState, operationId: string): void {
+  const timers = state.evalTimers.get(operationId);
+  if (timers !== undefined) {
+    clearTimeout(timers.grace);
+    if (timers.deadline._tag === "Timer") clearTimeout(timers.deadline.handle);
+    state.evalTimers.delete(operationId);
+  }
+  state.evalDeadlines.delete(operationId);
+}
+
+function operationErrorText(error: ControllerError): string {
+  return JSON.stringify(error) ?? error._tag;
+}
+
+function dialogOperationFor(
+  state: SessionRuntimeState,
+  initiator: DialogInitiator,
+): DialogOperation {
+  switch (initiator._tag) {
+    case "NoEval":
+      return { _tag: "NoOperation" };
+    case "Eval": {
+      const operation = state.evalOperations.get(initiator.operationId);
+      if (operation === undefined) {
+        return {
+          _tag: "FailedOperation",
+          operationId: initiator.operationId,
+          error: "dialog evaluation operation is no longer available",
+        };
+      }
+      switch (operation._tag) {
+        case "Running":
+        case "DialogObserved":
+        case "Pending":
+          return { _tag: "PendingOperation", operationId: operation.operationId };
+        case "Settled":
+          return {
+            _tag: "SettledOperation",
+            operationId: operation.operationId,
+            result: operation.result,
+          };
+        case "Failed":
+          return {
+            _tag: "FailedOperation",
+            operationId: operation.operationId,
+            error: operationErrorText(operation.error),
+          };
+        case "TimedOut":
+          return {
+            _tag: "TimedOutOperation",
+            operationId: operation.operationId,
+            operation: operation.operation,
+            phase: operation.phase,
+            budget: operation.budget,
+            sideEffects: operation.sideEffects,
+            sessionId: operation.sessionId,
+            dialogId: operation.dialogId,
+            page: operation.pageInfo,
+          };
+        default:
+          return exhaustive(operation);
+      }
+    }
+    default:
+      return exhaustive(initiator);
+  }
+}
+
+function settleEvalOperation(
+  state: SessionRuntimeState,
+  operationId: string,
+  completion: EvalCompletion,
+): void {
+  const operation = state.evalOperations.get(operationId);
+  if (operation === undefined) return;
+
+  switch (operation._tag) {
+    case "Running":
+      state.evalOperations.delete(operationId);
+      state.evalPromises.delete(operationId);
+      state.evalByPage.delete(operation.page);
+      clearEvalLifecycle(state, operationId);
+      break;
+    case "DialogObserved":
+    case "Pending":
+      state.evalByPage.delete(operation.page);
+      clearEvalLifecycle(state, operationId);
+      if (completion._tag === "Resolved") {
+        state.evalOperations.set(operationId, {
+          _tag: "Settled",
+          operationId,
+          page: operation.page,
+          dialogId: operation.dialogId,
+          result: completion.result,
+        });
+      } else {
+        state.evalOperations.set(operationId, {
+          _tag: "Failed",
+          operationId,
+          page: operation.page,
+          dialogId: operation.dialogId,
+          error: completion.error,
+        });
+      }
+      break;
+    case "Settled":
+    case "Failed":
+    case "TimedOut":
+      return;
+    default:
+      return exhaustive(operation);
+  }
+  state.evalPendingResolvers.delete(operationId);
+  const resolver = state.evalCompletionResolvers.get(operationId);
+  if (resolver !== undefined) {
+    state.evalCompletionResolvers.delete(operationId);
+    resolver(completion);
+  }
+}
+
+function markEvalTimeout(sessionId: string, state: SessionRuntimeState, operationId: string): void {
+  const operation = state.evalOperations.get(operationId);
+  if (
+    operation === undefined
+    || (operation._tag !== "DialogObserved" && operation._tag !== "Pending")
+  ) {
+    return;
+  }
+  const deadline = state.evalDeadlines.get(operationId);
+  const budget = deadline?._tag === "Deadline" ? deadline.budget : 0;
+  const pageId = pageIdFor(state, operation.page);
+  const pageInfo: DialogPage = state.activeContext === undefined
+    ? { pageId, pageIndex: -1, pageUrl: pageUrlFor(operation.page) }
+    : dialogPageFor(state, state.activeContext, operation.page);
+  const timeoutOperation =
+    `dialog/eval phase=dialog-handler budget=${budget}ms session=${sessionId} ` +
+    `operation=${operationId} page=${pageInfo.pageId} dialog=${operation.dialogId} ` +
+    "result may include partial side effects";
+  const error: ControllerError = { _tag: "Timeout", operation: timeoutOperation };
+
+  state.evalOperations.set(operationId, {
+    _tag: "TimedOut",
+    operationId,
+    page: operation.page,
+    dialogId: operation.dialogId,
+    operation: timeoutOperation,
+    phase: "dialog-handler",
+    budget,
+    sideEffects: "possible",
+    sessionId,
+    pageInfo,
+  });
+  state.evalByPage.delete(operation.page);
+  clearEvalLifecycle(state, operationId);
+  // The modal itself keeps the page evaluation blocked, but the operation is
+  // now terminal and no longer needs a state-held promise reference. An
+  // explicit dialog handler may still release the browser-side evaluation.
+  state.evalPromises.delete(operationId);
+
+  const pendingResolver = state.evalPendingResolvers.get(operationId);
+  if (pendingResolver !== undefined) {
+    state.evalPendingResolvers.delete(operationId);
+    pendingResolver(operation.dialogId);
+  }
+  const completionResolver = state.evalCompletionResolvers.get(operationId);
+  if (completionResolver !== undefined) {
+    state.evalCompletionResolvers.delete(operationId);
+    completionResolver({ _tag: "Rejected", error });
+  }
+
+}
+
+function scheduleDialogTimers(
+  sessionId: string,
+  state: SessionRuntimeState,
+  operationId: string,
+  dialogId: string,
+): void {
+  if (state.evalTimers.has(operationId)) return;
+  const storedDeadline = state.evalDeadlines.get(operationId);
+  const deadline: EvalDeadline = storedDeadline ?? { _tag: "NoDeadline" };
+  const graceDelay = deadline._tag === "Deadline"
+    ? Math.min(
+      DIALOG_HANDLER_GRACE_MS,
+      Math.max(1, deadline.at - Date.now() - CDP_DEADLINE_GUARD_MS),
+    )
+    : DIALOG_HANDLER_GRACE_MS;
+  const grace = setTimeout(() => {
+    const operation = state.evalOperations.get(operationId);
+    if (operation?._tag !== "DialogObserved") return;
+    state.evalOperations.set(operationId, {
+      _tag: "Pending",
+      operationId,
+      page: operation.page,
+      dialogId: operation.dialogId,
+      completion: operation.completion,
+    });
+    const resolver = state.evalPendingResolvers.get(operationId);
+    if (resolver !== undefined) {
+      state.evalPendingResolvers.delete(operationId);
+      resolver(dialogId);
+    }
+  }, graceDelay);
+
+  const deadlineTimer: EvalDeadlineTimer = deadline._tag === "Deadline"
+    ? {
+        _tag: "Timer",
+        handle: setTimeout(
+          () => markEvalTimeout(sessionId, state, operationId),
+          Math.max(1, deadline.at - Date.now()),
+        ),
+      }
+    : { _tag: "NoTimer" };
+  state.evalTimers.set(operationId, { grace, deadline: deadlineTimer });
+}
+
+function registerDialog(
+  sessionId: string,
+  page: Page,
+  dialog: Dialog,
+): DialogRecord {
+  const state = getSessionRuntimeState(sessionId);
+  const pageId = pageIdFor(state, page);
+  const activeOperation = evalOperationForPage(state, page);
+  const dialogId = `dialog-${state.nextDialogId++}`;
+  let initiator: DialogInitiator = { _tag: "NoEval" };
+  if (activeOperation?._tag === "Running") {
+    initiator = { _tag: "Eval", operationId: activeOperation.operationId };
+    state.evalOperations.set(activeOperation.operationId, {
+      _tag: "DialogObserved",
+      operationId: activeOperation.operationId,
+      page,
+      dialogId,
+      completion: activeOperation.completion,
+    });
+  }
+  const record: DialogRecord = {
+    dialogId,
+    pageId,
+    page,
+    dialog,
+    type: dialogTypeFor(dialog),
+    message: dialog.message(),
+    defaultPrompt: dialog.defaultValue(),
+    initiator,
+  };
+  state.pendingDialogs.set(record.dialogId, record);
+  const existing = state.pendingDialogIdsByPage.get(pageId) ?? [];
+  state.pendingDialogIdsByPage.set(pageId, [...existing, record.dialogId]);
+  if (initiator._tag === "Eval") {
+    scheduleDialogTimers(sessionId, state, initiator.operationId, record.dialogId);
+  }
+  return record;
+}
+
+function removeDialog(state: SessionRuntimeState, record: DialogRecord): void {
+  state.pendingDialogs.delete(record.dialogId);
+  const remaining = (state.pendingDialogIdsByPage.get(record.pageId) ?? [])
+    .filter((id) => id !== record.dialogId);
+  if (remaining.length === 0) state.pendingDialogIdsByPage.delete(record.pageId);
+  else state.pendingDialogIdsByPage.set(record.pageId, remaining);
+}
+
+function findDialog(
+  state: SessionRuntimeState,
+  page: Page,
+  target: DialogTarget,
+): DialogRecord | undefined {
+  const pageId = pageIdFor(state, page);
+  if (target.pageId !== undefined && target.pageId !== pageId) return undefined;
+  if (target.dialogId !== undefined) {
+    const dialog = state.pendingDialogs.get(target.dialogId);
+    return dialog?.page === page ? dialog : undefined;
+  }
+  const ids = state.pendingDialogIdsByPage.get(pageId) ?? [];
+  for (const id of ids) {
+    const dialog = state.pendingDialogs.get(id);
+    if (dialog !== undefined) return dialog;
+  }
+  return undefined;
+}
+
+function dialogResultFor(
+  state: SessionRuntimeState,
+  context: BrowserContext,
+  record: DialogRecord,
+  stateName: "open" | "pending",
+): DialogResult {
+  return {
+    _tag: "DialogResult",
+    state: stateName,
+    hasDialog: true,
+    dialogId: record.dialogId,
+    page: dialogPageFor(state, context, record.page),
+    type: record.type,
+    message: record.message,
+    defaultPrompt: record.defaultPrompt,
+    operation: dialogOperationFor(state, record.initiator),
+  };
+}
+
+function operationDialogResult(
+  state: SessionRuntimeState,
+  operationId: string,
+): Result<CommandResultData, ControllerError> {
+  const operation = state.evalOperations.get(operationId);
+  if (operation === undefined) {
+    return err({ _tag: "ElementNotFound", selector: `operation:${operationId}` });
+  }
+  return ok({
+    _tag: "DialogResult",
+    state: "operation",
+    hasDialog: false,
+    operationId,
+    operation: dialogOperationFor(state, { _tag: "Eval", operationId }),
+  });
+}
+
+function operationCompletion(
+  promise: Promise<EvalCompletion>,
+  timeout: number | undefined,
+): Promise<EvalCompletion | undefined> {
+  if (timeout === undefined) return promise;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), timeout);
+    void promise.then((completion) => {
+      clearTimeout(timer);
+      resolve(completion);
+    });
+  });
+}
+
 function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState {
   const state = getSessionRuntimeState(sessionId);
   pageIdentity(state, page);
@@ -635,12 +1123,7 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
     });
   });
   page.on("dialog", (dialog) => {
-    state.pendingDialog = dialog;
-    state.dialogInfo = {
-      type: dialog.type(),
-      message: dialog.message(),
-      defaultPrompt: dialog.defaultValue(),
-    };
+    registerDialog(sessionId, page, dialog);
   });
   page.on("request", (request) => {
     const requestId = String(state.nextRequestId++);
@@ -694,6 +1177,120 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
       if (latest) state.requests.set(requestId, { ...latest, responseBody });
     }).catch(() => {});
   });
+  return state;
+}
+
+async function executeEvalWithDialog(
+  sessionId: string,
+  context: BrowserContext,
+  page: Page,
+  scope: Page | Frame,
+  code: string,
+  options?: CommandExecutionOptions,
+): Promise<Result<CommandResultData, ControllerError>> {
+  const state = getSessionRuntimeState(sessionId);
+  const activeOperation = evalOperationForPage(state, page);
+  switch (activeOperation?._tag) {
+    case "DialogObserved":
+    case "Pending":
+      return err({
+        _tag: "DialogPending",
+        operationId: activeOperation.operationId,
+        dialogId: activeOperation.dialogId,
+        page: dialogPageFor(state, context, activeOperation.page),
+      });
+    case "Running":
+      return err({
+        _tag: "CommandFailed",
+        message: "The active page already has an unresolved evaluation",
+      });
+    case "Settled":
+    case "Failed":
+    case "TimedOut":
+    case undefined:
+      break;
+    default:
+      return exhaustive(activeOperation);
+  }
+
+  const operationId = `operation-${state.nextOperationId++}`;
+  const completion = new Promise<EvalCompletion>((resolve) => {
+    state.evalCompletionResolvers.set(operationId, resolve);
+  });
+  state.evalPromises.set(operationId, completion);
+  state.evalOperations.set(operationId, {
+    _tag: "Running",
+    operationId,
+    page,
+    completion,
+  });
+  state.evalByPage.set(page, operationId);
+  state.evalDeadlines.set(
+    operationId,
+    options === undefined
+      ? { _tag: "NoDeadline" }
+      : { _tag: "Deadline", at: options.deadline, budget: options.budget },
+  );
+  const pendingDialog = new Promise<string>((resolve) => {
+    state.evalPendingResolvers.set(operationId, resolve);
+  });
+
+  void Promise.resolve()
+    .then(() => scope.evaluate(code))
+    .then(
+      (raw) => {
+        const result: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
+        settleEvalOperation(state, operationId, { _tag: "Resolved", result });
+      },
+      (error: unknown) => {
+        settleEvalOperation(state, operationId, {
+          _tag: "Rejected",
+          error: mapPlaywrightError(error, "eval", options),
+        });
+      },
+    );
+
+  const decision = await Promise.race([
+    completion.then((value) => ({ _tag: "Completion", value }) as const),
+    pendingDialog.then((dialogId) => ({ _tag: "Pending", dialogId }) as const),
+  ]);
+  switch (decision._tag) {
+    case "Completion":
+      return decision.value._tag === "Resolved"
+        ? ok(decision.value.result)
+        : err(decision.value.error);
+    case "Pending": {
+      const operation = state.evalOperations.get(operationId);
+      if (operation?._tag === "TimedOut") {
+        return err({ _tag: "Timeout", operation: operation.operation });
+      }
+      const dialog = state.pendingDialogs.get(decision.dialogId);
+      if (dialog === undefined) {
+        return err({
+          _tag: "CommandFailed",
+          message: `Dialog ${decision.dialogId} disappeared before pending response`,
+        });
+      }
+      return ok(dialogResultFor(state, context, dialog, "pending"));
+    }
+    default:
+      return exhaustive(decision);
+  }
+}
+
+function observeContextRuntime(
+  sessionId: string,
+  context: BrowserContext,
+): SessionRuntimeState {
+  const state = getSessionRuntimeState(sessionId);
+  state.activeContext = context;
+  if (!state.observedContexts.has(context)) {
+    state.observedContexts.add(context);
+    context.on("page", (page) => {
+      observePageRuntime(sessionId, page);
+    });
+  }
+  for (const page of context.pages()) observePageRuntime(sessionId, page);
   return state;
 }
 
@@ -873,6 +1470,18 @@ export function clearSessionRuntimeState(sessionId: string): void {
   const state = sessionRuntimeState.get(sessionId);
   if (state) {
     for (const cdp of state.observerSessions) void cdp.detach().catch(() => {});
+    for (const timers of state.evalTimers.values()) {
+      clearTimeout(timers.grace);
+      if (timers.deadline._tag === "Timer") clearTimeout(timers.deadline.handle);
+    }
+    state.evalTimers.clear();
+    state.evalDeadlines.clear();
+    state.evalPendingResolvers.clear();
+    state.evalCompletionResolvers.clear();
+    state.evalPromises.clear();
+    state.evalOperations.clear();
+    state.pendingDialogs.clear();
+    state.pendingDialogIdsByPage.clear();
     state.heldModifiers.clear();
     for (const cdp of state.environmentSessions) void cdp.detach().catch(() => {});
   }
@@ -1822,9 +2431,9 @@ export async function executeCommand(
   if (command.action === "device" && normalizeDeviceDescriptor(command.device) === undefined) {
     return err(unknownDeviceError(command.device));
   }
+  const runtimeState = observeContextRuntime(sessionId, context);
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
-  const runtimeState = observePageRuntime(sessionId, page);
   runtimeState.activePage = page;
   await ensureCdpRuntimeObserver(sessionId, context, page, options);
   const scope = runtimeState.activeFrame ?? page;
@@ -2072,11 +2681,8 @@ export async function executeCommand(
         return ok(result);
       }
 
-      case "eval": {
-        const raw = await scope.evaluate(command.code);
-        const result: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
-        return ok(result);
-      }
+      case "eval":
+        return executeEvalWithDialog(sessionId, context, page, scope, command.code, options);
 
       case "press":
         await page.keyboard.press(command.key);
@@ -2360,11 +2966,8 @@ export async function executeCommand(
 
       // ─── evaluate alias ───
 
-      case "evaluate": {
-        const raw = await scope.evaluate(command.script);
-        const r: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
-        return ok(r);
-      }
+      case "evaluate":
+        return executeEvalWithDialog(sessionId, context, page, scope, command.script, options);
 
       // ─── batch ───
 
@@ -3129,35 +3732,61 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
 
       case "dialog": {
-        if (command.response === "status") {
-          const info = runtimeState.dialogInfo;
-          const r: DialogResult = info === undefined
-            ? { _tag: "DialogResult", hasDialog: false }
-            : {
-                _tag: "DialogResult",
-                hasDialog: true,
-                type: info.type,
-                message: info.message,
-                ...(info.defaultPrompt ? { defaultPrompt: info.defaultPrompt } : {}),
-              };
-          return ok(r);
+        if (command.response === "result") {
+          return operationDialogResult(runtimeState, command.operationId);
         }
-        // A page cannot synchronously open a JavaScript dialog and return from
-        // evaluate: the page is blocked until the dialog is handled.  CLI
-        // callers therefore commonly schedule the dialog (for example with
-        // setTimeout) immediately before issuing `dialog accept`.  Waiting for
-        // the next event here closes that unavoidable race instead of returning
-        // "No dialog" and leaving a modal behind to block every later command.
-        const dialog = runtimeState.pendingDialog ?? await page.waitForEvent("dialog", {
-          timeout: operationTimeout(options) ?? 5_000,
-        });
+
+        const target: DialogTarget = {
+          ...(command.dialogId === undefined ? {} : { dialogId: command.dialogId }),
+          ...(command.pageId === undefined ? {} : { pageId: command.pageId }),
+        };
+        if (command.response === "status") {
+          const dialog = findDialog(runtimeState, page, target);
+          if (dialog === undefined) {
+            return err({ _tag: "ElementNotFound", selector: "dialog" });
+          }
+          return ok(dialogResultFor(runtimeState, context, dialog, "open"));
+        }
+
+        let dialog = findDialog(runtimeState, page, target);
+        if (dialog === undefined) {
+          try {
+            const observed = await page.waitForEvent("dialog", {
+              timeout: operationTimeout(options) ?? 5_000,
+            });
+            dialog = findDialog(runtimeState, page, target)
+              ?? registerDialog(sessionId, page, observed);
+          } catch {
+            return err({ _tag: "ElementNotFound", selector: "dialog" });
+          }
+        }
         const accepted = command.response === "accept";
-        if (accepted) await dialog.accept(command.promptText);
-        else await dialog.dismiss();
-        runtimeState.pendingDialog = undefined;
-        runtimeState.dialogInfo = undefined;
-        const r: DialogResult = { _tag: "DialogResult", handled: true, accepted };
-        return ok(r);
+        if (accepted) await dialog.dialog.accept(command.promptText);
+        else await dialog.dialog.dismiss();
+        removeDialog(runtimeState, dialog);
+
+        let operation = dialogOperationFor(runtimeState, dialog.initiator);
+        if (dialog.initiator._tag === "Eval") {
+          const completion = runtimeState.evalPromises.get(dialog.initiator.operationId);
+          if (completion !== undefined) {
+            const settled = await operationCompletion(
+              completion,
+              operationTimeout(options) ?? DIALOG_HANDLER_GRACE_MS,
+            );
+            if (settled !== undefined) operation = dialogOperationFor(runtimeState, dialog.initiator);
+          }
+        }
+        const result: DialogResult = {
+          _tag: "DialogResult",
+          state: "handled",
+          hasDialog: false,
+          handled: true,
+          accepted,
+          dialogId: dialog.dialogId,
+          page: dialogPageFor(runtimeState, context, dialog.page),
+          operation,
+        };
+        return ok(result);
       }
 
       case "frame": {

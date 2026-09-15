@@ -272,15 +272,73 @@ export type ClipboardResult = {
   readonly pasted?: true;
 };
 
-export type DialogResult = {
-  readonly _tag: "DialogResult";
-  readonly hasDialog?: boolean;
-  readonly type?: string;
-  readonly message?: string;
-  readonly defaultPrompt?: string;
-  readonly handled?: true;
-  readonly accepted?: boolean;
+export type DialogType = "alert" | "beforeunload" | "confirm" | "prompt" | "unknown";
+
+export type DialogPage = {
+  readonly pageId: string;
+  readonly pageIndex: number;
+  readonly pageUrl: string;
 };
+
+export type DialogOperation =
+  | { readonly _tag: "NoOperation" }
+  | { readonly _tag: "PendingOperation"; readonly operationId: string }
+  | {
+      readonly _tag: "SettledOperation";
+      readonly operationId: string;
+      readonly result: EvalResult;
+    }
+  | {
+      readonly _tag: "FailedOperation";
+      readonly operationId: string;
+      readonly error: string;
+    }
+  | {
+      readonly _tag: "TimedOutOperation";
+      readonly operationId: string;
+      readonly operation: string;
+      readonly phase: "dialog-handler";
+      readonly budget: number;
+      readonly sideEffects: "possible";
+      readonly sessionId: string;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+    };
+
+export type DialogResult =
+  | {
+      readonly _tag: "DialogResult";
+      readonly state: "idle";
+      readonly hasDialog: false;
+    }
+  | {
+      readonly _tag: "DialogResult";
+      readonly state: "open" | "pending";
+      readonly hasDialog: true;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+      readonly type: DialogType;
+      readonly message: string;
+      readonly defaultPrompt: string;
+      readonly operation: DialogOperation;
+    }
+  | {
+      readonly _tag: "DialogResult";
+      readonly state: "handled";
+      readonly hasDialog: false;
+      readonly handled: true;
+      readonly accepted: boolean;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+      readonly operation: DialogOperation;
+    }
+  | {
+      readonly _tag: "DialogResult";
+      readonly state: "operation";
+      readonly hasDialog: false;
+      readonly operationId: string;
+      readonly operation: DialogOperation;
+    };
 
 export type FrameResult = {
   readonly _tag: "FrameResult";
@@ -527,6 +585,12 @@ export type ControllerError =
   | { readonly _tag: "StaleReference"; readonly ref: string; readonly reason: RefStaleReason }
   | { readonly _tag: "Timeout"; readonly operation: string }
   | { readonly _tag: "CommandFailed"; readonly message: string }
+  | {
+      readonly _tag: "DialogPending";
+      readonly operationId: string;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+    }
   | { readonly _tag: "ValidationFailed"; readonly message: string }
   | {
       readonly _tag: "CapacityExceeded";
@@ -538,13 +602,36 @@ export type ControllerError =
       readonly retryCondition: string;
     };
 
+// ─── Command failure wire shape ───
 export type CommandFailureCause =
   | { readonly _tag: "container_creation" }
   | { readonly _tag: "cdp" }
   | { readonly _tag: "cleanup" }
-  | { readonly _tag: "transport" };
+  | { readonly _tag: "transport" }
+  | {
+      readonly _tag: "dialog_pending";
+      readonly operationId: string;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+    };
 
 export type CommandFailureCauseTag = CommandFailureCause["_tag"];
+
+type GenericCommandFailedWireFailure = {
+  readonly errorType: "command_failed";
+  readonly cause: Exclude<CommandFailureCauseTag, "dialog_pending">;
+  readonly operationId?: never;
+  readonly dialogId?: never;
+  readonly page?: never;
+};
+
+type DialogPendingWireFailure = {
+  readonly errorType: "command_failed";
+  readonly cause: "dialog_pending";
+  readonly operationId: string;
+  readonly dialogId: string;
+  readonly page: DialogPage;
+};
 
 export type WireErrorType = "target_not_found" | "invalid_value" | "command_failed" | "capacity_exceeded" | "timeout";
 
@@ -561,10 +648,8 @@ export type WireFailure =
       readonly errorType: "timeout";
       readonly cause?: never;
     }
-  | {
-      readonly errorType: "command_failed";
-      readonly cause: CommandFailureCauseTag;
-    }
+  | GenericCommandFailedWireFailure
+  | DialogPendingWireFailure
   | {
       readonly errorType: "capacity_exceeded";
       readonly cause?: never;
@@ -593,7 +678,6 @@ export type SessionState =
   | { readonly _tag: "Expired"; readonly reason: string };
 
 // ─── ErrorCode ───
-
 export const ErrorCode: Record<ControllerError["_tag"], number> = {
   SessionNotFound: 77,
   SessionExpired: 83,
@@ -607,9 +691,11 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   StaleReference: 67,
   Timeout: 75,
   CommandFailed: 1,
+  DialogPending: 1,
   ValidationFailed: 2,
   CapacityExceeded: 84,
 };
+
 
 // ─── BrowserCommand ───
 
@@ -798,7 +884,14 @@ export type BrowserCommand =
       readonly sameSite?: "Strict" | "Lax" | "None";
       readonly expires?: number;
     }> }
-  | { readonly action: "dialog"; readonly response: "accept" | "dismiss" | "status"; readonly promptText?: string }
+  | {
+      readonly action: "dialog";
+      readonly response: "accept" | "dismiss" | "status";
+      readonly promptText?: string;
+      readonly dialogId?: string;
+      readonly pageId?: string;
+    }
+  | { readonly action: "dialog"; readonly response: "result"; readonly operationId: string }
   | { readonly action: "frame"; readonly selector: string }
   | { readonly action: "mainframe" }
   | { readonly action: "console"; readonly clear?: boolean }
@@ -910,6 +1003,68 @@ const browserStorageStateSchema = type({
   origins: stateOriginSchema.array(),
   tabs: stateTabSchema.array(),
 });
+const dialogPageSchema = type({
+  pageId: "string",
+  pageIndex: "number",
+  pageUrl: "string",
+});
+const dialogOperationSchema = type({ _tag: "'NoOperation'" })
+  .or({ _tag: "'PendingOperation'", operationId: "string" })
+  .or({
+    _tag: "'SettledOperation'",
+    operationId: "string",
+    result: { _tag: "'EvalResult'", result: "string" },
+  })
+  .or({
+    _tag: "'FailedOperation'",
+    operationId: "string",
+    error: "string",
+  })
+  .or({
+    _tag: "'TimedOutOperation'",
+    operationId: "string",
+    operation: "string",
+    phase: "'dialog-handler'",
+    budget: "number",
+    sideEffects: "'possible'",
+    sessionId: "string",
+    dialogId: "string",
+    page: dialogPageSchema,
+  });
+
+export const dialogResultSchema = type({
+  _tag: "'DialogResult'",
+  state: "'idle'",
+  hasDialog: "false",
+})
+  .or({
+    _tag: "'DialogResult'",
+    state: "'open' | 'pending'",
+    hasDialog: "true",
+    dialogId: "string",
+    page: dialogPageSchema,
+    type: "'alert' | 'beforeunload' | 'confirm' | 'prompt' | 'unknown'",
+    message: "string",
+    defaultPrompt: "string",
+    operation: dialogOperationSchema,
+  })
+  .or({
+    _tag: "'DialogResult'",
+    state: "'handled'",
+    hasDialog: "false",
+    handled: "true",
+    accepted: "boolean",
+    dialogId: "string",
+    page: dialogPageSchema,
+    operation: dialogOperationSchema,
+  })
+  .or({
+    _tag: "'DialogResult'",
+    state: "'operation'",
+    hasDialog: "false",
+    operationId: "string",
+    operation: dialogOperationSchema,
+  });
 
 const browserCommandSchema = type({
   action: "'navigate'",
@@ -1077,7 +1232,14 @@ const browserCommandSchema = type({
     "sameSite?": "'Strict' | 'Lax' | 'None'",
     "expires?": "number",
   }).array() })
-  .or({ action: "'dialog'", response: "'accept' | 'dismiss' | 'status'", "promptText?": "string" })
+  .or({
+    action: "'dialog'",
+    response: "'accept' | 'dismiss' | 'status'",
+    "promptText?": "string",
+    "dialogId?": "string",
+    "pageId?": "string",
+  })
+  .or({ action: "'dialog'", response: "'result'", operationId: "string" })
   .or({ action: "'frame'", selector: "string" })
   .or({ action: "'mainframe'" })
   .or({ action: "'console'", "clear?": "boolean" })

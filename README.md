@@ -514,6 +514,13 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 - `moat network route` 目前只接受 `--abort` 与 `--body <json>`；`--status`、`--delay`、`--headers` 等不支持选项会在安装 route 前返回 `unsupported_in_moat`。
 - `find first`、`find last`、`find nth` 只接受已登记的动作名；未知动作、缺少动作值和越界 occurrence 会在页面副作用前失败，`fill ""` 仍表示清空输入。`keydown`/`keyup` 是显式配对的低层操作；未释放 modifier 时，高层输入会在副作用前拒绝并返回当前 held modifiers。
 
+**JavaScript dialog 归属与结算（M23）**：
+
+- `dialog status`、`dialog accept`、`dialog dismiss` 始终作用于当前 active Page 的具体 modal，并返回 `pageId`、当前 tab index、`dialogId` 与 modal 类型/消息；后创建的 tab 不会覆盖先创建的 modal。
+- `eval` 触发 modal 后，Controller 最多等待 **3s handler grace**。grace 内显式处理会让原始 `eval` 调用直接返回脚本结果；无人处理时原调用在 grace 到期返回 `pending`，其中的 `operationId` 可交给 `dialog accept|dismiss`，再用 `dialog result <operationId>` 取回原始 `eval` 结果。
+- 不自动 accept/dismiss。`prompt` 的 `dialog accept "<text>"` 会把完全相同的文本传回页面。操作在服务端普通命令预算内仍未处理时，`dialog result <operationId>` 返回 `state: "operation"` 与 `_tag: "TimedOutOperation"`，并结构化给出 `phase`、`budget`、`sideEffects: "possible"`、`sessionId`、`operationId`、`dialogId` 和 Page 身份；随后仍可显式处理 modal，session 保持可用。
+- 当前 Page 已有未处理 modal 时，后续命令在页面副作用前返回 `errorType: "command_failed"`、`cause: "dialog_pending"`，并在结构化字段中携带原 operation 的 `operationId`、`dialogId` 和 Page 身份 `page`；处理者应按这些身份调用 `dialog accept|dismiss`。
+
 - `moat --json --help`、`-h`、`help`、`--version` 与 `-V` 都返回单个 JSON 值。错误对象的 `errorType` 是机器判别字段，`error` 只用于展示。
 
 机器错误分类使用结构化 `errorType`，而不是匹配 `error` 文案：
@@ -524,9 +531,19 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 | `missing_arguments` | 必需参数缺失 |
 | `invalid_value` | 参数值或形状非法 |
 | `target_not_found` | 引用的 session、tab、frame 或元素目标不存在 |
-| `command_failed` | 不属于上述类别的基础设施失败，并带结构化失败原因 |
+| `command_failed` | 不属于上述类别的基础设施失败或前置拒绝，并带结构化 `cause` |
 | `capacity_exceeded` | 会话准入配额已满，可在资源释放后重试 |
 | `timeout` | 调用超过服务端预算；命令预算耗尽不代表结果可回滚 |
+
+`command_failed` 的 `cause` 取值：
+
+| `cause` | 语义 |
+|---------|------|
+| `container_creation` | session 容器或 profile 创建失败 |
+| `cdp` | Controller 与浏览器 CDP 通道失败 |
+| `cleanup` | session 或资源清理失败 |
+| `transport` | CLI/Controller 网络传输失败 |
+| `dialog_pending` | 当前 Page 的 modal 尚未处理；同时提供 `operationId`、`dialogId`、`page` 供处理者定位 |
 
 Controller 对普通命令和清理使用默认 25s 服务端预算，`register` 使用 45s。等待命令可用显式 `--timeout <ms>` 覆盖预算，取值必须是整数 `1`–`120000`ms；省略时使用默认 25s。客户端 deadline 始终在服务端预算之外额外保留 5s，用于覆盖 WebSocket 建连、发送、接收和关闭的网络收尾，避免服务端刚耗尽预算时客户端先误报为 `command_failed`/transport。任一预算耗尽都返回 `errorType: "timeout"`，且不带 `cause`；调用方应把结果视为可能已经产生部分副作用，而不是自动重试。
 
@@ -736,11 +753,37 @@ active tab and leaves the original tab unchanged. Elements without an openable
 link are rejected before navigation.
 
 Network routing accepts only `--abort` and `--body <json>`. Unsupported options
+
 such as `--status`, `--delay`, and `--headers` are rejected before installation.
 
 `keydown` and `keyup` are explicit paired low-level operations. High-level
 `type`, `fill`, and `click` actions reject while a modifier is held; use `keyup`
 to release it. Key-state results show the currently held modifiers.
+## JavaScript dialogs
+
+Dialogs are owned by the real Page that opened them. `dialog status`,
+`dialog accept`, and `dialog dismiss` operate on the active Page and report
+`pageId`, tab index, `dialogId`, type, message, and prompt default. A modal in
+another tab remains independently visible until that Page is selected.
+
+When `eval` opens a dialog, the Controller waits up to a 3s handler grace.
+Explicit `accept`/`dismiss` during that grace lets the original eval command
+return its script result. If the grace expires first, the eval returns a
+pending `operationId`; resolve it with `dialog accept [text]` or
+`dialog dismiss`, then retrieve the original result with
+`dialog result <operationId>` if it was not included in the handler response.
+If the operation reaches its command deadline first, `dialog result` returns
+`state: "operation"` with a `TimedOutOperation` containing structured `phase`,
+`budget`, `sideEffects`, `sessionId`, `operationId`, `dialogId`, and Page
+identity fields. The modal remains explicitly handleable and the session stays
+usable. No dialog is accepted or dismissed automatically. Prompt text is
+passed to the page unchanged.
+
+If another command reaches a Page while that Page still has the eval-triggered
+modal, the command is rejected before page side effects with
+`errorType: "command_failed"` and `cause: "dialog_pending"`. The response
+includes the original `operationId`, `dialogId`, and `page` identity so the
+caller can resolve the correct modal.
 
 ## Fallback commands (exploration)
 

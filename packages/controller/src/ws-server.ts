@@ -183,6 +183,8 @@ function formatError(error: ControllerError): string {
       return `Timeout: ${error.operation}`;
     case "CommandFailed":
       return `Command failed: ${error.message}`;
+    case "DialogPending":
+      return `Dialog pending on ${error.page.pageId}: operation ${error.operationId}, dialog ${error.dialogId}; handle it with dialog accept or dismiss`;
     case "ValidationFailed":
       return `Validation failed: ${error.message}`;
     case "CapacityExceeded":
@@ -215,6 +217,14 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
     case "CdpDisconnected":
     case "CommandFailed":
       return { errorType: "command_failed", cause: stage === "cleanup" ? "cleanup" : "cdp" };
+    case "DialogPending":
+      return {
+        errorType: "command_failed",
+        cause: "dialog_pending",
+        operationId: error.operationId,
+        dialogId: error.dialogId,
+        page: error.page,
+      };
     case "CapacityExceeded":
       return {
         errorType: "capacity_exceeded",

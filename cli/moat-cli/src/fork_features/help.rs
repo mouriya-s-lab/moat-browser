@@ -29,6 +29,7 @@ Page artifacts and state:
 
 Browser and runtime state:
   tab | window | frame | dialog | clipboard
+  dialog accept|dismiss|status|result
   window new                   Open a new tab in the shared browser context
   device list                  List remote Chromium emulation descriptors
   set viewport|device|geo|offline|headers|credentials|media
@@ -121,8 +122,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "cookies" => "cookies <get|set|clear> ... (set uses either --url or --domain/--path, never both)",
         "tab" => "tab <new|list|switch|close> ...",
         "window" => "window new",
-        "frame" => "frame <selector|main>",
-        "dialog" => "dialog <accept|dismiss> [text]",
+        "dialog" => "dialog <accept|dismiss|status|result> [text|operation-id]",
         "trace" => "trace <start|stop> [output-path]",
         "profiler" => "profiler <start|stop> [output-path]",
         "console" => "console [--clear]",
@@ -178,6 +178,9 @@ pub fn command_help_text(command: &str) -> Option<String> {
             "Low-level key state is explicit and paired; high-level input rejects while a modifier remains held."
         },
         "device" => "List remote Chromium descriptors usable by `set device`.",
+        "dialog" => {
+            "Dialog status and handling are Page-scoped. An eval-triggered modal waits up to 3s for explicit accept/dismiss so a concurrent client receives the original result; within grace eval returns its script result, otherwise eval returns a pending operation handle. Complete it with `dialog accept|dismiss`, then inspect the settled value with `dialog result <operation-id>`. If the command deadline wins first, `dialog result <operation-id>` returns a structured `TimedOutOperation` with phase, budget, possible side effects, session, dialog, operation, and Page identity; the modal remains handleable and the session stays usable. A command sent to the same Page while its modal is pending is rejected before page side effects with `cause: \"dialog_pending\"` and the operation/dialog/Page identities."
+        },
         "status" => {
             "Show the local session/config view; this command does not probe remote Controller health."
         },

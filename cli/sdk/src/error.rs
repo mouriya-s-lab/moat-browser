@@ -42,8 +42,8 @@ impl SdkError {
             Self::ConnectionFailed(_) | Self::WebSocket(_) => {
                 Some(CommandFailureCause::Transport)
             }
-            Self::RegisterFailed { cause, .. } | Self::DeregisterFailed { cause, .. } => *cause,
-            Self::CommandFailed { cause, .. } => Some(*cause),
+            Self::RegisterFailed { cause, .. } | Self::DeregisterFailed { cause, .. } => cause.clone(),
+            Self::CommandFailed { cause, .. } => Some(cause.clone()),
             Self::NoSession | Self::Timeout { .. } | Self::MissingArguments { .. } => None,
             Self::SessionAlreadyActive { .. }
             | Self::SessionFileError(_)

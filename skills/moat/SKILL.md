@@ -162,6 +162,26 @@ modifier remains held, high-level `type`, `fill`, and `click` actions are
 rejected before input; release it with `keyup` (or use an explicit `press`
 combination). Key-state results show the currently held modifiers.
 
+## JavaScript dialogs
+
+Dialogs are owned by the real Page that opened them. `dialog status`,
+`dialog accept`, and `dialog dismiss` operate on the active Page and report
+`pageId`, tab index, `dialogId`, type, message, and prompt default. A modal in
+another tab remains independently visible until that Page is selected.
+
+When `eval` opens a dialog, the Controller waits up to a 3s handler grace.
+Explicit `accept`/`dismiss` during that grace lets the original eval command
+return its script result. If the grace expires first, the eval returns a
+pending `operationId` rather than an empty success; resolve it with
+`dialog accept [text]` or `dialog dismiss`, then retrieve the original result
+with `dialog result <operation-id>` if it was not included in the handler
+response. If the command deadline wins first, `dialog result <operation-id>`
+returns `state: "operation"` with `TimedOutOperation` fields for `phase`,
+`budget`, possible `sideEffects`, `sessionId`, `operationId`, `dialogId`, and
+Page identity. The modal remains explicitly handleable and the session stays
+usable. No dialog is accepted or dismissed automatically. Prompt text is
+passed to the page unchanged.
+
 `moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
 
 ## Remote Chromium environment
@@ -192,11 +212,13 @@ override. `set offline` accepts only `on`, `off`, `true`, or `false`,
 case-insensitively. Unknown values, unknown descriptor names, and missing
 arguments are rejected before changing browser state.
 
-For machine-readable failures, inspect `errorType` rather than matching
-`error`: `unsupported_in_moat`, `missing_arguments`, `invalid_value`,
-`target_not_found`, `capacity_exceeded`, and `timeout` are stable classes.
-`command_failed` is reserved for infrastructure failures and always carries a
-structured `cause`.
+For machine-readable failures, inspect `errorType` and, for
+`command_failed`, its structured `cause` rather than matching `error`:
+`unsupported_in_moat`, `missing_arguments`, `invalid_value`, `target_not_found`,
+`capacity_exceeded`, and `timeout` are stable classes. `command_failed` carries
+a required cause; `dialog_pending` means a command was rejected before page
+side effects because the active Page still has a modal, and includes the
+original `operationId`, `dialogId`, and `page` identity.
 
 When choosing a wait budget, agents should omit `--timeout` for the normal
 25s command budget. Use `--timeout <ms>` when the expected condition has a
