@@ -573,6 +573,14 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             );
             return;
         }
+        if matches!(action, Some("mousedown" | "mouseup")) {
+            let held = data
+                .get("heldMouseButtons")
+                .map(render_json_value)
+                .unwrap_or_else(|| "unknown".to_string());
+            println!("{} Mouse buttons held: {}", color::success_indicator(), held);
+            return;
+        }
 
         if data.get("_tag").and_then(|v| v.as_str()) == Some("BatchResult") {
             let entries = data
@@ -2475,7 +2483,12 @@ agent-browser mouse - Low-level mouse operations
 
 Usage: agent-browser mouse <subcommand> [args]
 
-Performs low-level mouse operations for precise control.
+Performs low-level mouse operations for precise control. `down` and `up`
+are explicitly paired; their successful responses include
+`heldMouseButtons` with the currently held buttons. High-level input rejects
+while a button remains held and directs you to `mouse up`, while `move` and
+`wheel` remain available for drag gestures. Failures and timeouts release held
+mouse input before returning the error.
 
 Subcommands:
   move <x> <y>         Move mouse to coordinates

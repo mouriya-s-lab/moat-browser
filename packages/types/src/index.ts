@@ -46,6 +46,13 @@ export type NavigateResult = {
 export type VoidResult = {
   readonly _tag: "VoidResult";
 };
+export type MouseButton = "left" | "right" | "middle";
+
+export type MouseStateResult = {
+  readonly _tag: "MouseStateResult";
+  readonly heldMouseButtons: ReadonlyArray<MouseButton>;
+};
+
 export type ScrollPosition = {
   readonly x: number;
   readonly y: number;
@@ -634,6 +641,7 @@ export type CommandResultData =
   | ScrollResult
   | LocatorResult
   | KeyStateResult
+  | MouseStateResult
   | SnapshotResult
   | ScreenshotResult
   | EvalResult
@@ -943,8 +951,8 @@ export type BrowserCommand =
   | { readonly action: "scrollintoview"; readonly selector: string }
   | { readonly action: "drag"; readonly source: string; readonly target: string }
   | { readonly action: "mousemove"; readonly x: number; readonly y: number }
-  | { readonly action: "mousedown"; readonly button: "left" | "right" | "middle" }
-  | { readonly action: "mouseup"; readonly button: "left" | "right" | "middle" }
+  | { readonly action: "mousedown"; readonly button: MouseButton }
+  | { readonly action: "mouseup"; readonly button: MouseButton }
   | { readonly action: "wheel"; readonly deltaX: number; readonly deltaY: number }
   | { readonly action: "viewport"; readonly width: number; readonly height: number; readonly deviceScaleFactor?: number }
   | { readonly action: "device"; readonly device: string }

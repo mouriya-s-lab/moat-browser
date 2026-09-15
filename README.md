@@ -515,6 +515,7 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 - `moat tab close [index]` 在关闭前校验至少保留一个 tab；关闭最后一个 tab 会在页面关闭前返回 `errorType: "invalid_value"` 与稳定文案 `Validation failed: Cannot close the last tab; at least one tab must remain open`，原 tab 与 session 保持可用。需要结束整个 session 时使用 `moat disconnect`（或 `moat close`）。若浏览器侧事件使 context 变成零页面，后续命令返回 `errorType: "target_not_found"`（目标 `page`），不会泄漏引擎错误或让 session 过期。
 - `moat network route` 目前只接受 `--abort` 与 `--body <json>`；`--status`、`--delay`、`--headers` 等不支持选项会在安装 route 前返回 `unsupported_in_moat`。
 - `find first`、`find last`、`find nth` 只接受已登记的动作名；未知动作、缺少动作值和越界 occurrence 会在页面副作用前失败，`fill ""` 仍表示清空输入。`keydown`/`keyup` 是显式配对的低层操作；未释放 modifier 时，高层输入会在副作用前拒绝并返回当前 held modifiers。
+- `moat mouse down [button]` 与 `moat mouse up [button]` 是显式配对的低层操作；返回值用 `MouseStateResult.heldMouseButtons` 展示当前按住的 `left`、`right`、`middle` 按键。按住期间的高层输入（如 `click`、`fill`、`type`、`drag`）会在页面副作用前返回 `command_failed`，指导先执行 `mouse up`；`mouse move`、`mouse wheel` 与显式 `mouse up` 仍可用于拖拽和释放。
 
 **JavaScript dialog 归属与结算（M23）**：
 
@@ -824,6 +825,18 @@ such as `--status`, `--delay`, and `--headers` are rejected before installation.
 `keydown` and `keyup` are explicit paired low-level operations. High-level
 `type`, `fill`, and `click` actions reject while a modifier is held; use `keyup`
 to release it. Key-state results show the currently held modifiers.
+
+`moat mouse down [button]` and `moat mouse up [button]` are explicit paired
+low-level operations. Each result is a `MouseStateResult` with
+`heldMouseButtons`, so a successful `mouse down left` visibly reports `left`
+and a matching `mouse up left` reports an empty list. While a button remains
+held, high-level input such as `click`, `fill`, `type`, and `drag` is rejected
+before page side effects with a `command_failed` error that directs the caller
+to `mouse up`; `mouse move` and `mouse wheel` remain available for drag
+gestures. Command failures and timeouts release the session's held keyboard
+and mouse input before returning the error. `disconnect` destroys the browser
+and its container, so no held-input state survives session cleanup.
+
 ## JavaScript dialogs
 
 Dialogs are owned by the real Page that opened them. `dialog status`,

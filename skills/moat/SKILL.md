@@ -218,6 +218,16 @@ modifier remains held, high-level `type`, `fill`, and `click` actions are
 rejected before input; release it with `keyup` (or use an explicit `press`
 combination). Key-state results show the currently held modifiers.
 
+`mouse down [button]` and `mouse up [button]` are explicit paired low-level
+operations. Their `MouseStateResult` includes `heldMouseButtons`, showing the
+currently held `left`, `right`, or `middle` buttons. While a button remains
+held, high-level input such as `click`, `fill`, `type`, and `drag` is rejected
+before page side effects with a `command_failed` error directing you to `mouse
+up`; `mouse move` and `mouse wheel` remain available for drag gestures. Command
+failures and timeouts release held keyboard and mouse input before returning
+the error. `disconnect` destroys the browser and container, so no held-input
+state survives session cleanup.
+
 ## JavaScript dialogs
 
 Dialogs are owned by the real Page that opened them. `dialog status`,

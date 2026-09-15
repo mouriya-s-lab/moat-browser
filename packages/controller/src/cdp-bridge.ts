@@ -9,8 +9,11 @@ import type {
   ControllerError,
   CookieEntry,
   KeyStateResult,
+  MouseButton,
+  MouseStateResult,
   DeviceDescriptor,
   DeviceListResult,
+
   EvalResult,
   EvalValue,
   ElementGeometry,
@@ -389,6 +392,8 @@ type SessionRuntimeState = {
   activePage?: Page;
   activeContext?: BrowserContext;
   readonly heldModifiers: Set<string>;
+  readonly heldMouseButtons: Set<MouseButton>;
+  readonly heldMouseButtonPages: Map<MouseButton, Page>;
   activeFrame?: Frame;
   activeFrameSelector?: string;
   nextRefNumber: number;
@@ -408,6 +413,8 @@ const MODIFIER_KEYS: Record<string, true> = {
   Shift: true,
 };
 
+const MOUSE_BUTTONS: ReadonlyArray<MouseButton> = ["left", "right", "middle"];
+
 function modifierConflict(state: SessionRuntimeState): ControllerError | undefined {
   if (state.heldModifiers.size === 0) return undefined;
   return {
@@ -415,12 +422,30 @@ function modifierConflict(state: SessionRuntimeState): ControllerError | undefin
     message: `Held modifier(s): ${[...state.heldModifiers].join(", ")}. Release them with keyup before using a high-level input action`,
   };
 }
-
 function keyStateResult(state: SessionRuntimeState): KeyStateResult {
   return {
     _tag: "KeyStateResult",
     heldModifiers: [...state.heldModifiers],
   };
+}
+
+function mouseStateResult(state: SessionRuntimeState): MouseStateResult {
+  return {
+    _tag: "MouseStateResult",
+    heldMouseButtons: MOUSE_BUTTONS.filter((button) => state.heldMouseButtons.has(button)),
+  };
+}
+
+function mouseConflict(state: SessionRuntimeState): ControllerError | undefined {
+  if (state.heldMouseButtons.size === 0) return undefined;
+  return {
+    _tag: "CommandFailed",
+    message: `Held mouse button(s): ${mouseStateResult(state).heldMouseButtons.join(", ")}. Release them with mouse up before using a high-level input action`,
+  };
+}
+
+function inputConflict(state: SessionRuntimeState): ControllerError | undefined {
+  return modifierConflict(state) ?? mouseConflict(state);
 }
 
 async function releaseHeldModifiers(
@@ -434,7 +459,18 @@ async function releaseHeldModifiers(
       // The page may already be closed; state still must not leak into reuse.
     }
   }
+  for (const button of MOUSE_BUTTONS) {
+    if (!state.heldMouseButtons.has(button)) continue;
+    const heldPage = state.heldMouseButtonPages.get(button) ?? page;
+    try {
+      await heldPage.mouse.up({ button });
+    } catch {
+      // The page may already be closed; state still must not leak into reuse.
+    }
+  }
   state.heldModifiers.clear();
+  state.heldMouseButtons.clear();
+  state.heldMouseButtonPages.clear();
 }
 
 const sessionRuntimeState = new Map<string, SessionRuntimeState>();
@@ -488,6 +524,8 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     nextDialogId: 1,
     nextOperationId: 1,
     heldModifiers: new Set<string>(),
+    heldMouseButtons: new Set<MouseButton>(),
+    heldMouseButtonPages: new Map<MouseButton, Page>(),
     nextFrameId: 1,
     traceActive: false,
     harActive: false,
@@ -1723,6 +1761,8 @@ export function clearSessionRuntimeState(sessionId: string): void {
     state.pendingDialogs.clear();
     state.pendingDialogIdsByPage.clear();
     state.heldModifiers.clear();
+    state.heldMouseButtons.clear();
+    state.heldMouseButtonPages.clear();
     for (const cdp of state.environmentSessions) void cdp.detach().catch(() => {});
   }
   sessionRuntimeState.delete(sessionId);
@@ -1763,7 +1803,7 @@ async function executeLocatorAction(
   options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
   if (subaction !== undefined) {
-    const conflict = modifierConflict(state);
+    const conflict = inputConflict(state);
     if (conflict) return err(conflict);
   }
   const timeout = operationTimeout(options);
@@ -1847,10 +1887,10 @@ async function executeElementAction(
   value?: string,
   options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
+  const conflict = inputConflict(state);
+  if (conflict) return err(conflict);
   const resolved = resolveLocator(scope, refStore, sessionId, refScope, ref, selector);
   if (resolved._tag === "Err") return resolved;
-  const conflict = modifierConflict(state);
-  if (conflict) return err(conflict);
   const locator = resolved.value;
   const timeout = operationTimeout(options);
 
@@ -2988,7 +3028,7 @@ export async function executeCommand(
         );
 
       case "click": {
-        const conflict = modifierConflict(runtimeState);
+        const conflict = inputConflict(runtimeState);
         if (conflict) return err(conflict);
         if (command.newTab) {
           const resolved = resolveLocator(
@@ -3586,28 +3626,28 @@ export async function executeCommand(
       // ─── P1 element operations ───
 
       case "dblclick": {
-        const conflict = modifierConflict(runtimeState);
+        const conflict = inputConflict(runtimeState);
         if (conflict) return err(conflict);
         await scope.locator(command.selector).dblclick();
         return ok({ _tag: "VoidResult" } as const);
       }
 
       case "check": {
-        const conflict = modifierConflict(runtimeState);
+        const conflict = inputConflict(runtimeState);
         if (conflict) return err(conflict);
         await scope.locator(command.selector).check();
         return ok({ _tag: "VoidResult" } as const);
       }
 
       case "uncheck": {
-        const conflict = modifierConflict(runtimeState);
+        const conflict = inputConflict(runtimeState);
         if (conflict) return err(conflict);
         await scope.locator(command.selector).uncheck();
         return ok({ _tag: "VoidResult" } as const);
       }
 
       case "select": {
-        const conflict = modifierConflict(runtimeState);
+        const conflict = inputConflict(runtimeState);
         if (conflict) return err(conflict);
         const values = Array.isArray(command.values) ? command.values : [command.values];
         await scope.locator(command.selector).selectOption(values);
@@ -3615,14 +3655,14 @@ export async function executeCommand(
       }
 
       case "focus": {
-        const conflict = modifierConflict(runtimeState);
+        const conflict = inputConflict(runtimeState);
         if (conflict) return err(conflict);
         await scope.locator(command.selector).focus();
         return ok({ _tag: "VoidResult" } as const);
       }
 
       case "keyboard": {
-        const conflict = modifierConflict(runtimeState);
+        const conflict = inputConflict(runtimeState);
         if (conflict) return err(conflict);
         if (command.subaction === "type") {
           await page.keyboard.type(command.text);
@@ -3648,9 +3688,12 @@ export async function executeCommand(
         await scope.locator(command.selector).scrollIntoViewIfNeeded();
         return ok({ _tag: "VoidResult" } as const);
 
-      case "drag":
+      case "drag": {
+        const conflict = inputConflict(runtimeState);
+        if (conflict) return err(conflict);
         await scope.locator(command.source).dragTo(scope.locator(command.target));
         return ok({ _tag: "VoidResult" } as const);
+      }
 
       case "mousemove":
         await page.mouse.move(command.x, command.y);
@@ -3658,11 +3701,17 @@ export async function executeCommand(
 
       case "mousedown":
         await page.mouse.down({ button: command.button });
-        return ok({ _tag: "VoidResult" } as const);
+        runtimeState.heldMouseButtons.add(command.button);
+        runtimeState.heldMouseButtonPages.set(command.button, page);
+        return ok(mouseStateResult(runtimeState));
 
-      case "mouseup":
-        await page.mouse.up({ button: command.button });
-        return ok({ _tag: "VoidResult" } as const);
+      case "mouseup": {
+        const heldPage = runtimeState.heldMouseButtonPages.get(command.button);
+        await (heldPage ?? page).mouse.up({ button: command.button });
+        runtimeState.heldMouseButtons.delete(command.button);
+        runtimeState.heldMouseButtonPages.delete(command.button);
+        return ok(mouseStateResult(runtimeState));
+      }
 
       case "wheel":
         await page.mouse.wheel(command.deltaX, command.deltaY);
@@ -3961,6 +4010,8 @@ export async function executeCommand(
       }
 
       case "tap": {
+        const conflict = inputConflict(runtimeState);
+        if (conflict) return err(conflict);
         const box = await scope.locator(command.selector).boundingBox();
         if (!box) return err({ _tag: "ElementNotFound", selector: command.selector });
         const cdp = await context.newCDPSession(page);
@@ -3974,6 +4025,8 @@ export async function executeCommand(
       }
 
       case "swipe": {
+        const conflict = inputConflict(runtimeState);
+        if (conflict) return err(conflict);
         const viewport = page.viewportSize() ?? { width: 800, height: 600 };
         const distance = command.distance ?? Math.min(viewport.width, viewport.height) / 2;
         const startX = viewport.width / 2;
