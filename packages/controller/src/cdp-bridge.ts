@@ -275,10 +275,10 @@ type SessionRuntimeState = {
   readonly requests: Map<string, NetworkRequestEntry>;
   readonly pageIds: WeakMap<Page, string>;
   readonly frameIds: WeakMap<Frame, string>;
-  readonly cdpFrameUrls: Map<string, string>;
-  readonly executionContexts: Map<number, CdpFrameIdentity>;
+  readonly cdpFrameUrls: WeakMap<Page, Map<string, string>>;
+  readonly executionContexts: WeakMap<Page, Map<number, CdpFrameIdentity>>;
   readonly recentConsoleFrames: WeakMap<Page, RecentConsoleFrame>;
-  readonly cdpRequests: Map<string, CdpRequestIdentity>;
+  readonly cdpRequests: WeakMap<Page, Map<string, CdpRequestIdentity>>;
   activePage?: Page;
   readonly heldModifiers: Set<string>;
   activeFrame?: Frame;
@@ -352,10 +352,10 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     requests: new Map<string, NetworkRequestEntry>(),
     pageIds: new WeakMap<Page, string>(),
     frameIds: new WeakMap<Frame, string>(),
-    cdpFrameUrls: new Map<string, string>(),
-    executionContexts: new Map<number, CdpFrameIdentity>(),
+    cdpFrameUrls: new WeakMap<Page, Map<string, string>>(),
+    executionContexts: new WeakMap<Page, Map<number, CdpFrameIdentity>>(),
     recentConsoleFrames: new WeakMap<Page, RecentConsoleFrame>(),
-    cdpRequests: new Map<string, CdpRequestIdentity>(),
+    cdpRequests: new WeakMap<Page, Map<string, CdpRequestIdentity>>(),
     nextRefNumber: 1,
     heldModifiers: new Set<string>(),
     nextPageId: 1,
@@ -533,6 +533,39 @@ function requestFrame(request: Request, page: Page): Frame | undefined {
   }
 }
 
+function cdpFrameUrlsFor(
+  state: SessionRuntimeState,
+  page: Page,
+): Map<string, string> {
+  const existing = state.cdpFrameUrls.get(page);
+  if (existing) return existing;
+  const created = new Map<string, string>();
+  state.cdpFrameUrls.set(page, created);
+  return created;
+}
+
+function executionContextsFor(
+  state: SessionRuntimeState,
+  page: Page,
+): Map<number, CdpFrameIdentity> {
+  const existing = state.executionContexts.get(page);
+  if (existing) return existing;
+  const created = new Map<number, CdpFrameIdentity>();
+  state.executionContexts.set(page, created);
+  return created;
+}
+
+function cdpRequestsFor(
+  state: SessionRuntimeState,
+  page: Page,
+): Map<string, CdpRequestIdentity> {
+  const existing = state.cdpRequests.get(page);
+  if (existing) return existing;
+  const created = new Map<string, CdpRequestIdentity>();
+  state.cdpRequests.set(page, created);
+  return created;
+}
+
 function cdpFrameOverrides(
   state: SessionRuntimeState,
   page: Page,
@@ -540,7 +573,7 @@ function cdpFrameOverrides(
   frameUrl: string | undefined,
 ): DiagnosticOverrides | undefined {
   if (!frameId && !frameUrl) return undefined;
-  const knownUrl = frameId ? state.cdpFrameUrls.get(frameId) : undefined;
+  const knownUrl = frameId ? state.cdpFrameUrls.get(page)?.get(frameId) : undefined;
   return {
     ...(frameId === undefined ? {} : { frameId: `cdp-${frameId}` }),
     frameUrl: frameUrl ?? knownUrl ?? safePageUrl(page),
@@ -657,24 +690,25 @@ async function ensureCdpRuntimeObserver(
     state.observerSessions.add(cdp);
     state.cdpObservedPages.add(page);
     cdp.on("Page.frameNavigated", (event: CdpFrameNavigatedEvent) => {
-      state.cdpFrameUrls.set(event.frame.id, event.frame.url);
+      cdpFrameUrlsFor(state, page).set(event.frame.id, event.frame.url);
     });
     cdp.on("Runtime.executionContextCreated", (event: CdpExecutionContextEvent) => {
       const frameId = event.context.auxData?.frameId;
       if (frameId === undefined) return;
-      const frameUrl = state.cdpFrameUrls.get(frameId) ?? event.context.origin ?? safePageUrl(page);
-      state.cdpFrameUrls.set(frameId, frameUrl);
-      state.executionContexts.set(event.context.id, { frameId, frameUrl });
+      const frameUrls = cdpFrameUrlsFor(state, page);
+      const frameUrl = frameUrls.get(frameId) ?? event.context.origin ?? safePageUrl(page);
+      frameUrls.set(frameId, frameUrl);
+      executionContextsFor(state, page).set(event.context.id, { frameId, frameUrl });
     });
     cdp.on("Network.requestWillBeSent", (event: CdpRequestEvent) => {
-      state.cdpRequests.set(event.requestId, {
+      cdpRequestsFor(state, page).set(event.requestId, {
         url: event.request.url,
         ...(event.frameId === undefined ? {} : { frameId: event.frameId }),
         ...(event.type === undefined ? {} : { resourceType: event.type.toLowerCase() }),
       });
     });
     cdp.on("Network.loadingFailed", (event: CdpLoadingFailedEvent) => {
-      const request = state.cdpRequests.get(event.requestId);
+      const request = cdpRequestsFor(state, page).get(event.requestId);
       const text = event.errorText ?? event.blockedReason ?? "Resource loading failed";
       if (!isPolicyBlocked(event.blockedReason, text)) return;
       const contextInfo = cdpFrameOverrides(state, page, event.frameId ?? request?.frameId, request?.url);
@@ -695,7 +729,7 @@ async function ensureCdpRuntimeObserver(
       if (!isPolicyBlocked(entry.source, entry.text)) return;
       const request = entry.networkRequestId === undefined
         ? undefined
-        : state.cdpRequests.get(entry.networkRequestId);
+        : cdpRequestsFor(state, page).get(entry.networkRequestId);
       const url = extractUrl(entry.text) ?? request?.url ?? entry.url;
       const contextInfo = cdpFrameOverrides(state, page, request?.frameId, entry.url);
       const diagnostic = diagnosticContext(state, sessionId, page, undefined, contextInfo);
@@ -714,7 +748,7 @@ async function ensureCdpRuntimeObserver(
       }).join(" ");
       const frame = event.executionContextId === undefined
         ? undefined
-        : state.executionContexts.get(event.executionContextId);
+        : executionContextsFor(state, page).get(event.executionContextId);
       if (frame) {
         state.recentConsoleFrames.set(page, { ...frame, timestamp: Date.now() });
       }
@@ -726,7 +760,7 @@ async function ensureCdpRuntimeObserver(
       const details = event.exceptionDetails;
       const directFrame = details.executionContextId === undefined
         ? undefined
-        : state.executionContexts.get(details.executionContextId);
+        : executionContextsFor(state, page).get(details.executionContextId);
       const recentFrame = state.recentConsoleFrames.get(page);
       const frame = recentFrame !== undefined
         && Date.now() - recentFrame.timestamp <= 500
