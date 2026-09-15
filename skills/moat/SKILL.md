@@ -195,6 +195,14 @@ detail tags remain visible as raw JSON.
 active tab and leaves the original tab unchanged. An element without a
 non-empty link is rejected instead of being clicked in the original tab.
 
+`moat tab close [index]` rejects an attempt to close the last remaining tab
+before closing the page. It returns `errorType: "invalid_value"` with the stable
+message `Validation failed: Cannot close the last tab; at least one tab must remain open`;
+the session and tab remain usable. Use `moat disconnect` (or `moat close`) to
+destroy the whole session instead. If browser-side events leave no open pages,
+a command sent in that state returns `errorType: "target_not_found"` for
+`page`; it does not leak an engine error or expire the session.
+
 Network routing accepts only `--abort` and `--body <json>`:
 
 ```bash

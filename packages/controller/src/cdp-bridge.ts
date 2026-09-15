@@ -2850,6 +2850,11 @@ export async function executeCommand(
   const runtimeState = observeContextRuntime(sessionId, context);
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const pages = context.pages();
+  // A page can disappear outside the tab command path; never pass an
+  // undefined page into the WeakMap/WeakSet-backed runtime state.
+  if (pages.length === 0) {
+    return err({ _tag: "ElementNotFound", selector: "page" });
+  }
   const page = pages[activeTabIndex] ?? pages[0];
   const target = dialogGuardTarget(command, context, page, activeTabIndex);
   if (target._tag === "Err") return target;
@@ -3308,6 +3313,12 @@ export async function executeCommand(
         const pages = context.pages();
         if (!Number.isInteger(closeIndex) || closeIndex < 0 || closeIndex >= pages.length) {
           return err({ _tag: "ElementNotFound", selector: `tab:${closeIndex}` });
+        }
+        if (pages.length === 1) {
+          return err({
+            _tag: "ValidationFailed",
+            message: "Cannot close the last tab; at least one tab must remain open",
+          });
         }
         const closingActivePage = closeIndex === activeTabIndex;
         await pages[closeIndex].close();
