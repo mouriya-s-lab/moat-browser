@@ -128,8 +128,21 @@ moat window new
 moat get cdp-url  # returns unsupported_in_moat; CDP is Controller-private
 moat batch
 ```
-For repeated targets, select an occurrence explicitly instead of relying on a
-strict multi-match locator:
+For repeated targets, use the getter-level selector options instead of relying
+on a strict multi-match locator:
+
+```bash
+moat get text "a.column" --all
+moat get text "a.column" --nth 0
+```
+
+`get text <selector>` is strict and requires exactly one matching element by
+default. `--all` returns every text value in locator order as structured data;
+`--nth <index>` reads one zero-based match. An out-of-range index is a real
+`target_not_found` result, and an unsupported option is a real usage error
+rather than a successful response with a missing value.
+
+For repeated interaction targets, select an occurrence explicitly:
 
 ```bash
 moat find first "input.same-target" fill "first"
@@ -142,6 +155,33 @@ moat find nth 1 "input.same-target" focus
 valid and clears the selected input. An unknown action name, a missing value,
 or an out-of-range occurrence returns a non-success result before changing
 the page.
+
+`get attr <selector> <name>` reports `attribute missing` for an absent
+attribute and `""` for an explicitly present empty attribute, including both
+states in `--json` as distinct variants. `get styles` and `get box` preserve
+fractional geometry; an element with no layout has a distinct no-layout
+variant rather than a fabricated zero-sized box.
+
+`moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
+
+`moat is visible <selector>` reports the browser's layout visibility only.
+It deliberately does not prove that pixels are perceptually visible or safe
+to click: opacity, occlusion by another element, and interactivity are separate
+questions. In particular, transparent and fully covered elements can still
+return `true`, while `visibility:hidden` and `display:none` return `false`.
+
+`moat eval` preserves the JavaScript result type after one serialization:
+numbers remain numbers, strings remain bare strings in human output, and
+objects/arrays remain directly readable JSON values. `undefined` is an
+explicit `UndefinedValue` variant in `--json` and prints as `undefined` in
+human output; it is distinct from `""`, `{}`, and a void command result.
+
+If an eval script throws a non-`Error` value, the response remains
+`errorType: "command_failed"` with `cause: "cdp"` and includes a structured
+`ThrownValue` detail. Human output summarizes scalars, arrays, and nested
+objects (for example `code=42, detail=bad`); circular values, symbols,
+functions, and DOM nodes are shown as present but not serializable. Unknown
+detail tags remain visible as raw JSON.
 
 `moat click <selector> --new-tab` opens an element's HTTP(S) link in a new
 active tab and leaves the original tab unchanged. An element without a
@@ -219,6 +259,11 @@ For machine-readable failures, inspect `errorType` and, for
 a required cause; `dialog_pending` means a command was rejected before page
 side effects because the active Page still has a modal, and includes the
 original `operationId`, `dialogId`, and `page` identity.
+For machine-readable failures, inspect `errorType` rather than matching
+`error`: `unsupported_in_moat`, `missing_arguments`, `invalid_value`,
+`target_not_found`, `capacity_exceeded`, and `timeout` are stable classes.
+`command_failed` is reserved for infrastructure failures and always carries a
+structured `cause`.
 
 When choosing a wait budget, agents should omit `--timeout` for the normal
 25s command budget. Use `--timeout <ms>` when the expected condition has a

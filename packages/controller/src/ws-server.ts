@@ -185,6 +185,8 @@ function formatError(error: ControllerError): string {
       return `Command failed: ${error.message}`;
     case "DialogPending":
       return `Dialog pending on ${error.page.pageId}: operation ${error.operationId}, dialog ${error.dialogId}; handle it with dialog accept or dismiss`;
+    case "CommandFailedWithValue":
+      return `Command failed: ${error.message}`;
     case "ValidationFailed":
       return `Validation failed: ${error.message}`;
     case "CapacityExceeded":
@@ -216,6 +218,7 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
     case "CdpUnreachable":
     case "CdpDisconnected":
     case "CommandFailed":
+    case "CommandFailedWithValue":
       return { errorType: "command_failed", cause: stage === "cleanup" ? "cleanup" : "cdp" };
     case "DialogPending":
       return {
@@ -248,6 +251,9 @@ function errorToWireResponse(
   error: ControllerError,
   stage: CleanupStage = "command",
 ): WireResponse {
+  const details = error._tag === "CommandFailedWithValue"
+    ? { details: { _tag: "ThrownValue" as const, value: error.value } }
+    : {};
   return {
     type: "command_result",
     sessionId,
@@ -255,6 +261,7 @@ function errorToWireResponse(
     error: formatError(error),
     code: ErrorCode[error._tag],
     ...wireFailure(error, stage),
+    ...details,
   };
 }
 

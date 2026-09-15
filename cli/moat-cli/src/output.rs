@@ -237,6 +237,117 @@ fn render_json_value(value: &serde_json::Value) -> String {
         .map(ToString::to_string)
         .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default())
 }
+fn render_eval_value(value: &serde_json::Value) -> String {
+    if value.get("_tag").and_then(|tag| tag.as_str()) == Some("UndefinedValue") {
+        return "undefined".to_string();
+    }
+    if value.get("_tag").and_then(|tag| tag.as_str()) == Some("UnserializableValue") {
+        let reason = value
+            .get("reason")
+            .and_then(|reason| reason.as_str())
+            .unwrap_or("unknown");
+        let value_type = value
+            .get("type")
+            .and_then(|value_type| value_type.as_str())
+            .unwrap_or("value");
+        return format!("unserializable {value_type} ({reason})");
+    }
+    if let Some(text) = value.as_str() {
+        return if text.is_empty() {
+            "\"\"".to_string()
+        } else {
+            text.to_string()
+        };
+    }
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| "<unserializable eval value>".to_string())
+}
+
+fn render_thrown_value(value: &serde_json::Value) -> String {
+    fn render(value: &serde_json::Value, depth: usize) -> String {
+        if depth >= 16 {
+            return "… (depth limit)".to_string();
+        }
+        match value {
+            serde_json::Value::Null => "null".to_string(),
+            serde_json::Value::Bool(value) => value.to_string(),
+            serde_json::Value::Number(value) => value.to_string(),
+            serde_json::Value::String(value) => format!("{value:?}"),
+            serde_json::Value::Array(values) => {
+                let items = values
+                    .iter()
+                    .map(|value| render(value, depth + 1))
+                    .collect::<Vec<_>>();
+                format!("[{}]", items.join(", "))
+            }
+            serde_json::Value::Object(fields) => {
+                let tag = fields.get("_tag").and_then(|value| value.as_str());
+                if tag == Some("UndefinedValue") && fields.len() == 1 {
+                    return "undefined".to_string();
+                }
+                if tag == Some("UnserializableValue") && fields.len() == 3 {
+                    let reason = fields
+                        .get("reason")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    let value_type = fields
+                        .get("type")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("value");
+                    return format!(
+                        "exists but cannot be serialized (type={value_type}, reason={reason})"
+                    );
+                }
+                let items = fields
+                    .iter()
+                    .map(|(key, value)| {
+                        let rendered = value
+                            .as_str()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| render(value, depth + 1));
+                        format!("{key}={rendered}")
+                    })
+                    .collect::<Vec<_>>();
+                format!("{{{}}}", items.join(", "))
+            }
+        }
+    }
+
+    render(value, 0)
+}
+
+
+fn render_attribute_value(value: &serde_json::Value) -> String {
+    match value.get("_tag").and_then(|tag| tag.as_str()) {
+        Some("AttributeMissing") => "attribute missing".to_string(),
+        Some("AttributePresent") => {
+            let present = value.get("value").and_then(|item| item.as_str()).unwrap_or("");
+            if present.is_empty() {
+                "\"\"".to_string()
+            } else {
+                present.to_string()
+            }
+        }
+        _ => serde_json::to_string_pretty(value).unwrap_or_else(|_| "<invalid attribute value>".to_string()),
+    }
+}
+
+fn render_geometry(value: &serde_json::Value) -> String {
+    if value.get("_tag").and_then(|tag| tag.as_str()) == Some("NoLayout") {
+        return "unavailable (no layout)".to_string();
+    }
+
+    let component = |name: &str| value.get(name).filter(|item| item.is_number()).map(ToString::to_string);
+    match (
+        component("width"),
+        component("height"),
+        component("x"),
+        component("y"),
+    ) {
+        (Some(width), Some(height), Some(x), Some(y)) => format!("{width}x{height} at ({x}, {y})"),
+        _ => serde_json::to_string_pretty(value).unwrap_or_else(|_| "<invalid geometry>".to_string()),
+    }
+}
+
 
 fn print_request_detail(request: &serde_json::Value) {
     let request_id = request
@@ -364,7 +475,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
         return;
     }
     if !resp.success {
-        if matches!(resp.cause.as_ref(), Some(CommandFailureCause::DialogPending)) {
+if matches!(resp.cause.as_ref(), Some(CommandFailureCause::DialogPending)) {
             let operation_id = resp.operation_id.as_deref().unwrap_or("unknown");
             let dialog_id = resp.dialog_id.as_deref().unwrap_or("unknown");
             let page_id = resp
@@ -385,6 +496,20 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 color::error_indicator(),
                 resp.error.as_deref().unwrap_or("Unknown error")
             );
+        }
+        if let Some(details) = &resp.details {
+            let tag = details.get("_tag").and_then(|value| value.as_str());
+            if resp.error_type.as_deref() == Some("command_failed")
+                && tag == Some("ThrownValue")
+            {
+                if let Some(value) = details.get("value") {
+                    eprintln!("  Thrown value: {}", render_thrown_value(value));
+                } else {
+                    eprintln!("  Command details: {}", render_json_value(details));
+                }
+            } else {
+                eprintln!("  Command details: {}", render_json_value(details));
+            }
         }
         // Preserve any server warning alongside the structured failure.
         if let Some(warning) = &resp.warning {
@@ -594,6 +719,24 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             println!("{}", title);
             return;
         }
+        // Multi-element text getter
+        if action == Some("gettext") {
+            if let Some(texts) = data.get("texts").and_then(|value| value.as_array()) {
+                if texts.is_empty() {
+                    println!("[]");
+                } else {
+                    for text in texts {
+                        if let Some(text) = text.as_str() {
+                            print_with_boundaries(text, origin, opts);
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(text).unwrap_or_else(|_| "<invalid text value>".to_string()));
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         // Text
         if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
             print_with_boundaries(text, origin, opts);
@@ -604,6 +747,14 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             print_with_boundaries(html, origin, opts);
             return;
         }
+        // Attribute result
+        if action == Some("getattribute") {
+            if let Some(value) = data.get("value") {
+                println!("{}", render_attribute_value(value));
+                return;
+            }
+        }
+
         // Value
         if let Some(value) = data.get("value").and_then(|v| v.as_str()) {
             println!("{}", value);
@@ -615,10 +766,19 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             return;
         }
         // Boolean results
+        // Visibility results retain the Controller's layout-visibility semantics.
         if let Some(visible) = data.get("visible").and_then(|v| v.as_bool()) {
-            println!("{}", visible);
+            if action == Some("isvisible") {
+                println!(
+                    "{} (layout-visible; does not prove opacity, occlusion, perceptual visibility, or interactivity)",
+                    visible
+                );
+            } else {
+                println!("{}", visible);
+            }
             return;
         }
+
         if let Some(enabled) = data.get("enabled").and_then(|v| v.as_bool()) {
             println!("{}", enabled);
             return;
@@ -628,8 +788,9 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             return;
         }
         // Eval result
+        // Eval result: values are already encoded once by the Controller.
         if let Some(result) = data.get("result") {
-            let formatted = serde_json::to_string_pretty(result).unwrap_or_default();
+            let formatted = render_eval_value(result);
             print_with_boundaries(&formatted, origin, opts);
             return;
         }
@@ -874,11 +1035,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 println!("[{}] {} \"{}\"", i, tag, text);
 
                 if let Some(box_data) = el.get("box") {
-                    let w = box_data.get("width").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let h = box_data.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let x = box_data.get("x").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let y = box_data.get("y").and_then(|v| v.as_i64()).unwrap_or(0);
-                    println!("    box: {}x{} at ({}, {})", w, h, x, y);
+                    println!("    box: {}", render_geometry(box_data));
                 }
 
                 if let Some(styles) = el.get("styles") {
@@ -2010,7 +2167,13 @@ agent-browser eval - Execute JavaScript
 
 Usage: agent-browser eval [options] <script>
 
-Executes JavaScript code in the browser context and returns the result.
+Executes JavaScript code in the browser context and returns the original value
+type after one serialization. Scalars and objects are not wrapped in an extra
+JSON string; `undefined` is returned with an explicit marker in `--json` and
+as `undefined` in human output.
+Non-Error throws are reported as `command_failed` with `cause: cdp` and
+retain structured details in JSON; human output prints a readable summary
+instead of `Object` or `[object Object]`.
 
 Options:
   -b, --base64         Decode script from base64 (avoids shell escaping issues)
@@ -2078,20 +2241,25 @@ browser view for interactive inspection.
 agent-browser get - Retrieve information from elements or page
 
 Usage: agent-browser get <subcommand> [args]
-
-Retrieves various types of information from elements or the page.
-
 Subcommands:
-  text <selector>            Get text content of element
+  text <selector>            Strict single-match text read by default
+  text <selector> --all      Read every matching element in locator order
+  text <selector> --nth <n>  Read one zero-based matching element
   html <selector>            Get inner HTML of element
   value <selector>           Get value of input element
-  attr <selector> <name>     Get attribute value
+  attr <selector> <name>     Get attribute; missing and present-empty differ
   title                      Get page title
   url                        Get current URL
   count <selector>           Count matching elements
-  box <selector>             Get bounding box (x, y, width, height)
-  styles <selector>          Get computed styles of elements
+  box <selector>             Get fractional bounding box or no-layout marker
+  styles <selector>          Get computed styles and fractional geometry
   cdp-url                    Get Chrome DevTools Protocol WebSocket URL
+
+The default `text` form preserves strict locator behavior: a selector matching
+multiple elements returns a real command error rather than silently selecting
+the first element. Use `--all` or `--nth <n>` when multiple matches are
+intended. Attribute output labels a missing attribute and quotes a present empty
+attribute so the two states remain distinguishable.
 
 Global Options:
   --json               Output as JSON
@@ -2099,6 +2267,8 @@ Global Options:
 
 Examples:
   agent-browser get text @e1
+  agent-browser get text "a.column" --all
+  agent-browser get text "a.column" --nth 1
   agent-browser get html "#content"
   agent-browser get value "#email-input"
   agent-browser get attr "#link" href
@@ -2121,7 +2291,9 @@ Usage: agent-browser is <subcommand> <selector>
 Checks the state of an element and returns true/false.
 
 Subcommands:
-  visible <selector>   Check if element is visible
+  visible <selector>   Check layout visibility only; this does not prove
+                       opacity, occlusion, perceptual visibility,
+                       interactivity, or click safety
   enabled <selector>   Check if element is enabled (not disabled)
   checked <selector>   Check if checkbox/radio is checked
 

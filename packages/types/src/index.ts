@@ -77,37 +77,70 @@ export type ScreenshotResult = {
   }>;
 };
 
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | ReadonlyArray<JsonValue>
+  | { readonly [key: string]: JsonValue };
+
+export type UndefinedValue = {
+  readonly _tag: "UndefinedValue";
+};
+
+export type UnserializableValue = {
+  readonly _tag: "UnserializableValue";
+  readonly reason: "unsupported" | "circular";
+  readonly type: "bigint" | "function" | "symbol" | "number" | "object" | "dom";
+};
+
+export type EvalValue =
+  | null
+  | boolean
+  | number
+  | string
+  | UndefinedValue
+  | UnserializableValue
+  | ReadonlyArray<EvalValue>
+  | { readonly [key: string]: EvalValue };
+
 export type EvalResult = {
   readonly _tag: "EvalResult";
-  readonly result: string;
+  readonly result: EvalValue;
 };
 
-export type TabResult = {
-  readonly _tag: "TabResult";
-  readonly tabs: ReadonlyArray<TabInfo>;
-};
+export type GetterSelection =
+  | { readonly _tag: "All" }
+  | { readonly _tag: "Nth"; readonly index: number };
 
-export type CookiesResult = {
-  readonly _tag: "CookiesResult";
-  readonly cookies: ReadonlyArray<CookieEntry>;
-};
-
-export type WaitResult = {
-  readonly _tag: "WaitResult";
-  readonly waited: string;
-  readonly url?: string;
-  readonly state?: string;
-  readonly result?: string;
-};
-
-export type GetTextResult = {
-  readonly _tag: "GetTextResult";
-  readonly text: string;
-};
+export type GetTextResult =
+  | {
+      readonly _tag: "GetTextResult";
+      readonly text: string;
+    }
+  | {
+      readonly _tag: "GetTextAllResult";
+      readonly texts: ReadonlyArray<string>;
+    };
 
 export type GetValueResult = {
   readonly _tag: "GetValueResult";
   readonly value: string;
+};
+
+export type AttributeValue =
+  | {
+      readonly _tag: "AttributeMissing";
+    }
+  | {
+      readonly _tag: "AttributePresent";
+      readonly value: string;
+    };
+
+export type GetAttributeResult = {
+  readonly _tag: "GetAttributeResult";
+  readonly value: AttributeValue;
 };
 
 export type GetHtmlResult = {
@@ -130,14 +163,21 @@ export type CountResult = {
   readonly count: number;
 };
 
+export type ElementGeometry =
+  | {
+      readonly _tag: "NoLayout";
+    }
+  | {
+      readonly _tag: "Box";
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+    };
+
 export type BoundingBoxResult = {
   readonly _tag: "BoundingBoxResult";
-  readonly box: {
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-  } | null;
+  readonly box: ElementGeometry;
 };
 
 export type ElementStylesResult = {
@@ -145,12 +185,7 @@ export type ElementStylesResult = {
   readonly elements: ReadonlyArray<{
     readonly tag: string;
     readonly text: string;
-    readonly box: {
-      readonly x: number;
-      readonly y: number;
-      readonly width: number;
-      readonly height: number;
-    } | null;
+    readonly box: ElementGeometry;
     readonly styles: {
       readonly fontSize: string;
       readonly fontWeight: string;
@@ -160,6 +195,24 @@ export type ElementStylesResult = {
       readonly borderRadius: string;
     };
   }>;
+};
+
+export type TabResult = {
+  readonly _tag: "TabResult";
+  readonly tabs: ReadonlyArray<TabInfo>;
+};
+
+export type CookiesResult = {
+  readonly _tag: "CookiesResult";
+  readonly cookies: ReadonlyArray<CookieEntry>;
+};
+
+export type WaitResult = {
+  readonly _tag: "WaitResult";
+  readonly waited: string;
+  readonly url?: string;
+  readonly state?: string;
+  readonly result?: string;
 };
 
 export type StorageResult = {
@@ -506,11 +559,21 @@ export type StateLoadResult =
       readonly reason: "indexeddb" | "session_storage";
     } & StateLoadCounts);
 
+export type VisibilityResult = {
+  readonly _tag: "VisibilityResult";
+  readonly visible: boolean;
+  readonly semantics: "layout";
+};
+
 export type BooleanResult = {
   readonly _tag: "BooleanResult";
-  readonly visible?: boolean;
   readonly enabled?: boolean;
   readonly checked?: boolean;
+};
+
+export type CommandFailureDetails = {
+  readonly _tag: "ThrownValue";
+  readonly value: EvalValue;
 };
 
 export type BatchResultEntry = {
@@ -537,6 +600,7 @@ export type CommandResultData =
   | WaitResult
   | GetTextResult
   | GetValueResult
+  | GetAttributeResult
   | GetHtmlResult
   | PageUrlResult
   | PageTitleResult
@@ -558,6 +622,7 @@ export type CommandResultData =
   | DeviceListResult
   | StateLoadResult
   | StartedResult
+  | VisibilityResult
   | BooleanResult
   | BatchResult;
 
@@ -590,6 +655,11 @@ export type ControllerError =
       readonly operationId: string;
       readonly dialogId: string;
       readonly page: DialogPage;
+    }
+  | {
+      readonly _tag: "CommandFailedWithValue";
+      readonly message: string;
+      readonly value: EvalValue;
     }
   | { readonly _tag: "ValidationFailed"; readonly message: string }
   | {
@@ -692,6 +762,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   Timeout: 75,
   CommandFailed: 1,
   DialogPending: 1,
+  CommandFailedWithValue: 1,
   ValidationFailed: 2,
   CapacityExceeded: 84,
 };
@@ -792,13 +863,12 @@ export type BrowserCommand =
   | { readonly action: "tab_switch"; readonly index: number }
   | { readonly action: "tab_close"; readonly index?: number }
   | { readonly action: "tab_list" }
-
   // Cookie
   | { readonly action: "cookies_get"; readonly url?: string }
   | { readonly action: "cookies_clear" }
 
   // 元素属性查询 (get)
-  | { readonly action: "gettext"; readonly selector: string }
+  | { readonly action: "gettext"; readonly selector: string; readonly selection?: GetterSelection }
   | { readonly action: "innertext"; readonly selector: string }
   | { readonly action: "innerhtml"; readonly selector: string }
   | { readonly action: "inputvalue"; readonly selector: string }
@@ -931,6 +1001,7 @@ export type WireResponse =
       readonly success: false;
       readonly error: string;
       readonly code: number;
+      readonly details?: CommandFailureDetails;
     } & WireFailure)
   | {
       readonly type: "deregister_result";
@@ -1066,6 +1137,13 @@ export const dialogResultSchema = type({
     operation: dialogOperationSchema,
   });
 
+const getterSelectionSchema = type({
+  _tag: "'All'",
+}).or({
+  _tag: "'Nth'",
+  index: "number.integer >= 0",
+});
+
 const browserCommandSchema = type({
   action: "'navigate'",
   url: "string",
@@ -1159,7 +1237,7 @@ const browserCommandSchema = type({
   .or({ action: "'tab_list'" })
   .or({ action: "'cookies_get'", "url?": "string" })
   .or({ action: "'cookies_clear'" })
-  .or({ action: "'gettext'", selector: "string" })
+  .or({ action: "'gettext'", selector: "string", "selection?": getterSelectionSchema })
   .or({ action: "'innertext'", selector: "string" })
   .or({ action: "'innerhtml'", selector: "string" })
   .or({ action: "'inputvalue'", selector: "string" })
