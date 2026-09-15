@@ -595,7 +595,7 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 }
 ```
 
-### 9.6 Session 管理（moat 新增）
+### 9.7 Session 管理（moat 新增）
 
 agent-browser 的 daemon 是本地进程，启动即绑定到本地 Chrome，不需要显式 session 管理。moat 因为容器在远程，必须显式管理 session 生命周期。Session 管理由 SDK 层实现，CLI 只是调用 SDK 的 session API：
 
@@ -661,7 +661,7 @@ export MOAT_PROFILE="default"
 # 优先级：本次 --controller > 非空 MOAT_CONTROLLER > 配置文件 controller
 ```
 
-### 9.7 增强（来自 opencli / CLI-Anything）
+### 9.8 增强（来自 opencli / CLI-Anything）
 
 opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借鉴**：
 
@@ -670,7 +670,7 @@ opencli 和 CLI-Anything 不是主设计参考，是**特定维度的增强借�
 
 因为 SDK 是通用的 RPC 抽象，第三方可以基于 TS SDK 构建任意风格的 CLI 包装（opencli 风格、CLI-Anything 风格等），不需要碰 moat CLI 或 Rust SDK。
 
-### 9.8 SKILL.md
+### 9.9 SKILL.md
 
 `skills/moat/SKILL.md`，随包分发，Claude Code / Cursor 自动加载：
 
