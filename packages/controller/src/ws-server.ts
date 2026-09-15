@@ -57,6 +57,19 @@ function timeoutFailure(
   };
 }
 
+function terminatedTimeoutFailure(
+  phase: string,
+  budget: number,
+  sessionId: string,
+): ControllerError {
+  const error = timeoutFailure(phase, budget, sessionId);
+  return {
+    ...error,
+    operation: `${error.operation}; session terminated after outer deadline`,
+  };
+}
+
+
 function configuredCommandTimeout(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_COMMAND_TIMEOUT_MS;
 }
@@ -878,7 +891,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       () => runCommand(cdp.context, command, refStore, sessionId, options),
       deadline,
       () => {
-        const error = timeoutFailure(`command phase=cdp action=${command.action}`, budget, sessionId);
+        const error = terminatedTimeoutFailure(`command phase=cdp action=${command.action}`, budget, sessionId);
         console.warn(
           `[timeout] phase=command/cdp action=${command.action} budget=${budget}ms session=${sessionId} result=unknown`,
         );

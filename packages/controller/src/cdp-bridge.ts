@@ -671,12 +671,18 @@ function isWaitAction(action: BrowserCommand["action"] | undefined): boolean {
     || action === "waitfordownload";
 }
 
+// Keep inner Playwright timeouts ahead of the outer ws-server deadline race.
+// Invariant: inner timeout + guard <= outer command budget. The guard must
+// exceed normal CDP round-trip jitter so a handled TimeoutError can reach the
+// client before the outer fallback closes a genuinely unresponsive session.
+const CDP_DEADLINE_GUARD_MS = 100;
+
 function operationTimeout(
   options: CommandExecutionOptions | undefined,
   requested?: number,
 ): number | undefined {
   if (options === undefined) return requested;
-  const remaining = Math.max(1, options.deadline - Date.now());
+  const remaining = Math.max(1, options.deadline - Date.now() - CDP_DEADLINE_GUARD_MS);
   return requested === undefined ? remaining : Math.min(requested, remaining);
 }
 
