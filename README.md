@@ -520,6 +520,24 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 - `eval` 触发 modal 后，Controller 最多等待 **3s handler grace**。grace 内显式处理会让原始 `eval` 调用直接返回脚本结果；无人处理时原调用在 grace 到期返回 `pending`，其中的 `operationId` 可交给 `dialog accept|dismiss`，再用 `dialog result <operationId>` 取回原始 `eval` 结果。
 - 不自动 accept/dismiss。`prompt` 的 `dialog accept "<text>"` 会把完全相同的文本传回页面。操作在服务端普通命令预算内仍未处理时，`dialog result <operationId>` 返回 `state: "operation"` 与 `_tag: "TimedOutOperation"`，并结构化给出 `phase`、`budget`、`sideEffects: "possible"`、`sessionId`、`operationId`、`dialogId` 和 Page 身份；随后仍可显式处理 modal，session 保持可用。
 - 当前 Page 已有未处理 modal 时，后续命令在页面副作用前返回 `errorType: "command_failed"`、`cause: "dialog_pending"`，并在结构化字段中携带原 operation 的 `operationId`、`dialogId` 和 Page 身份 `page`；处理者应按这些身份调用 `dialog accept|dismiss`。
+- `get text <selector>` preserves strict single-match behavior. Use
+  `get text <selector> --all` for all matching elements in locator order or
+  `--nth <index>` for one zero-based match; an unsupported legacy spelling
+  returns a real error instead of a successful response without text.
+- `get attr <selector> <name>` returns an ADT distinguishing
+  `AttributeMissing` from `AttributePresent` with `value: ""`. `get box` and
+  `get styles` return `NoLayout` for an unlaid-out element and preserve
+  fractional `Box` coordinates and dimensions, including a real zero-sized
+  box as a separate variant.
+- `is visible` preserves Patchright's layout-visibility behavior. Its result
+  includes `semantics: "layout"` and does not claim opacity-adjusted,
+  perceptual, unobstructed, interactive, or click-safe visibility.
+- `eval` returns raw scalar/object/array values after one serialization.
+  `undefined` is an explicit `UndefinedValue` marker, distinct from an empty
+  string, empty object, or void success. A non-`Error` throw uses
+  `errorType: "command_failed"` with `cause: "cdp"` and a `ThrownValue`
+  details object; the CLI summarizes its fields without reducing it to
+  `Object`, and unknown detail tags remain opaque JSON.
 
 - `moat --json --help`、`-h`、`help`、`--version` 与 `-V` 都返回单个 JSON 值。错误对象的 `errorType` 是机器判别字段，`error` 只用于展示。
 
@@ -742,15 +760,52 @@ moat find testid <id> [action] [text]
 
 Actions: click (default), fill <text>, type <text>, hover, dblclick, focus, select <value>, check, uncheck
 
-For repeated targets, use `find first`, `find last`, or `find nth` to select
-one occurrence. These forms support `click`, `fill`, `type`, `hover`, `dblclick`,
-`focus`, `select`, `check`, and `uncheck`; `fill ""` clears the selected input.
-Unknown actions, missing values, and out-of-range occurrences fail before page
-side effects.
+For repeated reads, use the getter-level selector options instead of relying
+on a strict multi-match locator:
+
+```bash
+moat get text "a.column" --all
+moat get text "a.column" --nth 0
+```
+
+`get text <selector>` is strict and requires exactly one matching element by
+default. `--all` returns every text value in locator order as structured data;
+`--nth <index>` reads one zero-based match. An out-of-range index is a real
+`target_not_found` result, and an unsupported option is a real usage error
+rather than a successful response with a missing value.
+
+`get attr <selector> <name>` reports `attribute missing` for an absent
+attribute and `""` for an explicitly present empty attribute. `get styles` and
+`get box` preserve fractional geometry; an element with no layout has a
+distinct no-layout variant rather than a fabricated zero-sized box.
+
+For repeated interaction targets, use `find first`, `find last`, or `find nth`
+to select one occurrence. These forms support `click`, `fill`, `type`, `hover`,
+`dblclick`, `focus`, `select`, `check`, and `uncheck`; `fill ""` clears the
+selected input. Unknown actions, missing values, and out-of-range occurrences
+fail before page side effects.
 
 `moat click <selector> --new-tab` opens a non-empty HTTP(S) link in a new
 active tab and leaves the original tab unchanged. Elements without an openable
 link are rejected before navigation.
+
+`moat is visible <selector>` reports layout visibility only. It does not prove
+opacity-adjusted or perceptual visibility, freedom from occlusion,
+interactivity, or click safety; transparent and fully covered elements can be
+`true`, while `visibility:hidden` and `display:none` are `false`.
+
+`moat eval` preserves the JavaScript result type after one serialization:
+numbers remain numbers, strings remain bare strings in human output, and
+objects/arrays remain directly readable JSON values. `undefined` is an
+explicit `UndefinedValue` variant in `--json` and prints as `undefined` in
+human output; it is distinct from `""`, `{}`, and a void command result.
+
+If an eval script throws a non-`Error` value, the response remains
+`errorType: "command_failed"` with `cause: "cdp"` and includes a structured
+`ThrownValue` detail. Human output summarizes scalars, arrays, and nested
+objects (for example `code=42, detail=bad`); circular values, symbols,
+functions, and DOM nodes are shown as present but not serializable. Unknown
+detail tags remain visible as raw JSON.
 
 Network routing accepts only `--abort` and `--body <json>`. Unsupported options
 

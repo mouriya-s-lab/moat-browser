@@ -1798,9 +1798,53 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("text") => {
             let sel = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
                 context: "get text".to_string(),
-                usage: "get text <selector>",
+                usage: "get text <selector> [--all|--nth <index>]",
             })?;
-            Ok(json!({ "id": id, "action": "gettext", "selector": sel }))
+            let mut selection: Option<Value> = None;
+            let mut i = 2;
+            while i < rest.len() {
+                match rest[i] {
+                    "--all" => {
+                        if selection.is_some() {
+                            return Err(ParseError::InvalidValue {
+                                message: "get text accepts exactly one of --all or --nth".to_string(),
+                                usage: "get text <selector> [--all|--nth <index>]",
+                            });
+                        }
+                        selection = Some(json!({ "_tag": "All" }));
+                        i += 1;
+                    }
+                    "--nth" => {
+                        let raw_index = rest.get(i + 1).ok_or_else(|| ParseError::MissingArguments {
+                            context: "get text --nth".to_string(),
+                            usage: "get text <selector> --nth <index>",
+                        })?;
+                        let index = raw_index.parse::<usize>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("get text --nth requires a non-negative integer, got `{raw_index}`"),
+                            usage: "get text <selector> --nth <index>",
+                        })?;
+                        if selection.is_some() {
+                            return Err(ParseError::InvalidValue {
+                                message: "get text accepts exactly one of --all or --nth".to_string(),
+                                usage: "get text <selector> [--all|--nth <index>]",
+                            });
+                        }
+                        selection = Some(json!({ "_tag": "Nth", "index": index }));
+                        i += 2;
+                    }
+                    token => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown get text option `{token}`"),
+                            usage: "get text <selector> [--all|--nth <index>]",
+                        });
+                    }
+                }
+            }
+            let mut command = json!({ "id": id, "action": "gettext", "selector": sel });
+            if let Some(selection) = selection {
+                command["selection"] = selection;
+            }
+            Ok(command)
         }
         Some("html") => {
             let sel = rest.get(1).ok_or_else(|| ParseError::MissingArguments {

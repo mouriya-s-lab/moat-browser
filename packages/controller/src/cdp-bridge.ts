@@ -12,6 +12,9 @@ import type {
   DeviceDescriptor,
   DeviceListResult,
   EvalResult,
+  EvalValue,
+  ElementGeometry,
+  GetAttributeResult,
   LocatorResult,
   NavigateResult,
   NthSubaction,
@@ -57,6 +60,7 @@ import type {
   IndexedDbDatabase,
   StateLoadCounts,
   StartedResult,
+  VisibilityResult,
   BooleanResult,
   BatchResult,
   BatchResultEntry,
@@ -1236,11 +1240,37 @@ async function executeEvalWithDialog(
   });
 
   void Promise.resolve()
-    .then(() => scope.evaluate(code))
+    .then(() => evaluateScript(scope, code, options))
     .then(
-      (raw) => {
-        const result: EvalResult = { _tag: "EvalResult", result: JSON.stringify(raw) };
-        settleEvalOperation(state, operationId, { _tag: "Resolved", result });
+      (outcome) => {
+        switch (outcome.status) {
+          case "value": {
+            const result: EvalResult = { _tag: "EvalResult", result: outcome.value };
+            settleEvalOperation(state, operationId, { _tag: "Resolved", result });
+            return;
+          }
+          case "throw":
+            settleEvalOperation(state, operationId, {
+              _tag: "Rejected",
+              error: {
+                _tag: "CommandFailedWithValue",
+                message: "page.evaluate threw a non-Error value",
+                value: outcome.value,
+              },
+            });
+            return;
+          case "error":
+            settleEvalOperation(state, operationId, {
+              _tag: "Rejected",
+              error: {
+                _tag: "CommandFailed",
+                message: `page.evaluate: ${outcome.name}: ${outcome.message}`,
+              },
+            });
+            return;
+          default:
+            return exhaustive(outcome);
+        }
       },
       (error: unknown) => {
         settleEvalOperation(state, operationId, {
@@ -2390,13 +2420,150 @@ function timeoutError(
   };
 }
 
+function unserializableValue(
+  reason: "unsupported" | "circular",
+  valueType: "bigint" | "function" | "symbol" | "number" | "object" | "dom",
+): EvalValue {
+  return { _tag: "UnserializableValue", reason, type: valueType };
+}
+
+function encodeEvalValue(value: unknown, seen = new WeakSet<object>()): EvalValue {
+  if (value === undefined) return { _tag: "UndefinedValue" };
+  if (value === null) return null;
+
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return value;
+    case "number":
+      return Number.isFinite(value) ? value : unserializableValue("unsupported", "number");
+    case "bigint":
+      return unserializableValue("unsupported", "bigint");
+    case "function":
+      return unserializableValue("unsupported", "function");
+    case "symbol":
+      return unserializableValue("unsupported", "symbol");
+    case "object": {
+      if (seen.has(value)) return unserializableValue("circular", "object");
+      seen.add(value);
+      if (value instanceof Error) {
+        const result: EvalValue = { name: value.name, message: value.message };
+        seen.delete(value);
+        return result;
+      }
+      if (Array.isArray(value)) {
+        const result = value.map((item) => encodeEvalValue(item, seen));
+        seen.delete(value);
+        return result;
+      }
+      const result: Record<string, EvalValue> = {};
+      for (const key of Object.keys(value)) {
+        const property = Object.getOwnPropertyDescriptor(value, key);
+        if (property !== undefined) result[key] = encodeEvalValue(property.value, seen);
+      }
+      seen.delete(value);
+      return result;
+    }
+    default:
+      return unserializableValue("unsupported", "object");
+  }
+}
+
+type PageEvaluationOutcome =
+  | { readonly status: "value"; readonly value: EvalValue }
+  | { readonly status: "throw"; readonly value: EvalValue }
+  | { readonly status: "error"; readonly message: string; readonly name: string };
+
+async function evaluateScript(
+  scope: Page | Frame,
+  source: string,
+  options: CommandExecutionOptions | undefined,
+): Promise<PageEvaluationOutcome> {
+  return withOperationTimeout(
+    () => scope.evaluate(async (code): Promise<PageEvaluationOutcome> => {
+      const seen = new WeakSet<object>();
+      const unsupported = (
+        reason: "unsupported" | "circular",
+        valueType: "bigint" | "function" | "symbol" | "number" | "object" | "dom",
+      ): EvalValue => ({ _tag: "UnserializableValue", reason, type: valueType });
+      const encode = (value: unknown): EvalValue => {
+        if (value === undefined) return { _tag: "UndefinedValue" };
+        if (value === null) return null;
+
+        switch (typeof value) {
+          case "string":
+          case "boolean":
+            return value;
+          case "number":
+            return Number.isFinite(value) ? value : unsupported("unsupported", "number");
+          case "bigint":
+            return unsupported("unsupported", "bigint");
+          case "function":
+            return unsupported("unsupported", "function");
+          case "symbol":
+            return unsupported("unsupported", "symbol");
+          case "object": {
+            if (typeof Node !== "undefined" && value instanceof Node) {
+              return unsupported("unsupported", "dom");
+            }
+            if (seen.has(value)) return unsupported("circular", "object");
+            seen.add(value);
+            if (value instanceof Error) {
+              const result: EvalValue = { name: value.name, message: value.message };
+              seen.delete(value);
+              return result;
+            }
+            if (Array.isArray(value)) {
+              const result = value.map((item) => encode(item));
+              seen.delete(value);
+              return result;
+            }
+            const result: Record<string, EvalValue> = {};
+            for (const key of Object.keys(value)) {
+              const property = Object.getOwnPropertyDescriptor(value, key);
+              if (property !== undefined) result[key] = encode(property.value);
+            }
+            seen.delete(value);
+            return result;
+          }
+          default:
+            return unsupported("unsupported", "object");
+        }
+      };
+
+      try {
+        const value = await eval(code);
+        return { status: "value", value: encode(value) };
+      } catch (error) {
+        if (error instanceof Error) {
+          return { status: "error", name: error.name, message: error.message };
+        }
+        return { status: "throw", value: encode(error) };
+      }
+    }, source),
+    options,
+  );
+}
+
+function geometryFromBox(
+  box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null,
+): ElementGeometry {
+  return box === null
+    ? { _tag: "NoLayout" }
+    : { _tag: "Box", x: box.x, y: box.y, width: box.width, height: box.height };
+}
+
 function mapPlaywrightError(
   e: unknown,
   action?: BrowserCommand["action"],
   options?: CommandExecutionOptions,
 ): ControllerError {
   if (!(e instanceof Error)) {
-    return { _tag: "CommandFailed", message: String(e) };
+    return {
+      _tag: "CommandFailedWithValue",
+      message: "Operation threw a non-Error value",
+      value: encodeEvalValue(e),
+    };
   }
 
   const msg = e.message;
@@ -2862,9 +3029,38 @@ export async function executeCommand(
       // ─── Get (element property queries) ───
 
       case "gettext": {
-        const text = await scope.locator(command.selector).textContent() ?? "";
-        const r: GetTextResult = { _tag: "GetTextResult", text };
-        return ok(r);
+        const locator = scope.locator(command.selector);
+        const selection = command.selection;
+        if (selection === undefined) {
+          const text = await withOperationTimeout(() => locator.textContent(), options) ?? "";
+          const result: GetTextResult = { _tag: "GetTextResult", text };
+          return ok(result);
+        }
+
+        switch (selection._tag) {
+          case "All": {
+            const texts = await withOperationTimeout(
+              () => locator.evaluateAll((nodes) => nodes.map((node) => node.textContent ?? "")),
+              options,
+            );
+            const result: GetTextResult = { _tag: "GetTextAllResult", texts };
+            return ok(result);
+          }
+          case "Nth": {
+            const count = await withOperationTimeout(() => locator.count(), options);
+            if (!Number.isInteger(selection.index) || selection.index < 0 || selection.index >= count) {
+              return err({ _tag: "ElementNotFound", selector: `${command.selector}:nth(${selection.index})` });
+            }
+            const text = await withOperationTimeout(
+              () => locator.nth(selection.index).textContent(),
+              options,
+            ) ?? "";
+            const result: GetTextResult = { _tag: "GetTextResult", text };
+            return ok(result);
+          }
+          default:
+            return exhaustive(selection);
+        }
       }
 
       case "innertext": {
@@ -2886,9 +3082,19 @@ export async function executeCommand(
       }
 
       case "getattribute": {
-        const value = await scope.locator(command.selector).getAttribute(command.attribute) ?? "";
-        const r: GetValueResult = { _tag: "GetValueResult", value };
-        return ok(r);
+        const value = await withOperationTimeout(
+          () => scope.locator(command.selector).getAttribute(command.attribute, {
+            timeout: operationTimeout(options),
+          }),
+          options,
+        );
+        const result: GetAttributeResult = {
+          _tag: "GetAttributeResult",
+          value: value === null
+            ? { _tag: "AttributeMissing" }
+            : { _tag: "AttributePresent", value },
+        };
+        return ok(result);
       }
 
       case "url": {
@@ -2907,49 +3113,62 @@ export async function executeCommand(
       }
 
       case "boundingbox": {
-        const r: BoundingBoxResult = {
+        const box = await withOperationTimeout(
+          () => scope.locator(command.selector).boundingBox(),
+          options,
+        );
+        const result: BoundingBoxResult = {
           _tag: "BoundingBoxResult",
-          box: await scope.locator(command.selector).boundingBox(),
+          box: geometryFromBox(box),
         };
-        return ok(r);
+        return ok(result);
       }
 
       case "styles": {
-        const elements = await scope.locator(command.selector).evaluateAll((nodes) =>
-          nodes.map((node) => {
-            const element = node as HTMLElement;
-            const rect = element.getBoundingClientRect();
-            const styles = getComputedStyle(element);
-            return {
-              tag: element.tagName.toLowerCase(),
-              text: element.innerText ?? element.textContent ?? "",
-              box: {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-              },
-              styles: {
-                fontSize: styles.fontSize,
-                fontWeight: styles.fontWeight,
-                fontFamily: styles.fontFamily,
-                color: styles.color,
-                backgroundColor: styles.backgroundColor,
-                borderRadius: styles.borderRadius,
-              },
-            };
-          }),
+        const elements = await withOperationTimeout(
+          () => scope.locator(command.selector).evaluateAll((nodes) =>
+            nodes.map((node) => {
+              const element = node as HTMLElement;
+              const rect = element.getBoundingClientRect();
+              const styles = getComputedStyle(element);
+              const box = element.getClientRects().length === 0
+                ? { _tag: "NoLayout" as const }
+                : {
+                    _tag: "Box" as const,
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                  };
+              return {
+                tag: element.tagName.toLowerCase(),
+                text: element.innerText ?? element.textContent ?? "",
+                box,
+                styles: {
+                  fontSize: styles.fontSize,
+                  fontWeight: styles.fontWeight,
+                  fontFamily: styles.fontFamily,
+                  color: styles.color,
+                  backgroundColor: styles.backgroundColor,
+                  borderRadius: styles.borderRadius,
+                },
+              };
+            }),
+          ),
+          options,
         );
-        const r: ElementStylesResult = { _tag: "ElementStylesResult", elements };
-        return ok(r);
+        const result: ElementStylesResult = { _tag: "ElementStylesResult", elements };
+        return ok(result);
       }
 
       // ─── Is (element state queries) ───
-
       case "isvisible": {
-        const visible = await scope.locator(command.selector).isVisible();
-        const r: BooleanResult = { _tag: "BooleanResult", visible };
-        return ok(r);
+        const visible = await withOperationTimeout(
+          () => scope.locator(command.selector).isVisible(),
+          options,
+        );
+        const result: VisibilityResult = { _tag: "VisibilityResult", visible, semantics: "layout" };
+        return ok(result);
       }
 
       case "isenabled": {

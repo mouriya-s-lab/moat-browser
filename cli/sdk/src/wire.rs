@@ -138,6 +138,7 @@ pub enum WireResponse {
         dialog_id: Option<String>,
         page: Option<DialogPage>,
 
+        details: Option<Value>,
         owner: Option<String>,
         current: Option<u32>,
         limit: Option<u32>,
@@ -189,6 +190,8 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(rename = "errorType", skip_serializing_if = "Option::is_none")]
     pub error_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<CommandFailureCause>,
     #[serde(rename = "operationId", skip_serializing_if = "Option::is_none")]

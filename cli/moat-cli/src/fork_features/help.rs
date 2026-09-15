@@ -18,7 +18,10 @@ Navigation and page actions:
   keydown/keyup                 Explicit held-key pairing; high-level input
                                  rejects while a modifier remains held
   wait | find | get | is | eval | highlight
-  wait --timeout <ms>          Integer 1-120000ms; default 25000ms
+  get text <selector> [--all|--nth <index>]
+                               Strict by default; --all reads all matches in order
+                               and --nth reads one zero-based match
+
 
 Page artifacts and state:
   snapshot                     Accessibility snapshot; supports -i/-c/-d/-s
@@ -111,8 +114,9 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "pdf" => "pdf [output-path]",
         "snapshot" => "snapshot [-i] [-c] [-d <depth>] [-s <selector>]",
         "eval" => "eval <javascript> [selector]",
-        "get" => "get <url|title|text|html|value|attr|count|box|styles> [argument]",
+        "get" => "get <url|title|text|html|value|attr|count|box|styles> [argument] [--all|--nth <index>]",
         "is" => "is <visible|enabled|checked> <selector>",
+
         "find" => "find <role|text|label|placeholder|alt|title|testid|first|last|nth> ...",
         "mouse" => "mouse <move|down|up|wheel> ...",
         "device" => "device list",
@@ -161,7 +165,15 @@ pub fn command_help_text(command: &str) -> Option<String> {
     };
 
     let description = match command {
-        "window" => "Open a new tab in the shared browser context for the active session.",
+        "get" => {
+            "text is strict for one match by default; use `--all` for all matches or `--nth <index>` for one zero-based match. `attr` reports missing versus present-empty explicitly, and `styles` preserves fractional geometry with a distinct no-layout state."
+        },
+        "is" => {
+            "`is visible` reports layout visibility only. It does not prove opacity, occlusion, perceptual visibility, interactivity, or click safety."
+        },
+        "eval" => {
+            "Results preserve scalar, object, array, and undefined values after one serialization; undefined is marked explicitly and is distinct from an empty string, empty object, or void success. A non-Error throw is reported as command_failed with cause cdp and readable structured details rather than Object."
+        },
         "click" => {
             "With --new-tab, open a non-empty HTTP(S) link in a new active tab and leave the original tab unchanged; elements without an openable link are rejected."
         },

@@ -65,7 +65,11 @@ function mockPage(overrides?: Partial<Page>): Page {
     screenshot: mock(() => Promise.resolve(Buffer.from("png-data"))),
     pdf: mock(() => Promise.resolve(Buffer.from("pdf-data"))),
     viewportSize: mock(() => ({ width: 800, height: 600 })),
-    evaluate: mock((_code: unknown) => Promise.resolve({ answer: 42 })),
+    evaluate: mock((code: unknown) =>
+      typeof code === "function"
+        ? Promise.resolve({ status: "value", value: { answer: 42 } })
+        : Promise.resolve({ answer: 42 })
+    ),
     keyboard: {
       press: mock(() => Promise.resolve()),
       down: mock(() => Promise.resolve()),
@@ -465,12 +469,12 @@ describe("cdp-bridge", () => {
       }
     });
 
-    it("eval returns EvalResult with JSON.stringify'd value", async () => {
+    it("eval returns EvalResult with the original value type", async () => {
       const r = await executeCommand(ctx, { action: "eval", code: "1+1" }, refStore, SESSION);
       const data = assertOk(r);
       expect(data._tag).toBe("EvalResult");
       if (data._tag === "EvalResult") {
-        expect(data.result).toBe('{"answer":42}');
+        expect(data.result).toEqual({ answer: 42 });
       }
     });
 
@@ -491,7 +495,10 @@ describe("cdp-bridge", () => {
 
     it("boundingbox returns locator geometry", async () => {
       const data = assertOk(await executeCommand(ctx, { action: "boundingbox", selector: "button" }, refStore, SESSION));
-      expect(data).toEqual({ _tag: "BoundingBoxResult", box: { x: 1, y: 2, width: 3, height: 4 } });
+      expect(data).toEqual({
+        _tag: "BoundingBoxResult",
+        box: { _tag: "Box", x: 1, y: 2, width: 3, height: 4 },
+      });
     });
 
     it("styles returns computed style details", async () => {
