@@ -1461,14 +1461,18 @@ async function readArtifactChunk(
   path: string,
   offset: number,
   length: number,
+  options: CommandExecutionOptions | undefined,
 ): Promise<Buffer> {
-  const handle = await open(path, "r");
+  const handle = await withOperationTimeout(() => open(path, "r"), options);
   try {
     const buffer = Buffer.alloc(length);
-    const result = await handle.read(buffer, 0, length, offset);
+    const result = await withOperationTimeout(
+      () => handle.read(buffer, 0, length, offset),
+      options,
+    );
     return buffer.subarray(0, result.bytesRead);
   } finally {
-    await handle.close();
+    await withOperationTimeout(() => handle.close(), options);
   }
 }
 
@@ -1476,6 +1480,7 @@ async function readNetworkArtifact(
   state: SessionRuntimeState,
   sessionId: string,
   command: Extract<BrowserCommand, { readonly action: "network_artifact_read" }>,
+  options: CommandExecutionOptions | undefined,
 ): Promise<Result<NetworkArtifactChunkResult, ControllerError>> {
   const artifact = state.artifacts.get(command.artifactId);
   if (artifact === undefined || artifact.expiresAt <= Date.now()) {
@@ -1517,12 +1522,22 @@ async function readNetworkArtifact(
   while (chunkBytes > 0 || artifact.bytes === 0) {
     let bytes: Buffer;
     try {
-      bytes = await readArtifactChunk(artifact.path, offset, chunkBytes);
+      bytes = await readArtifactChunk(artifact.path, offset, chunkBytes, options);
     } catch (error) {
       forgetNetworkArtifact(state, artifact.artifactId);
+      if (error instanceof OperationTimeoutError && options !== undefined) {
+        return err(timeoutError("network_artifact_read", options));
+      }
       return err({
         _tag: "CommandFailed",
         message: `HAR artifact read failed at ${offset}/${artifact.bytes} bytes (phase=read): ${error instanceof Error ? error.message : String(error)}; retry HAR stop in the owning session`,
+      });
+    }
+    if (bytes.length === 0 && artifact.bytes > offset) {
+      forgetNetworkArtifact(state, artifact.artifactId);
+      return err({
+        _tag: "CommandFailed",
+        message: `HAR artifact read made no progress at ${offset}/${artifact.bytes} bytes (phase=read); retry HAR stop in the owning session`,
       });
     }
     const end = offset + bytes.length;
@@ -1552,7 +1567,8 @@ async function readNetworkArtifact(
       sha256: artifact.sha256,
       ...(next === undefined ? {} : { continuation: next }),
     };
-    if (encodedNetworkBytes(sessionId, result) <= NETWORK_RESULT_BUDGET_BYTES) return ok(result);
+    const encodedBytes = encodedNetworkBytes(sessionId, result);
+    if (encodedBytes <= NETWORK_RESULT_BUDGET_BYTES) return ok(result);
     if (chunkBytes === 0) break;
     chunkBytes = Math.floor(chunkBytes / 2);
   }
@@ -3751,6 +3767,9 @@ export async function executeCommand(
   if (command.action === "batch") {
     return executeBatchCommand(context, command, refStore, sessionId, options);
   }
+  if (command.action === "network_artifact_read") {
+    return readNetworkArtifact(getSessionRuntimeState(sessionId), sessionId, command, options);
+  }
   const runtimeState = observeContextRuntime(sessionId, context);
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const pages = context.pages();
@@ -4786,9 +4805,6 @@ export async function executeCommand(
         return ok(result);
       }
 
-      case "network_artifact_read": {
-        return await readNetworkArtifact(runtimeState, sessionId, command);
-      }
 
       case "window_new": {
         invalidateRefs(refStore, sessionId, "page");
