@@ -174,8 +174,12 @@ Explicit `accept`/`dismiss` during that grace lets the original eval command
 return its script result. If the grace expires first, the eval returns a
 pending `operationId` rather than an empty success; resolve it with
 `dialog accept [text]` or `dialog dismiss`, then retrieve the original result
-with `dialog result <operationId>` if it was not included in the handler
-response. No dialog is accepted or dismissed automatically. Prompt text is
+with `dialog result <operation-id>` if it was not included in the handler
+response. If the command deadline wins first, `dialog result <operation-id>`
+returns `state: "operation"` with `TimedOutOperation` fields for `phase`,
+`budget`, possible `sideEffects`, `sessionId`, `operationId`, `dialogId`, and
+Page identity. The modal remains explicitly handleable and the session stays
+usable. No dialog is accepted or dismissed automatically. Prompt text is
 passed to the page unchanged.
 
 `moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.

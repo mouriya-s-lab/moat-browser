@@ -267,6 +267,7 @@ type CdpFrameNavigatedEvent = {
     readonly id: string;
     readonly url: string;
   };
+};
 type DialogInitiator =
   | { readonly _tag: "NoEval" }
   | { readonly _tag: "Eval"; readonly operationId: string };
@@ -327,6 +328,11 @@ type EvalOperation =
       readonly page: Page;
       readonly dialogId: string;
       readonly operation: string;
+      readonly phase: "dialog-handler";
+      readonly budget: number;
+      readonly sideEffects: "possible";
+      readonly sessionId: string;
+      readonly pageInfo: DialogPage;
     };
 
 type EvalDeadline =
@@ -805,6 +811,12 @@ function dialogOperationFor(
             _tag: "TimedOutOperation",
             operationId: operation.operationId,
             operation: operation.operation,
+            phase: operation.phase,
+            budget: operation.budget,
+            sideEffects: operation.sideEffects,
+            sessionId: operation.sessionId,
+            dialogId: operation.dialogId,
+            page: operation.pageInfo,
           };
         default:
           return exhaustive(operation);
@@ -878,9 +890,12 @@ function markEvalTimeout(sessionId: string, state: SessionRuntimeState, operatio
   const deadline = state.evalDeadlines.get(operationId);
   const budget = deadline?._tag === "Deadline" ? deadline.budget : 0;
   const pageId = pageIdFor(state, operation.page);
+  const pageInfo: DialogPage = state.activeContext === undefined
+    ? { pageId, pageIndex: -1, pageUrl: pageUrlFor(operation.page) }
+    : dialogPageFor(state, state.activeContext, operation.page);
   const timeoutOperation =
     `dialog/eval phase=dialog-handler budget=${budget}ms session=${sessionId} ` +
-    `operation=${operationId} page=${pageId} dialog=${operation.dialogId} ` +
+    `operation=${operationId} page=${pageInfo.pageId} dialog=${operation.dialogId} ` +
     "result may include partial side effects";
   const error: ControllerError = { _tag: "Timeout", operation: timeoutOperation };
 
@@ -890,6 +905,11 @@ function markEvalTimeout(sessionId: string, state: SessionRuntimeState, operatio
     page: operation.page,
     dialogId: operation.dialogId,
     operation: timeoutOperation,
+    phase: "dialog-handler",
+    budget,
+    sideEffects: "possible",
+    sessionId,
+    pageInfo,
   });
   state.evalByPage.delete(operation.page);
   clearEvalLifecycle(state, operationId);
@@ -1048,10 +1068,6 @@ function operationDialogResult(
   if (operation === undefined) {
     return err({ _tag: "ElementNotFound", selector: `operation:${operationId}` });
   }
-  if (operation._tag === "TimedOut") return err({
-    _tag: "Timeout",
-    operation: operation.operation,
-  });
   return ok({
     _tag: "DialogResult",
     state: "operation",

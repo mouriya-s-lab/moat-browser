@@ -429,7 +429,22 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                     .unwrap_or("unknown");
                 println!("{} Operation {}", color::warning_indicator(), operation_id);
                 if let Some(operation) = data.get("operation") {
-                    if let Some(result) = operation.get("result") {
+                    if operation.get("_tag").and_then(|v| v.as_str()) == Some("TimedOutOperation") {
+                        let phase = operation.get("phase").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let budget = operation.get("budget").and_then(|v| v.as_u64()).map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string());
+                        let side_effects = operation.get("sideEffects").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let session_id = operation.get("sessionId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let dialog_id = operation.get("dialogId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let page_id = operation
+                            .get("page")
+                            .and_then(|v| v.get("pageId"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        println!(
+                            "  Timed out: phase={} budget={}ms sideEffects={} session={} operation={} dialog={} page={}",
+                            phase, budget, side_effects, session_id, operation_id, dialog_id, page_id
+                        );
+                    } else if let Some(result) = operation.get("result") {
                         println!("  Evaluation result: {}", serde_json::to_string_pretty(result).unwrap_or_default());
                     } else {
                         println!("  {}", serde_json::to_string(operation).unwrap_or_default());

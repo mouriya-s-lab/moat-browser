@@ -297,6 +297,12 @@ export type DialogOperation =
       readonly _tag: "TimedOutOperation";
       readonly operationId: string;
       readonly operation: string;
+      readonly phase: "dialog-handler";
+      readonly budget: number;
+      readonly sideEffects: "possible";
+      readonly sessionId: string;
+      readonly dialogId: string;
+      readonly page: DialogPage;
     };
 
 export type DialogResult =
@@ -997,6 +1003,11 @@ const browserStorageStateSchema = type({
   origins: stateOriginSchema.array(),
   tabs: stateTabSchema.array(),
 });
+const dialogPageSchema = type({
+  pageId: "string",
+  pageIndex: "number",
+  pageUrl: "string",
+});
 const dialogOperationSchema = type({ _tag: "'NoOperation'" })
   .or({ _tag: "'PendingOperation'", operationId: "string" })
   .or({
@@ -1004,14 +1015,22 @@ const dialogOperationSchema = type({ _tag: "'NoOperation'" })
     operationId: "string",
     result: { _tag: "'EvalResult'", result: "string" },
   })
-  .or({ _tag: "'FailedOperation'", operationId: "string", error: "string" })
-  .or({ _tag: "'TimedOutOperation'", operationId: "string", operation: "string" });
-
-const dialogPageSchema = type({
-  pageId: "string",
-  pageIndex: "number",
-  pageUrl: "string",
-});
+  .or({
+    _tag: "'FailedOperation'",
+    operationId: "string",
+    error: "string",
+  })
+  .or({
+    _tag: "'TimedOutOperation'",
+    operationId: "string",
+    operation: "string",
+    phase: "'dialog-handler'",
+    budget: "number",
+    sideEffects: "'possible'",
+    sessionId: "string",
+    dialogId: "string",
+    page: dialogPageSchema,
+  });
 
 export const dialogResultSchema = type({
   _tag: "'DialogResult'",

@@ -518,7 +518,7 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 
 - `dialog status`、`dialog accept`、`dialog dismiss` 始终作用于当前 active Page 的具体 modal，并返回 `pageId`、当前 tab index、`dialogId` 与 modal 类型/消息；后创建的 tab 不会覆盖先创建的 modal。
 - `eval` 触发 modal 后，Controller 最多等待 **3s handler grace**。grace 内显式处理会让原始 `eval` 调用直接返回脚本结果；无人处理时原调用在 grace 到期返回 `pending`，其中的 `operationId` 可交给 `dialog accept|dismiss`，再用 `dialog result <operationId>` 取回原始 `eval` 结果。
-- 不自动 accept/dismiss。`prompt` 的 `dialog accept "<text>"` 会把完全相同的文本传回页面。操作在服务端普通命令预算内仍未处理时，operation 进入可追踪的 `timeout` 终态，错误包含 dialog/eval 阶段、预算、session、Page 和 operation 标识。
+- 不自动 accept/dismiss。`prompt` 的 `dialog accept "<text>"` 会把完全相同的文本传回页面。操作在服务端普通命令预算内仍未处理时，`dialog result <operationId>` 返回 `state: "operation"` 与 `_tag: "TimedOutOperation"`，并结构化给出 `phase`、`budget`、`sideEffects: "possible"`、`sessionId`、`operationId`、`dialogId` 和 Page 身份；随后仍可显式处理 modal，session 保持可用。
 - 当前 Page 已有未处理 modal 时，后续命令在页面副作用前返回 `errorType: "command_failed"`、`cause: "dialog_pending"`，并在结构化字段中携带原 operation 的 `operationId`、`dialogId` 和 Page 身份 `page`；处理者应按这些身份调用 `dialog accept|dismiss`。
 
 - `moat --json --help`、`-h`、`help`、`--version` 与 `-V` 都返回单个 JSON 值。错误对象的 `errorType` 是机器判别字段，`error` 只用于展示。
@@ -772,8 +772,12 @@ return its script result. If the grace expires first, the eval returns a
 pending `operationId`; resolve it with `dialog accept [text]` or
 `dialog dismiss`, then retrieve the original result with
 `dialog result <operationId>` if it was not included in the handler response.
-No dialog is accepted or dismissed automatically. Prompt text is passed to
-the page unchanged.
+If the operation reaches its command deadline first, `dialog result` returns
+`state: "operation"` with a `TimedOutOperation` containing structured `phase`,
+`budget`, `sideEffects`, `sessionId`, `operationId`, `dialogId`, and Page
+identity fields. The modal remains explicitly handleable and the session stays
+usable. No dialog is accepted or dismissed automatically. Prompt text is
+passed to the page unchanged.
 
 If another command reaches a Page while that Page still has the eval-triggered
 modal, the command is rejected before page side effects with
