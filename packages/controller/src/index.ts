@@ -175,7 +175,10 @@ if (reapResult._tag === "Ok") {
 
 const wss = new WebSocketServer({ port: config.port });
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // Disable Nagle: large command/artifact responses cross a Docker published-port
+  // (userland-proxy) hop where Nagle + delayed-ACK collapses throughput.
+  req.socket.setNoDelay(true);
   handler.handleConnection(ws);
 });
 

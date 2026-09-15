@@ -297,7 +297,11 @@ type NetworkArtifactRecord = {
 const NETWORK_WIRE_TARGET_BYTES = 8 * 1024 * 1024;
 const NETWORK_WIRE_RESERVE_BYTES = 64 * 1024;
 const NETWORK_RESULT_BUDGET_BYTES = NETWORK_WIRE_TARGET_BYTES - NETWORK_WIRE_RESERVE_BYTES;
-const NETWORK_BODY_CHUNK_BYTES = 4 * 1024 * 1024;
+// 1 MiB raw -> ~1.4 MB base64 wire frame. Large single frames cross the Docker
+// published-port (userland-proxy) hop where throughput can collapse to ~120 KB/s;
+// this bound keeps every chunk's worst-case transfer well inside the 25s command
+// deadline (the prior 4 MiB -> 5.6 MB frame needed >45s at that floor and timed out).
+const NETWORK_BODY_CHUNK_BYTES = 1 * 1024 * 1024;
 const NETWORK_PAGE_SIZE = 50;
 const NETWORK_MAX_PAGE_SIZE = 100;
 const NETWORK_CONTINUATION_TTL_MS = 5 * 60 * 1000;

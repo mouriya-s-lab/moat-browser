@@ -11,12 +11,26 @@ use std::future::Future;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream};
 use tokio::time::{timeout_at, Instant};
 use wire::{CapacityDetails, CommandFailureCause, DialogPage, Response, WireRequest, WireResponse};
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connect a client WebSocket and disable Nagle's algorithm on the underlying
+/// TCP stream. Large command/artifact responses cross a Docker published-port
+/// (userland-proxy) hop where Nagle + delayed-ACK collapses throughput; keeping
+/// TCP_NODELAY on every SDK socket bounds per-frame latency to the wire itself.
+async fn connect_ws(url: &str) -> Result<WsStream, SdkError> {
+    let (ws, _) = connect_async(url)
+        .await
+        .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+    if let MaybeTlsStream::Plain(tcp) = ws.get_ref() {
+        let _ = tcp.set_nodelay(true);
+    }
+    Ok(ws)
+}
 const DEFAULT_SERVER_COMMAND_BUDGET_MS: u64 = 25_000;
 const REGISTER_SERVER_BUDGET_MS: u64 = 45_000;
 const CLIENT_GRACE_MS: u64 = 5_000;
@@ -524,9 +538,7 @@ impl MoatClient {
         let deadline = ClientDeadline::new(REGISTER_SERVER_BUDGET_MS);
         let profile = profile.map(String::from);
         let resp = with_client_deadline(deadline, "register", async {
-            let (mut ws, _) = connect_async(url)
-                .await
-                .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+            let mut ws = connect_ws(url).await?;
 
             let req = WireRequest::Register { profile };
             send_json(&mut ws, &req).await?;
@@ -638,9 +650,7 @@ impl MoatClient {
         request: Value,
         deadline: ClientDeadline,
     ) -> Result<WireResponse, SdkError> {
-        let (mut ws, _) = connect_async(&self.url)
-            .await
-            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+        let mut ws = connect_ws(&self.url).await?;
         let wire_req = WireRequest::Command {
             session_id: self.session_id.clone(),
             command: request,
@@ -732,9 +742,7 @@ impl MoatClient {
     }
 
     async fn destroy_inner(&self, deadline: ClientDeadline) -> Result<(), SdkError> {
-        let (mut ws, _) = connect_async(&self.url)
-            .await
-            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+        let mut ws = connect_ws(&self.url).await?;
 
         let req = WireRequest::Deregister {
             session_id: self.session_id.clone(),
@@ -1062,14 +1070,10 @@ impl MoatClient {
         // Reuse one stateless command socket for every artifact chunk. Closing each
         // intermediate socket can race the server's response write.
         let connect_deadline = ClientDeadline::new(DEFAULT_SERVER_COMMAND_BUDGET_MS);
-        let (mut artifact_ws, _) = with_client_deadline(
+        let mut artifact_ws = with_client_deadline(
             connect_deadline,
             "command",
-            async {
-                connect_async(&self.url)
-                    .await
-                    .map_err(|error| SdkError::ConnectionFailed(error.to_string()))
-            },
+            connect_ws(&self.url),
         )
         .await?;
         let result: Result<(), SdkError> = async {
