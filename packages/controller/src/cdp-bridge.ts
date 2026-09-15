@@ -1682,6 +1682,8 @@ export async function executeCommand(
       case "tab_new": {
         invalidateRefs(refStore, sessionId, "page");
         const newPage = await context.newPage();
+        observePageRuntime(sessionId, newPage);
+        await ensureCdpRuntimeObserver(sessionId, context, newPage, options);
         if (command.url) {
           const timeout = operationTimeout(options);
           await newPage.goto(command.url, {
@@ -1693,7 +1695,6 @@ export async function executeCommand(
         runtimeState.activePage = newPage;
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        observePageRuntime(sessionId, newPage);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -1714,6 +1715,7 @@ export async function executeCommand(
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         observePageRuntime(sessionId, nextPage);
+        await ensureCdpRuntimeObserver(sessionId, context, nextPage);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -1735,6 +1737,8 @@ export async function executeCommand(
           runtimeState.activePage = remainingPages[activeTabIndex];
           runtimeState.activeFrame = undefined;
           runtimeState.activeFrameSelector = undefined;
+          observePageRuntime(sessionId, remainingPages[activeTabIndex]);
+          await ensureCdpRuntimeObserver(sessionId, context, remainingPages[activeTabIndex]);
         } else if (closeIndex < activeTabIndex) {
           activeTabIndex--;
         }
@@ -2190,12 +2194,13 @@ export async function executeCommand(
       case "window_new": {
         invalidateRefs(refStore, sessionId, "page");
         const newPage = await context.newPage();
+        observePageRuntime(sessionId, newPage);
+        await ensureCdpRuntimeObserver(sessionId, context, newPage);
         activeTabIndex = context.pages().indexOf(newPage);
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activePage = newPage;
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        observePageRuntime(sessionId, newPage);
         const r: TabResult = {
           _tag: "TabResult",
           tabs: await buildTabList(context, activeTabIndex),
