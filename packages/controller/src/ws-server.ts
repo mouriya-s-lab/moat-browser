@@ -50,7 +50,7 @@ function timeoutFailure(
   phase: string,
   budget: number,
   sessionId?: string,
-): ControllerError {
+): Extract<ControllerError, { readonly _tag: "Timeout" }> {
   return {
     _tag: "Timeout",
     operation: `${phase} exceeded ${budget}ms${sessionId === undefined ? "" : ` session=${sessionId}`} (result may include partial side effects)`,
