@@ -530,6 +530,22 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 
 Controller 对普通命令和清理使用默认 25s 服务端预算，`register` 使用 45s。等待命令可用显式 `--timeout <ms>` 覆盖预算，取值必须是整数 `1`–`120000`ms；省略时使用默认 25s。客户端 deadline 始终在服务端预算之外额外保留 5s，用于覆盖 WebSocket 建连、发送、接收和关闭的网络收尾，避免服务端刚耗尽预算时客户端先误报为 `command_failed`/transport。任一预算耗尽都返回 `errorType: "timeout"`，且不带 `cause`；调用方应把结果视为可能已经产生部分副作用，而不是自动重试。
 
+### 9.3.1 远程 Chromium 环境模拟（C8）
+
+`moat device list` 从远程 Chromium runtime 返回非空的 descriptor 名单。名单中的名称、viewport、screen、DPR、UA 和 touch 能力来自实际可用的 Patchright descriptor；把其中一个名称传给 `moat set device <name>`，不要依赖本机 Xcode 或 Appium 的设备列表。
+
+```bash
+moat device list
+moat set device "iPhone 12"       # 名称以 device list 的实际输出为准
+moat set viewport 390 664 3       # 第三个参数是 deviceScaleFactor
+```
+
+`set device` 通过同一组 CDP emulation 设置同时应用 descriptor 的 viewport、deviceScaleFactor、UA、UA metadata 和 touch 能力，不再在 CDP 后调用会重置 DPR 的 Playwright `setViewportSize()`。移动页面是否把 layout viewport 缩放到设备宽度仍由页面自己的 viewport meta 控制：没有该 meta 的页面按 Chromium 规范可能显示约 980 CSS 像素；声明 `width=device-width` 的页面才显示 descriptor 的 CSS 宽度。`fixture/device-meta.html` 是带有该声明、用于验证这两个读数的测试页面。
+
+`set viewport <width> <height> [scale]` 同样使用 CDP metrics，`scale` 会作为页面可观察到的 `devicePixelRatio`。设置后的 device/viewport、headers、media 和 offline 状态属于当前 session：已有 tab 与之后创建的 tab 使用同一设置；新 session 从默认状态开始。`moat open --headers <json>` 是一次导航的显式 headers 覆盖，不会把该例外默默变成 session 设置。
+
+`set offline` 只接受 `on`、`off`、`true`、`false`，大小写不敏感。未知 offline token、未知 device 名称和缺少必需参数会在改变浏览器状态前拒绝；机器调用应根据响应的 `errorType` 判别 `invalid_value` 或 `missing_arguments`，不要匹配展示文案。
+
 ### 9.4 State 与 cookie scope
 
 `state save` 保存 cookies、origin 级 localStorage/IndexedDB，以及每个打开

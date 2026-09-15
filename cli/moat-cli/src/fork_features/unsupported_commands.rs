@@ -28,10 +28,6 @@ pub fn unsupported_command(command: &str) -> Option<String> {
             "live viewing uses neko WebRTC",
             "use the neko WebRTC viewer",
         ),
-        "device" => (
-            "moat has no local Xcode/Appium device backend",
-            "use `moat set device <name>` for supported browser emulation",
-        ),
         "install" | "upgrade" => (
             "browser binaries are managed by the Controller",
             "use `moat connect` with a registered profile",
@@ -62,11 +58,12 @@ mod tests {
     #[test]
     fn rejects_every_stable_unsupported_command_before_argument_parsing() {
         for command in [
-            "auth", "confirm", "deny", "inspect", "launch", "record", "stream", "device",
+            "auth", "confirm", "deny", "inspect", "launch", "record", "stream",
         ] {
             let error = unsupported_command(command).expect("command must be rejected");
             assert!(error.starts_with("unsupported_in_moat:"));
         }
         assert_eq!(unsupported_command("open"), None);
+        assert_eq!(unsupported_command("device"), None);
     }
 }

@@ -1480,7 +1480,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         "device" => {
             match rest.first().copied() {
                 Some("list") | None => {
-                    // List available iOS simulators
+                    // List descriptors supplied by the remote Chromium runtime.
                     Ok(json!({ "id": id, "action": "device_list" }))
                 }
                 Some(sub) => Err(ParseError::UnknownSubcommand {
@@ -2309,11 +2309,31 @@ fn parse_set(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             Ok(json!({ "id": id, "action": "geolocation", "latitude": lat, "longitude": lng }))
         }
         Some("offline") => {
-            let off = rest
-                .get(1)
-                .map(|s| *s != "off" && *s != "false")
-                .unwrap_or(true);
-            Ok(json!({ "id": id, "action": "offline", "offline": off }))
+            const USAGE: &str = "set offline <on|off|true|false>";
+            let token = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
+                context: "set offline".to_string(),
+                usage: USAGE,
+            })?;
+            if let Some(extra) = rest.get(2) {
+                return Err(ParseError::InvalidValue {
+                    message: format!("Unexpected offline argument: {}", extra),
+                    usage: USAGE,
+                });
+            }
+            let offline = match token.to_ascii_lowercase().as_str() {
+                "on" | "true" => true,
+                "off" | "false" => false,
+                _ => {
+                    return Err(ParseError::InvalidValue {
+                        message: format!(
+                            "Invalid offline value '{}'; expected on, off, true, or false",
+                            token
+                        ),
+                        usage: USAGE,
+                    });
+                }
+            };
+            Ok(json!({ "id": id, "action": "offline", "offline": offline }))
         }
         Some("headers") => {
             let headers_json = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
@@ -3771,6 +3791,25 @@ mod tests {
     fn test_set_viewport_invalid_scale() {
         let result = parse_command(&args("set viewport 1920 1080 abc"), &default_flags());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_offline_accepts_documented_tokens_case_insensitively() {
+        for (token, expected) in [("ON", true), ("true", true), ("OFF", false), ("False", false)] {
+            let command = parse_command(&args(&format!("set offline {token}")), &default_flags()).unwrap();
+            assert_eq!(command["action"], "offline");
+            assert_eq!(command["offline"], expected);
+        }
+    }
+
+    #[test]
+    fn test_set_offline_rejects_unknown_and_missing_values() {
+        for token in ["OFFX", "oof", "wrng", "0"] {
+            let error = parse_command(&args(&format!("set offline {token}")), &default_flags()).unwrap_err();
+            assert!(matches!(error, ParseError::InvalidValue { .. }));
+        }
+        let error = parse_command(&args("set offline"), &default_flags()).unwrap_err();
+        assert!(matches!(error, ParseError::MissingArguments { .. }));
     }
 
     #[test]

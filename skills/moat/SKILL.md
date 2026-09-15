@@ -164,6 +164,34 @@ combination). Key-state results show the currently held modifiers.
 
 `moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
 
+## Remote Chromium environment
+
+Use the runtime's own descriptor discovery before selecting a device:
+
+```bash
+moat device list
+moat set device "<name from moat device list>"
+moat set viewport 390 664 3
+moat set offline OFF
+```
+
+`device list` reports the non-empty remote Chromium descriptor set, including
+the names and metrics accepted by `set device`; it is not a local
+Xcode/Appium inventory. `set device` applies the descriptor's dimensions,
+device scale factor, user agent/metadata, and touch emulation together.
+`set viewport` applies width, height, and the optional scale as the page's
+`devicePixelRatio`. Do not infer a mobile device from a narrow width alone.
+Pages without a viewport meta tag can intentionally expose Chromium's
+approximately 980 CSS-pixel mobile layout viewport; use a page declaring
+`width=device-width` when checking the descriptor CSS width.
+
+Device/viewport, headers, media, and offline settings are session-scoped:
+already-open tabs and tabs created later in that session inherit them. A
+navigation-level `moat open --headers <json>` value is an explicit one-call
+override. `set offline` accepts only `on`, `off`, `true`, or `false`,
+case-insensitively. Unknown values, unknown descriptor names, and missing
+arguments are rejected before changing browser state.
+
 For machine-readable failures, inspect `errorType` rather than matching
 `error`: `unsupported_in_moat`, `missing_arguments`, `invalid_value`,
 `target_not_found`, `capacity_exceeded`, and `timeout` are stable classes.

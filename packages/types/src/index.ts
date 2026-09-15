@@ -297,6 +297,71 @@ export type TouchResult = {
   readonly tapped?: string;
   readonly swiped?: "up" | "down" | "left" | "right";
 };
+export type UserAgentBrand = {
+  readonly brand: string;
+  readonly version: string;
+};
+
+export type UserAgentMetadata = {
+  readonly brands: ReadonlyArray<UserAgentBrand>;
+  readonly fullVersionList: ReadonlyArray<UserAgentBrand>;
+  readonly platform: string;
+  readonly platformVersion: string;
+  readonly architecture: string;
+  readonly model: string;
+  readonly mobile: boolean;
+};
+
+export type DeviceDescriptor = {
+  readonly name: string;
+  readonly userAgent: string;
+  readonly userAgentMetadata: UserAgentMetadata;
+  readonly viewport: {
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly screen: {
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly deviceScaleFactor: number;
+  readonly isMobile: boolean;
+  readonly hasTouch: boolean;
+};
+
+export type DeviceListResult = {
+  readonly _tag: "DeviceListResult";
+  readonly devices: ReadonlyArray<DeviceDescriptor>;
+};
+
+export type ViewportOverride = {
+  readonly width: number;
+  readonly height: number;
+  readonly deviceScaleFactor: number;
+};
+
+export type SessionSetting<T> =
+  | { readonly _tag: "Unset" }
+  | { readonly _tag: "Set"; readonly value: T };
+
+export type SessionEmulation =
+  | { readonly _tag: "DefaultEmulation" }
+  | { readonly _tag: "ViewportEmulation"; readonly viewport: ViewportOverride }
+  | {
+      readonly _tag: "DeviceEmulation";
+      readonly descriptor: DeviceDescriptor;
+      readonly viewport: ViewportOverride;
+    };
+
+export type SessionEnvironmentSettings = {
+  readonly emulation: SessionEmulation;
+  readonly offline: SessionSetting<boolean>;
+  readonly headers: SessionSetting<Readonly<Record<string, string>>>;
+  readonly media: SessionSetting<{
+    readonly colorScheme: "dark" | "light" | "no-preference";
+    readonly reducedMotion: "reduce" | "no-preference";
+  }>;
+};
 
 export type IndexedDbSerializedValue =
   | string
@@ -432,6 +497,7 @@ export type CommandResultData =
   | FrameResult
   | CdpUrlResult
   | TouchResult
+  | DeviceListResult
   | StateLoadResult
   | StartedResult
   | BooleanResult
