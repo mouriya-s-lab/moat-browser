@@ -129,6 +129,172 @@ fn format_stream_status_text(action: Option<&str>, data: &serde_json::Value) -> 
         _ => None,
     }
 }
+fn diagnostic_context(record: &serde_json::Value) -> String {
+    let session = record
+        .get("sessionId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let page = record
+        .get("pageId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let frame = record
+        .get("frameId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let page_url = record
+        .get("pageUrl")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let frame_url = record
+        .get("frameUrl")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let timestamp = record
+        .get("timestamp")
+        .and_then(|value| value.as_i64())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!(
+        "session={} page={} frame={} pageUrl={} frameUrl={} timestamp={}",
+        session, page, frame, page_url, frame_url, timestamp
+    )
+}
+
+fn diagnostic_text(record: &serde_json::Value) -> String {
+    let tag = record
+        .get("_tag")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Diagnostic");
+    let context = diagnostic_context(record);
+    match tag {
+        "ConsoleDiagnostic" => {
+            let kind = record
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("log");
+            let text = record
+                .get("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            format!("[{}] {} {} {}", tag, kind, context, text)
+        }
+        "PageErrorDiagnostic" => {
+            let message = record
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            format!("[{}] {} {}", tag, context, message)
+        }
+        "ResourceFailureDiagnostic" => {
+            let url = record
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let resource_type = record
+                .get("resourceType")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let status = record
+                .get("status")
+                .map(render_json_value)
+                .unwrap_or_else(|| "not received".to_string());
+            let error = record
+                .get("errorText")
+                .and_then(|value| value.as_str())
+                .unwrap_or("resource loading failed");
+            format!(
+                "[{}] {} {} resourceType={} status={} error={}",
+                tag, context, url, resource_type, status, error
+            )
+        }
+        "PolicyBlockedDiagnostic" => {
+            let url = record
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let policy = record
+                .get("policy")
+                .and_then(|value| value.as_str())
+                .unwrap_or("policy");
+            let text = record
+                .get("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            format!(
+                "[{}] {} {} policy={} {}",
+                tag, context, url, policy, text
+            )
+        }
+        _ => format!("[{}] {}", tag, context),
+    }
+}
+
+fn render_json_value(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default())
+}
+
+fn print_request_detail(request: &serde_json::Value) {
+    let request_id = request
+        .get("requestId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let method = request
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or("GET");
+    let url = request
+        .get("url")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let resource_type = request
+        .get("resourceType")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    println!("Request {}:", request_id);
+    println!("  URL: {}", url);
+    println!("  Method: {}", method);
+    println!("  Resource type: {}", resource_type);
+    if let Some(status) = request.get("status") {
+        println!("  Status: {}", render_json_value(status));
+    } else {
+        println!("  Status: pending (no response received)");
+    }
+    println!(
+        "  Request headers: {}",
+        request
+            .get("requestHeaders")
+            .map(render_json_value)
+            .unwrap_or_else(|| "absent".to_string())
+    );
+    println!(
+        "  Response headers: {}",
+        request
+            .get("responseHeaders")
+            .map(render_json_value)
+            .unwrap_or_else(|| "absent (no response received)".to_string())
+    );
+    if let Some(post_data) = request.get("postData") {
+        println!("  Request body: {}", render_json_value(post_data));
+    } else {
+        println!("  Request body: absent");
+    }
+    let body_state = ["responseBodyState", "responseBodyStatus", "bodyState", "bodyStatus"]
+        .iter()
+        .find_map(|key| request.get(*key).and_then(|value| value.as_str()));
+    if let Some(state) = body_state {
+        println!("  Response body state: {}", state);
+    } else if let Some(body) = request.get("responseBody") {
+        println!("  Response body: {}", render_json_value(body));
+    } else if request.get("status").is_none() {
+        println!("  Response body: pending (response has not completed)");
+    } else {
+        println!("  Response body: absent (Controller did not provide a body)");
+    }
+}
 
 pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &OutputOptions) {
     // The Controller's CDP endpoint is private to its Docker network. Keep
@@ -436,17 +602,19 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             }
             return;
         }
-        // Console logs
+        // Console and browser-generated diagnostics
         if let Some(logs) = data.get("messages").and_then(|v| v.as_array()) {
             if opts.content_boundaries {
                 let mut console_output = String::new();
                 for log in logs {
-                    let level = log.get("type").and_then(|v| v.as_str()).unwrap_or("log");
-                    let text = log.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let level = log
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("error");
                     console_output.push_str(&format!(
                         "{} {}\n",
                         color::console_level_prefix(level),
-                        text
+                        diagnostic_text(log)
                     ));
                 }
                 if console_output.ends_with('\n') {
@@ -455,20 +623,32 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 print_with_boundaries(&console_output, origin, opts);
             } else {
                 for log in logs {
-                    let level = log.get("type").and_then(|v| v.as_str()).unwrap_or("log");
-                    let text = log.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("{} {}", color::console_level_prefix(level), text);
+                    let level = log
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("error");
+                    println!(
+                        "{} {}",
+                        color::console_level_prefix(level),
+                        diagnostic_text(log)
+                    );
                 }
             }
             return;
         }
-        // Errors
+        // Page errors and browser-generated failures
         if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
-            for err in errors {
-                let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                println!("{} {}", color::error_indicator(), msg);
+            for error in errors {
+                println!("{} {}", color::error_indicator(), diagnostic_text(error));
             }
             return;
+        }
+        // Full network request detail (the JSON response remains the source of truth).
+        if action == Some("request_detail") {
+            if let Some(request) = data.get("request") {
+                print_request_detail(request);
+                return;
+            }
         }
         // Cookies
         if let Some(cookies) = data.get("cookies").and_then(|v| v.as_array()) {

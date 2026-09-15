@@ -169,17 +169,59 @@ export type StorageResult = {
   readonly value?: string | null;
 };
 
+// ─── Browser diagnostics ───
+
+export type DiagnosticContext = {
+  readonly sessionId: string;
+  readonly pageId: string;
+  readonly frameId: string;
+  readonly pageUrl: string;
+  readonly frameUrl: string;
+  /** Unix epoch milliseconds captured when the browser emitted the event. */
+  readonly timestamp: number;
+};
+
+export type ConsoleDiagnostic = DiagnosticContext & {
+  readonly _tag: "ConsoleDiagnostic";
+  readonly type: string;
+  readonly text: string;
+};
+
+export type PageErrorDiagnostic = DiagnosticContext & {
+  readonly _tag: "PageErrorDiagnostic";
+  readonly message: string;
+};
+
+export type ResourceFailureDiagnostic = DiagnosticContext & {
+  readonly _tag: "ResourceFailureDiagnostic";
+  readonly url: string;
+  readonly resourceType: string;
+  readonly status?: number;
+  readonly errorText?: string;
+};
+
+export type PolicyBlockedDiagnostic = DiagnosticContext & {
+  readonly _tag: "PolicyBlockedDiagnostic";
+  readonly url: string;
+  readonly resourceType?: string;
+  readonly policy: string;
+  readonly text: string;
+};
+
+export type DiagnosticRecord =
+  | ConsoleDiagnostic
+  | PageErrorDiagnostic
+  | ResourceFailureDiagnostic
+  | PolicyBlockedDiagnostic;
+
 export type ConsoleResult = {
   readonly _tag: "ConsoleResult";
-  readonly messages: ReadonlyArray<{
-    readonly type: string;
-    readonly text: string;
-  }>;
+  readonly messages: ReadonlyArray<DiagnosticRecord>;
 };
 
 export type PageErrorsResult = {
   readonly _tag: "PageErrorsResult";
-  readonly errors: ReadonlyArray<{ readonly message: string }>;
+  readonly errors: ReadonlyArray<DiagnosticRecord>;
 };
 
 export type ClearedResult = {

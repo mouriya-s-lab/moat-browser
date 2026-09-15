@@ -30,6 +30,12 @@ import type {
   BoundingBoxResult,
   ElementStylesResult,
   StorageResult,
+  ConsoleDiagnostic,
+  PageErrorDiagnostic,
+  ResourceFailureDiagnostic,
+  PolicyBlockedDiagnostic,
+  DiagnosticContext,
+  DiagnosticRecord,
   ConsoleResult,
   PageErrorsResult,
   ClearedResult,
@@ -180,6 +186,81 @@ export async function connectCDP(cdpUrl: string): Promise<CdpConnection> {
 
 const sessionTabIndex = new Map<string, number>();
 
+type CdpFrameIdentity = {
+  readonly frameId: string;
+  readonly frameUrl: string;
+};
+
+type RecentConsoleFrame = CdpFrameIdentity & {
+  readonly timestamp: number;
+};
+
+type CdpRequestIdentity = {
+  readonly url: string;
+  readonly frameId?: string;
+  readonly resourceType?: string;
+};
+
+type CdpConsoleArg = {
+  readonly type: string;
+  readonly value?: unknown;
+  readonly description?: string;
+};
+
+type CdpConsoleEvent = {
+  readonly type: string;
+  readonly args: ReadonlyArray<CdpConsoleArg>;
+  readonly executionContextId?: number;
+};
+
+type CdpExceptionEvent = {
+  readonly exceptionDetails: {
+    readonly text: string;
+    readonly exception?: { readonly description?: string };
+    readonly executionContextId?: number;
+    readonly url?: string;
+  };
+};
+
+type CdpExecutionContextEvent = {
+  readonly context: {
+    readonly id: number;
+    readonly origin?: string;
+    readonly auxData?: { readonly frameId?: string };
+  };
+};
+
+type CdpRequestEvent = {
+  readonly requestId: string;
+  readonly request: { readonly url: string };
+  readonly frameId?: string;
+  readonly type?: string;
+};
+
+type CdpLoadingFailedEvent = {
+  readonly requestId: string;
+  readonly errorText?: string;
+  readonly blockedReason?: string;
+  readonly frameId?: string;
+  readonly type?: string;
+};
+
+type CdpLogEvent = {
+  readonly entry: {
+    readonly source?: string;
+    readonly text: string;
+    readonly url?: string;
+    readonly networkRequestId?: string;
+  };
+};
+
+type CdpFrameNavigatedEvent = {
+  readonly frame: {
+    readonly id: string;
+    readonly url: string;
+  };
+};
+
 type SessionRuntimeState = {
   readonly observedPages: WeakSet<Page>;
   readonly cdpObservedPages: WeakSet<Page>;
@@ -188,15 +269,23 @@ type SessionRuntimeState = {
   readonly observerSessions: Set<CDPSession>;
   readonly pendingConsoleKeys: Set<string>;
   readonly pendingErrorMessages: Set<string>;
-  readonly consoleMessages: Array<{ readonly type: string; readonly text: string }>;
-  readonly pageErrors: Array<{ readonly message: string }>;
+  readonly consoleMessages: Array<DiagnosticRecord>;
+  readonly pageErrors: Array<DiagnosticRecord>;
   readonly requestIds: WeakMap<Request, string>;
   readonly requests: Map<string, NetworkRequestEntry>;
+  readonly pageIds: WeakMap<Page, string>;
+  readonly frameIds: WeakMap<Frame, string>;
+  readonly cdpFrameUrls: WeakMap<Page, Map<string, string>>;
+  readonly executionContexts: WeakMap<Page, Map<number, CdpFrameIdentity>>;
+  readonly recentConsoleFrames: WeakMap<Page, RecentConsoleFrame>;
+  readonly cdpRequests: WeakMap<Page, Map<string, CdpRequestIdentity>>;
   activePage?: Page;
   readonly heldModifiers: Set<string>;
   activeFrame?: Frame;
   activeFrameSelector?: string;
   nextRefNumber: number;
+  nextPageId: number;
+  nextFrameId: number;
   pendingDialog?: Dialog;
   dialogInfo?: {
     readonly type: string;
@@ -261,8 +350,16 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     pageErrors: [],
     requestIds: new WeakMap<Request, string>(),
     requests: new Map<string, NetworkRequestEntry>(),
+    pageIds: new WeakMap<Page, string>(),
+    frameIds: new WeakMap<Frame, string>(),
+    cdpFrameUrls: new WeakMap<Page, Map<string, string>>(),
+    executionContexts: new WeakMap<Page, Map<number, CdpFrameIdentity>>(),
+    recentConsoleFrames: new WeakMap<Page, RecentConsoleFrame>(),
+    cdpRequests: new WeakMap<Page, Map<string, CdpRequestIdentity>>(),
     nextRefNumber: 1,
     heldModifiers: new Set<string>(),
+    nextPageId: 1,
+    nextFrameId: 1,
     traceActive: false,
     harActive: false,
     nextRequestId: 1,
@@ -302,27 +399,190 @@ function resolveRef(
   }
 }
 
-function recordConsole(
-  state: SessionRuntimeState,
-  type: string,
-  text: string,
-): void {
-  const key = `${type}\0${text}`;
-  if (state.pendingConsoleKeys.has(key)) return;
-  state.pendingConsoleKeys.add(key);
-  queueMicrotask(() => state.pendingConsoleKeys.delete(key));
-  state.consoleMessages.push({ type, text });
+type DiagnosticOverrides = {
+  readonly pageUrl?: string;
+  readonly frameId?: string;
+  readonly frameUrl?: string;
+};
+
+function safePageUrl(page: Page): string {
+  try {
+    return page.url();
+  } catch {
+    return "";
+  }
 }
 
-function recordPageError(state: SessionRuntimeState, message: string): void {
-  if (state.pendingErrorMessages.has(message)) return;
-  state.pendingErrorMessages.add(message);
-  queueMicrotask(() => state.pendingErrorMessages.delete(message));
-  state.pageErrors.push({ message });
+function safeFrameUrl(page: Page, frame: Frame | undefined): string {
+  if (!frame) return safePageUrl(page);
+  try {
+    return frame.url() || safePageUrl(page);
+  } catch {
+    return safePageUrl(page);
+  }
+}
+
+function pageIdentity(state: SessionRuntimeState, page: Page): string {
+  const existing = state.pageIds.get(page);
+  if (existing) return existing;
+  const identity = `page-${state.nextPageId++}`;
+  state.pageIds.set(page, identity);
+  return identity;
+}
+
+function frameIdentity(state: SessionRuntimeState, frame: Frame): string {
+  const existing = state.frameIds.get(frame);
+  if (existing) return existing;
+  const identity = `frame-${state.nextFrameId++}`;
+  state.frameIds.set(frame, identity);
+  return identity;
+}
+
+function diagnosticContext(
+  state: SessionRuntimeState,
+  sessionId: string,
+  page: Page,
+  frame?: Frame,
+  overrides?: DiagnosticOverrides,
+): DiagnosticContext {
+  const pageUrl = overrides?.pageUrl ?? safePageUrl(page);
+  const frameUrl = overrides?.frameUrl ?? safeFrameUrl(page, frame);
+  const frameId = overrides?.frameId
+    ?? (frame ? frameIdentity(state, frame) : "frame-main");
+  return {
+    sessionId,
+    pageId: pageIdentity(state, page),
+    frameId,
+    pageUrl,
+    frameUrl,
+    timestamp: Date.now(),
+  };
+}
+
+function diagnosticKey(record: DiagnosticRecord): string {
+  switch (record._tag) {
+    case "ConsoleDiagnostic":
+      return `${record._tag}\0${record.type}\0${record.text}\0${record.pageId}\0${record.frameId}\0${record.pageUrl}`;
+    case "PageErrorDiagnostic":
+      return `${record._tag}\0${record.message}\0${record.pageId}\0${record.frameId}\0${record.pageUrl}`;
+    case "ResourceFailureDiagnostic":
+      return `${record._tag}\0${record.url}\0${record.status ?? ""}\0${record.pageId}\0${record.frameId}`;
+    case "PolicyBlockedDiagnostic":
+      return `${record._tag}\0${record.url}\0${record.policy}\0${record.text}\0${record.pageId}\0${record.frameId}`;
+    default:
+      return exhaustive(record);
+  }
+}
+
+function appendDiagnostic(
+  target: Array<DiagnosticRecord>,
+  pending: Set<string>,
+  record: DiagnosticRecord,
+): void {
+  const key = diagnosticKey(record);
+  if (pending.has(key)) return;
+  pending.add(key);
+  queueMicrotask(() => pending.delete(key));
+  target.push(record);
+}
+
+function consoleDiagnostic(
+  context: DiagnosticContext,
+  type: string,
+  text: string,
+): ConsoleDiagnostic | PolicyBlockedDiagnostic {
+  if (isPolicyBlocked(undefined, text)) {
+    return {
+      ...context,
+      _tag: "PolicyBlockedDiagnostic",
+      url: extractUrl(text) ?? context.frameUrl,
+      policy: "csp",
+      text,
+    };
+  }
+  return { ...context, _tag: "ConsoleDiagnostic", type, text };
+}
+
+function recordConsole(state: SessionRuntimeState, record: DiagnosticRecord): void {
+  appendDiagnostic(state.consoleMessages, state.pendingConsoleKeys, record);
+}
+
+function recordPageError(state: SessionRuntimeState, record: DiagnosticRecord): void {
+  appendDiagnostic(state.pageErrors, state.pendingErrorMessages, record);
+}
+
+function extractUrl(text: string): string | undefined {
+  const match = /https?:\/\/[^\s'"]+/.exec(text);
+  return match?.[0]?.replace(/[),.;]+$/, "");
+}
+
+function isPolicyBlocked(reason: string | undefined, text: string): boolean {
+  const value = `${reason ?? ""} ${text}`.toLowerCase();
+  return value.includes("csp")
+    || value.includes("content security policy")
+    || value.includes("violates the following")
+    || value.includes("refused to load")
+    || value.includes("blocked by policy");
+}
+
+function requestFrame(request: Request, page: Page): Frame | undefined {
+  try {
+    return request.frame();
+  } catch {
+    return page.mainFrame();
+  }
+}
+
+function cdpFrameUrlsFor(
+  state: SessionRuntimeState,
+  page: Page,
+): Map<string, string> {
+  const existing = state.cdpFrameUrls.get(page);
+  if (existing) return existing;
+  const created = new Map<string, string>();
+  state.cdpFrameUrls.set(page, created);
+  return created;
+}
+
+function executionContextsFor(
+  state: SessionRuntimeState,
+  page: Page,
+): Map<number, CdpFrameIdentity> {
+  const existing = state.executionContexts.get(page);
+  if (existing) return existing;
+  const created = new Map<number, CdpFrameIdentity>();
+  state.executionContexts.set(page, created);
+  return created;
+}
+
+function cdpRequestsFor(
+  state: SessionRuntimeState,
+  page: Page,
+): Map<string, CdpRequestIdentity> {
+  const existing = state.cdpRequests.get(page);
+  if (existing) return existing;
+  const created = new Map<string, CdpRequestIdentity>();
+  state.cdpRequests.set(page, created);
+  return created;
+}
+
+function cdpFrameOverrides(
+  state: SessionRuntimeState,
+  page: Page,
+  frameId: string | undefined,
+  frameUrl: string | undefined,
+): DiagnosticOverrides | undefined {
+  if (!frameId && !frameUrl) return undefined;
+  const knownUrl = frameId ? state.cdpFrameUrls.get(page)?.get(frameId) : undefined;
+  return {
+    ...(frameId === undefined ? {} : { frameId: `cdp-${frameId}` }),
+    frameUrl: frameUrl ?? knownUrl ?? safePageUrl(page),
+  };
 }
 
 function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState {
   const state = getSessionRuntimeState(sessionId);
+  pageIdentity(state, page);
   if (state.observedPages.has(page)) return state;
   state.observedPages.add(page);
   state.pageNavigationGenerations.set(page, 0);
@@ -335,10 +595,21 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
     }
   });
   page.on("console", (message) => {
-    if (!state.cdpObservedPages.has(page)) recordConsole(state, message.type(), message.text());
+    if (state.cdpObservedPages.has(page)) return;
+    const location = message.location();
+    const context = diagnosticContext(state, sessionId, page, undefined, {
+      ...(location.url === "" ? {} : { frameUrl: location.url }),
+    });
+    recordConsole(state, consoleDiagnostic(context, message.type(), message.text()));
   });
   page.on("pageerror", (error) => {
-    if (!state.cdpObservedPages.has(page)) recordPageError(state, error.message);
+    if (state.cdpObservedPages.has(page)) return;
+    const context = diagnosticContext(state, sessionId, page);
+    recordPageError(state, {
+      ...context,
+      _tag: "PageErrorDiagnostic",
+      message: error.message,
+    });
   });
   page.on("dialog", (dialog) => {
     state.pendingDialog = dialog;
@@ -361,16 +632,40 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
       ...(postData !== null ? { postData } : {}),
     });
   });
+  page.on("requestfailed", (request) => {
+    const failure = request.failure();
+    const frame = requestFrame(request, page);
+    const context = diagnosticContext(state, sessionId, page, frame);
+    recordConsole(state, {
+      ...context,
+      _tag: "ResourceFailureDiagnostic",
+      url: request.url(),
+      resourceType: request.resourceType(),
+      ...(failure?.errorText === undefined ? {} : { errorText: failure.errorText }),
+    });
+  });
   page.on("response", (response) => {
-    const requestId = state.requestIds.get(response.request());
+    const request = response.request();
+    const requestId = state.requestIds.get(request);
     if (!requestId) return;
     const current = state.requests.get(requestId);
     if (!current) return;
+    const status = response.status();
     state.requests.set(requestId, {
       ...current,
-      status: response.status(),
+      status,
       responseHeaders: response.headers(),
     });
+    if (status >= 400) {
+      const context = diagnosticContext(state, sessionId, page, requestFrame(request, page));
+      recordConsole(state, {
+        ...context,
+        _tag: "ResourceFailureDiagnostic",
+        url: response.url(),
+        resourceType: request.resourceType(),
+        status,
+      });
+    }
     response.text().then((responseBody) => {
       const latest = state.requests.get(requestId);
       if (latest) state.requests.set(requestId, { ...latest, responseBody });
@@ -383,37 +678,172 @@ async function ensureCdpRuntimeObserver(
   sessionId: string,
   context: BrowserContext,
   page: Page,
+  options?: CommandExecutionOptions,
 ): Promise<void> {
   const state = getSessionRuntimeState(sessionId);
   const existingObserver = state.pageObservers.get(page);
   if (existingObserver) {
-    await existingObserver;
+    const observerOptions = cdpObserverOptions(options);
+    if (observerOptions !== undefined) {
+      try {
+        await withOperationTimeout(() => existingObserver, observerOptions);
+      } catch {
+        // A slow observer must not consume the calling command's deadline.
+      }
+    }
     return;
   }
-  const observer = (async () => {
-    const cdp = await context.newCDPSession(page);
-    state.observerSessions.add(cdp);
-    state.cdpObservedPages.add(page);
-    cdp.on("Runtime.consoleAPICalled", (event) => {
-      const text = event.args.map((arg) => {
-        if (arg.value !== undefined) return String(arg.value);
-        return arg.description ?? arg.type;
-      }).join(" ");
-      recordConsole(state, event.type, text);
-    });
-    cdp.on("Runtime.exceptionThrown", (event) => {
-      recordPageError(state, event.exceptionDetails.exception?.description
-        ?? event.exceptionDetails.text);
-    });
-    await cdp.send("Runtime.enable");
+  let observer: Promise<void> | undefined;
+  observer = (async () => {
+    await Promise.resolve();
+    const observerOptions = cdpObserverOptions(options);
+    if (observerOptions === undefined) {
+      if (state.pageObservers.get(page) === observer) state.pageObservers.delete(page);
+      return;
+    }
+
+
+    let cdp: CDPSession | undefined;
+    let committed = false;
+    let abandoned = false;
+    let detached = false;
+    const detach = (session: CDPSession): void => {
+      void session.detach().catch(() => {});
+    };
+    const abandon = (): void => {
+      abandoned = true;
+      committed = false;
+      if (cdp === undefined) return;
+      state.observerSessions.delete(cdp);
+      state.cdpObservedPages.delete(page);
+      if (detached) return;
+      detached = true;
+      detach(cdp);
+    };
+
+    try {
+      const sessionPromise = context.newCDPSession(page);
+      void sessionPromise.then((session) => {
+        if (abandoned) detach(session);
+      }, () => {});
+      const session = await withOperationTimeout(() => sessionPromise, observerOptions);
+      if (abandoned) {
+        detach(session);
+        return;
+      }
+      cdp = session;
+      state.observerSessions.add(session);
+      cdp.on("Page.frameNavigated", (event: CdpFrameNavigatedEvent) => {
+        if (!committed) return;
+        cdpFrameUrlsFor(state, page).set(event.frame.id, event.frame.url);
+      });
+      cdp.on("Runtime.executionContextCreated", (event: CdpExecutionContextEvent) => {
+        if (!committed) return;
+        const frameId = event.context.auxData?.frameId;
+        if (frameId === undefined) return;
+        const frameUrls = cdpFrameUrlsFor(state, page);
+        const frameUrl = frameUrls.get(frameId) ?? event.context.origin ?? safePageUrl(page);
+        frameUrls.set(frameId, frameUrl);
+        executionContextsFor(state, page).set(event.context.id, { frameId, frameUrl });
+      });
+      cdp.on("Network.requestWillBeSent", (event: CdpRequestEvent) => {
+        if (!committed) return;
+        cdpRequestsFor(state, page).set(event.requestId, {
+          url: event.request.url,
+          ...(event.frameId === undefined ? {} : { frameId: event.frameId }),
+          ...(event.type === undefined ? {} : { resourceType: event.type.toLowerCase() }),
+        });
+      });
+      cdp.on("Network.loadingFailed", (event: CdpLoadingFailedEvent) => {
+        if (!committed) return;
+        const request = cdpRequestsFor(state, page).get(event.requestId);
+        const text = event.errorText ?? event.blockedReason ?? "Resource loading failed";
+        if (!isPolicyBlocked(event.blockedReason, text)) return;
+        const contextInfo = cdpFrameOverrides(state, page, event.frameId ?? request?.frameId, request?.url);
+        const diagnostic = diagnosticContext(state, sessionId, page, undefined, contextInfo);
+        recordConsole(state, {
+          ...diagnostic,
+          _tag: "PolicyBlockedDiagnostic",
+          url: request?.url ?? diagnostic.frameUrl,
+          ...(event.type === undefined && request?.resourceType === undefined
+            ? {}
+            : { resourceType: (event.type ?? request?.resourceType)?.toLowerCase() }),
+          policy: event.blockedReason ?? "csp",
+          text,
+        });
+      });
+      cdp.on("Log.entryAdded", (event: CdpLogEvent) => {
+        if (!committed) return;
+        const entry = event.entry;
+        if (!isPolicyBlocked(entry.source, entry.text)) return;
+        const request = entry.networkRequestId === undefined
+          ? undefined
+          : cdpRequestsFor(state, page).get(entry.networkRequestId);
+        const url = extractUrl(entry.text) ?? request?.url ?? entry.url;
+        const contextInfo = cdpFrameOverrides(state, page, request?.frameId, entry.url);
+        const diagnostic = diagnosticContext(state, sessionId, page, undefined, contextInfo);
+        recordConsole(state, {
+          ...diagnostic,
+          _tag: "PolicyBlockedDiagnostic",
+          url: url ?? diagnostic.frameUrl,
+          policy: entry.source ?? "csp",
+          text: entry.text,
+        });
+      });
+      cdp.on("Runtime.consoleAPICalled", (event: CdpConsoleEvent) => {
+        if (!committed) return;
+        const text = event.args.map((arg) => {
+          if (arg.value !== undefined) return String(arg.value);
+          return arg.description ?? arg.type;
+        }).join(" ");
+        const frame = event.executionContextId === undefined
+          ? undefined
+          : executionContextsFor(state, page).get(event.executionContextId);
+        if (frame) {
+          state.recentConsoleFrames.set(page, { ...frame, timestamp: Date.now() });
+        }
+        const contextInfo = cdpFrameOverrides(state, page, frame?.frameId, frame?.frameUrl);
+        const context = diagnosticContext(state, sessionId, page, undefined, contextInfo);
+        recordConsole(state, consoleDiagnostic(context, event.type, text));
+      });
+      cdp.on("Runtime.exceptionThrown", (event: CdpExceptionEvent) => {
+        if (!committed) return;
+        const details = event.exceptionDetails;
+        const directFrame = details.executionContextId === undefined
+          ? undefined
+          : executionContextsFor(state, page).get(details.executionContextId);
+        const recentFrame = state.recentConsoleFrames.get(page);
+        const frame = recentFrame !== undefined
+          && Date.now() - recentFrame.timestamp <= 500
+          && directFrame?.frameId !== recentFrame.frameId
+          ? recentFrame
+          : directFrame;
+        const contextInfo = cdpFrameOverrides(state, page, frame?.frameId, details.url ?? frame?.frameUrl);
+        const context = diagnosticContext(state, sessionId, page, undefined, contextInfo);
+        recordPageError(state, {
+          ...context,
+          _tag: "PageErrorDiagnostic",
+          message: details.exception?.description ?? details.text,
+        });
+      });
+      await withOperationTimeout(() => session.send("Runtime.enable"), observerOptions);
+      await withOperationTimeout(() => session.send("Network.enable"), observerOptions);
+      await withOperationTimeout(() => session.send("Log.enable"), observerOptions);
+      await withOperationTimeout(() => session.send("Page.enable"), observerOptions);
+      if (abandoned) return;
+      committed = true;
+      state.cdpObservedPages.add(page);
+    } catch {
+      abandon();
+    } finally {
+      if (!committed) {
+        abandon();
+        if (state.pageObservers.get(page) === observer) state.pageObservers.delete(page);
+      }
+    }
   })();
   state.pageObservers.set(page, observer);
-  try {
-    await observer;
-  } catch (error) {
-    state.pageObservers.delete(page);
-    throw error;
-  }
+  await observer;
 }
 
 export function clearSessionRuntimeState(sessionId: string): void {
@@ -604,6 +1034,8 @@ async function executeNewTabClick(
   }
 
   const newPage = await context.newPage();
+  observePageRuntime(sessionId, newPage);
+  await ensureCdpRuntimeObserver(sessionId, context, newPage, options);
   try {
     await newPage.goto(targetUrl.toString(), { timeout: operationTimeout(options) });
   } catch (error) {
@@ -620,7 +1052,6 @@ async function executeNewTabClick(
     });
   }
   sessionTabIndex.set(sessionId, newIndex);
-  observePageRuntime(sessionId, newPage);
   return ok({ _tag: "VoidResult" } as const);
 }
 
@@ -992,6 +1423,22 @@ function operationTimeout(
   return requested === undefined ? remaining : Math.min(requested, remaining);
 }
 
+const CDP_OBSERVER_BUDGET_MS = 500;
+
+function cdpObserverOptions(
+  options: CommandExecutionOptions | undefined,
+): CommandExecutionOptions | undefined {
+  const now = Date.now();
+  const deadline = Math.min(options?.deadline ?? now + CDP_OBSERVER_BUDGET_MS, now + CDP_OBSERVER_BUDGET_MS);
+  if (deadline <= now + CDP_DEADLINE_GUARD_MS) return undefined;
+  return {
+    deadline,
+    budget: options === undefined
+      ? deadline - now
+      : Math.max(1, Math.min(options.budget, deadline - now)),
+  };
+}
+
 class OperationTimeoutError extends Error {
   constructor() {
     super("Operation exceeded the remaining command deadline");
@@ -1078,7 +1525,7 @@ export async function executeCommand(
   const page = context.pages()[activeTabIndex] ?? context.pages()[0];
   const runtimeState = observePageRuntime(sessionId, page);
   runtimeState.activePage = page;
-  if (command.action === "eval") await ensureCdpRuntimeObserver(sessionId, context, page);
+  await ensureCdpRuntimeObserver(sessionId, context, page, options);
   const scope = runtimeState.activeFrame ?? page;
   const refScope = currentRefScope(runtimeState, page);
 
@@ -1342,6 +1789,8 @@ export async function executeCommand(
       case "tab_new": {
         invalidateRefs(refStore, sessionId, "page");
         const newPage = await context.newPage();
+        observePageRuntime(sessionId, newPage);
+        await ensureCdpRuntimeObserver(sessionId, context, newPage, options);
         if (command.url) {
           const timeout = operationTimeout(options);
           await newPage.goto(command.url, {
@@ -1353,7 +1802,6 @@ export async function executeCommand(
         runtimeState.activePage = newPage;
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        observePageRuntime(sessionId, newPage);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -1374,6 +1822,7 @@ export async function executeCommand(
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         observePageRuntime(sessionId, nextPage);
+        await ensureCdpRuntimeObserver(sessionId, context, nextPage, options);
         const result: TabResult = { _tag: "TabResult", tabs: await buildTabList(context, activeTabIndex) };
         return ok(result);
       }
@@ -1395,6 +1844,8 @@ export async function executeCommand(
           runtimeState.activePage = remainingPages[activeTabIndex];
           runtimeState.activeFrame = undefined;
           runtimeState.activeFrameSelector = undefined;
+          observePageRuntime(sessionId, remainingPages[activeTabIndex]);
+          await ensureCdpRuntimeObserver(sessionId, context, remainingPages[activeTabIndex], options);
         } else if (closeIndex < activeTabIndex) {
           activeTabIndex--;
         }
@@ -1850,12 +2301,13 @@ export async function executeCommand(
       case "window_new": {
         invalidateRefs(refStore, sessionId, "page");
         const newPage = await context.newPage();
+        observePageRuntime(sessionId, newPage);
+        await ensureCdpRuntimeObserver(sessionId, context, newPage, options);
         activeTabIndex = context.pages().indexOf(newPage);
         sessionTabIndex.set(sessionId, activeTabIndex);
         runtimeState.activePage = newPage;
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
-        observePageRuntime(sessionId, newPage);
         const r: TabResult = {
           _tag: "TabResult",
           tabs: await buildTabList(context, activeTabIndex),

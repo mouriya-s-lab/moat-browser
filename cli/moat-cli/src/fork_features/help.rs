@@ -31,7 +31,7 @@ Browser and runtime state:
   tab | window | frame | dialog | clipboard
   window new                   Open a new tab in the shared browser context
   set viewport|device|geo|offline|headers|credentials|media
-  network route|unroute|requests
+  network route|unroute|requests|request
                                  route accepts only --abort/--body; unsupported
                                  route options are rejected before installation
   console | errors | batch | diff
@@ -168,7 +168,10 @@ pub fn command_help_text(command: &str) -> Option<String> {
             "first, last, and nth support click, fill, type, hover, dblclick, focus, select, check, and uncheck; unknown actions and invalid occurrences fail before page side effects."
         },
         "network" => {
-            "route accepts only --abort and --body <json>; unsupported options such as --status, --delay, and --headers are rejected before installation."
+            "route accepts only --abort and --body <json>; unsupported options such as --status, --delay, and --headers are rejected before installation. Network request detail shows URL, method, resource type, status, request/response headers, and response-body content or an explicit body state."
+        },
+        "console" | "errors" => {
+            "Diagnostics include category, session/page/frame identity, event-time page/frame URLs, and a timestamp; browser resource and policy failures are included."
         },
         "keydown" | "keyup" => {
             "Low-level key state is explicit and paired; high-level input rejects while a modifier remains held."

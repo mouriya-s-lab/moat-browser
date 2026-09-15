@@ -699,8 +699,33 @@ describe("cdp-bridge", () => {
 
       const consoleData = assertOk(await executeCommand(ctx, { action: "console" }, refStore, SESSION));
       const errorData = assertOk(await executeCommand(ctx, { action: "errors" }, refStore, SESSION));
-      expect(consoleData).toEqual({ _tag: "ConsoleResult", messages: [{ type: "log", text: "hello 42" }] });
-      expect(errorData).toEqual({ _tag: "PageErrorsResult", errors: [{ message: "Error: broken" }] });
+      expect(consoleData._tag).toBe("ConsoleResult");
+      expect(errorData._tag).toBe("PageErrorsResult");
+      if (consoleData._tag === "ConsoleResult") {
+        expect(consoleData.messages).toHaveLength(1);
+        expect(consoleData.messages[0]).toMatchObject({
+          _tag: "ConsoleDiagnostic",
+          type: "log",
+          text: "hello 42",
+          sessionId: SESSION,
+          pageId: "page-1",
+          frameId: "frame-main",
+          pageUrl: "https://example.com",
+          frameUrl: "https://example.com",
+        });
+      }
+      if (errorData._tag === "PageErrorsResult") {
+        expect(errorData.errors).toHaveLength(1);
+        expect(errorData.errors[0]).toMatchObject({
+          _tag: "PageErrorDiagnostic",
+          message: "Error: broken",
+          sessionId: SESSION,
+          pageId: "page-1",
+          frameId: "frame-main",
+          pageUrl: "https://example.com",
+          frameUrl: "https://example.com",
+        });
+      }
 
       expect(assertOk(await executeCommand(ctx, { action: "console", clear: true }, refStore, SESSION)))
         .toEqual({ _tag: "ClearedResult", cleared: true });
