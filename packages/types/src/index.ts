@@ -318,26 +318,138 @@ export type ClearedResult = {
   readonly cleared: true;
 };
 
+export type NetworkContinuation = {
+  readonly _tag: "NetworkContinuation";
+  readonly token: string;
+  readonly expiresAt: number;
+};
+
+export type NetworkBodyReadiness =
+  | {
+      readonly _tag: "Pending";
+      readonly knownBytes: number | null;
+      readonly totalBytes: number | null;
+      readonly continuation?: NetworkContinuation;
+    }
+  | {
+      readonly _tag: "Complete";
+      readonly knownBytes: number;
+      readonly totalBytes: number;
+    }
+  | {
+      readonly _tag: "Absent";
+      readonly knownBytes: 0;
+      readonly totalBytes: 0;
+      readonly reason: "no_body";
+    }
+  | {
+      readonly _tag: "Failed";
+      readonly knownBytes: number | null;
+      readonly totalBytes: number | null;
+      readonly message: string;
+      readonly nextAction: string;
+    };
+
+export type NetworkBodyTransfer =
+  | { readonly _tag: "NotTransferred" }
+  | {
+      readonly _tag: "Chunk";
+      readonly offset: number;
+      readonly bytes: number;
+      readonly totalBytes: number;
+      readonly encoding: "base64";
+      readonly base64: string;
+      readonly continuation?: NetworkContinuation;
+    }
+  | {
+      readonly _tag: "Restricted";
+      readonly offset: number;
+      readonly bytes: number;
+      readonly totalBytes: number | null;
+      readonly maxEncodedBytes: number;
+      readonly continuation: NetworkContinuation;
+      readonly nextAction: string;
+    }
+  | {
+      readonly _tag: "Truncated";
+      readonly offset: number;
+      readonly bytes: number;
+      readonly totalBytes: number | null;
+      readonly limitBytes: number;
+      readonly nextAction: string;
+    }
+  | {
+      readonly _tag: "Failed";
+      readonly knownBytes: number | null;
+      readonly totalBytes: number | null;
+      readonly message: string;
+      readonly nextAction: string;
+    };
+
+export type NetworkBodySnapshot = {
+  readonly readiness: NetworkBodyReadiness;
+  readonly transfer: NetworkBodyTransfer;
+};
+
 export type NetworkRequestEntry = {
   readonly requestId: string;
   readonly url: string;
   readonly method: string;
   readonly resourceType: string;
   readonly requestHeaders: Readonly<Record<string, string>>;
-  readonly postData?: string;
   readonly status?: number;
   readonly responseHeaders?: Readonly<Record<string, string>>;
-  readonly responseBody?: string;
+  readonly requestBodyBytes: number | null;
+  readonly requestBody: NetworkBodySnapshot;
+  readonly responseBodyBytes: number | null;
+  readonly responseBody: NetworkBodySnapshot;
 };
 
 export type NetworkRequestsResult = {
   readonly _tag: "NetworkRequestsResult";
   readonly requests: ReadonlyArray<NetworkRequestEntry>;
+  readonly pageSize: number;
+  readonly returned: number;
+  readonly total: number;
+  readonly nextPage?: NetworkContinuation;
 };
 
 export type NetworkRequestDetailResult = {
   readonly _tag: "NetworkRequestDetailResult";
+  readonly bodyKind: "request" | "response";
   readonly request: NetworkRequestEntry;
+};
+
+export type NetworkArtifactResult =
+  | {
+      readonly _tag: "NetworkArtifactResult";
+      readonly status: "complete";
+      readonly artifactId: string;
+      readonly bytes: number;
+      readonly sha256: string;
+      readonly requestCount: number;
+      readonly chunkBytes: number;
+      readonly expiresAt: number;
+    }
+  | {
+      readonly _tag: "NetworkArtifactResult";
+      readonly status: "incomplete";
+      readonly reason: "pending" | "failed" | "restricted";
+      readonly requestCount: number;
+      readonly message: string;
+      readonly nextAction: string;
+    };
+
+export type NetworkArtifactChunkResult = {
+  readonly _tag: "NetworkArtifactChunkResult";
+  readonly artifactId: string;
+  readonly offset: number;
+  readonly bytes: number;
+  readonly totalBytes: number;
+  readonly encoding: "base64";
+  readonly base64: string;
+  readonly sha256: string;
+  readonly continuation?: NetworkContinuation;
 };
 
 export type BinaryFileResult = {
@@ -663,6 +775,8 @@ export type CommandResultData =
   | ClearedResult
   | NetworkRequestsResult
   | NetworkRequestDetailResult
+  | NetworkArtifactResult
+  | NetworkArtifactChunkResult
   | BinaryFileResult
   | ClipboardResult
   | DialogResult
@@ -966,8 +1080,23 @@ export type BrowserCommand =
   | { readonly action: "storage_clear"; readonly type: "local" | "session" }
   | { readonly action: "route"; readonly url: string; readonly abort: boolean; readonly body?: string }
   | { readonly action: "unroute"; readonly url?: string }
-  | { readonly action: "requests"; readonly clear: boolean; readonly filter?: string; readonly type?: string; readonly method?: string; readonly status?: string }
-  | { readonly action: "request_detail"; readonly requestId: string }
+  | {
+      readonly action: "requests";
+      readonly clear: boolean;
+      readonly filter?: string;
+      readonly type?: string;
+      readonly method?: string;
+      readonly status?: string;
+      readonly pageToken?: string;
+      readonly pageSize?: number;
+    }
+  | {
+      readonly action: "request_detail";
+      readonly requestId: string;
+      readonly body?: "request" | "response";
+      readonly continuation?: string;
+      readonly chunkBytes?: number;
+    }
   | { readonly action: "highlight"; readonly selector: string }
   | { readonly action: "window_new" }
   | { readonly action: "nth"; readonly selector: string; readonly index: number; readonly subaction?: NthSubaction; readonly value?: string }
@@ -993,6 +1122,12 @@ export type BrowserCommand =
   | { readonly action: "profiler_stop" }
   | { readonly action: "har_start" }
   | { readonly action: "har_stop" }
+  | {
+      readonly action: "network_artifact_read";
+      readonly artifactId: string;
+      readonly continuation?: string;
+      readonly chunkBytes?: number;
+    }
   | { readonly action: "cookies_set"; readonly cookies: ReadonlyArray<{
       readonly name: string;
       readonly value: string;
@@ -1223,6 +1358,12 @@ const browserCommandSchema = type({
   .or({ action: "'har_start'" })
   .or({ action: "'har_stop'" })
   .or({
+    action: "'network_artifact_read'",
+    artifactId: "string",
+    "continuation?": "string",
+    "chunkBytes?": "number.integer > 0",
+  })
+  .or({
     action: "'getbylabel'",
     label: "string",
     "exact?": "boolean",
@@ -1330,8 +1471,23 @@ const browserCommandSchema = type({
   .or({ action: "'storage_clear'", type: "'local' | 'session'" })
   .or({ action: "'route'", url: "string", abort: "boolean", "body?": "string" })
   .or({ action: "'unroute'", "url?": "string" })
-  .or({ action: "'requests'", clear: "boolean", "filter?": "string", "type?": "string", "method?": "string", "status?": "string" })
-  .or({ action: "'request_detail'", requestId: "string" })
+  .or({
+    action: "'requests'",
+    clear: "boolean",
+    "filter?": "string",
+    "type?": "string",
+    "method?": "string",
+    "status?": "string",
+    "pageToken?": "string",
+    "pageSize?": "number.integer > 0",
+  })
+  .or({
+    action: "'request_detail'",
+    requestId: "string",
+    "body?": "'request' | 'response'",
+    "continuation?": "string",
+    "chunkBytes?": "number.integer > 0",
+  })
   .or({ action: "'highlight'", selector: "string" })
   .or({ action: "'window_new'" })
   .or({ action: "'nth'", selector: "string", index: "number", "subaction?": "'click' | 'fill' | 'type' | 'hover' | 'dblclick' | 'focus' | 'select' | 'check' | 'uncheck'", "value?": "string" })

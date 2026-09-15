@@ -2520,36 +2520,128 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             Ok(cmd)
         }
         Some("requests") => {
-            let clear = rest.contains(&"--clear");
-            let filter_idx = rest.iter().position(|&s| s == "--filter");
-            let filter = filter_idx.and_then(|i| rest.get(i + 1).copied());
-            let type_idx = rest.iter().position(|&s| s == "--type");
-            let rtype = type_idx.and_then(|i| rest.get(i + 1).copied());
-            let method_idx = rest.iter().position(|&s| s == "--method");
-            let method = method_idx.and_then(|i| rest.get(i + 1).copied());
-            let status_idx = rest.iter().position(|&s| s == "--status");
-            let status = status_idx.and_then(|i| rest.get(i + 1).copied());
-            let mut cmd = json!({ "id": id, "action": "requests", "clear": clear });
-            if let Some(f) = filter {
-                cmd["filter"] = json!(f);
-            }
-            if let Some(t) = rtype {
-                cmd["type"] = json!(t);
-            }
-            if let Some(m) = method {
-                cmd["method"] = json!(m);
-            }
-            if let Some(s) = status {
-                cmd["status"] = json!(s);
+            let mut cmd = json!({ "id": id, "action": "requests", "clear": false });
+            let mut index = 1;
+            while index < rest.len() {
+                match rest[index] {
+                    "--clear" => {
+                        cmd["clear"] = json!(true);
+                        index += 1;
+                    }
+                    "--filter" | "--type" | "--method" | "--status" | "--page-token" => {
+                        let value = *rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+                            context: "network requests".to_string(),
+                            usage: "network requests [--clear] [--filter <text>] [--type <types>] [--method <method>] [--status <status>] [--page-token <token>] [--page-size <n>]",
+                        })?;
+                        let key = match rest[index] {
+                            "--filter" => "filter",
+                            "--type" => "type",
+                            "--method" => "method",
+                            "--status" => "status",
+                            "--page-token" => "pageToken",
+                            _ => unreachable!(),
+                        };
+                        cmd[key] = json!(value);
+                        index += 2;
+                    }
+                    "--page-size" => {
+                        let raw = *rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+                            context: "network requests".to_string(),
+                            usage: "network requests [--clear] [--filter <text>] [--type <types>] [--method <method>] [--status <status>] [--page-token <token>] [--page-size <n>]",
+                        })?;
+                        let size = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("Invalid network page size '{raw}'; expected a positive integer"),
+                            usage: "network requests [--page-size <n>]",
+                        })?;
+                        if size == 0 {
+                            return Err(ParseError::InvalidValue {
+                                message: "Network page size must be positive".to_string(),
+                                usage: "network requests [--page-size <n>]",
+                            });
+                        }
+                        cmd["pageSize"] = json!(size);
+                        index += 2;
+                    }
+                    option if option.starts_with("--") => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown network requests option: {option}"),
+                            usage: "network requests [--clear] [--filter <text>] [--type <types>] [--method <method>] [--status <status>] [--page-token <token>] [--page-size <n>]",
+                        });
+                    }
+                    argument => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unexpected network requests argument: {argument}"),
+                            usage: "network requests [--clear] [--filter <text>] [--type <types>] [--method <method>] [--status <status>] [--page-token <token>] [--page-size <n>]",
+                        });
+                    }
+                }
             }
             Ok(cmd)
         }
         Some("request") => {
             let request_id = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
                 context: "network request".to_string(),
-                usage: "network request <requestId>",
+                usage: "network request <requestId> [--body request|response] [--continuation <token>] [--chunk-size <bytes>]",
             })?;
-            Ok(json!({ "id": id, "action": "request_detail", "requestId": request_id }))
+            let mut cmd = json!({ "id": id, "action": "request_detail", "requestId": request_id });
+            let mut index = 2;
+            while index < rest.len() {
+                match rest[index] {
+                    "--body" => {
+                        let value = *rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+                            context: "network request".to_string(),
+                            usage: "network request <requestId> [--body request|response] [--continuation <token>] [--chunk-size <bytes>]",
+                        })?;
+                        if !matches!(value, "request" | "response") {
+                            return Err(ParseError::InvalidValue {
+                                message: format!("Invalid network body '{value}'; expected request or response"),
+                                usage: "network request <requestId> [--body request|response]",
+                            });
+                        }
+                        cmd["body"] = json!(value);
+                        index += 2;
+                    }
+                    "--continuation" => {
+                        let value = *rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+                            context: "network request".to_string(),
+                            usage: "network request <requestId> [--body request|response] [--continuation <token>] [--chunk-size <bytes>]",
+                        })?;
+                        cmd["continuation"] = json!(value);
+                        index += 2;
+                    }
+                    "--chunk-size" => {
+                        let raw = *rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+                            context: "network request".to_string(),
+                            usage: "network request <requestId> [--body request|response] [--continuation <token>] [--chunk-size <bytes>]",
+                        })?;
+                        let size = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("Invalid network chunk size '{raw}'; expected a positive integer"),
+                            usage: "network request <requestId> --chunk-size <bytes>",
+                        })?;
+                        if size == 0 {
+                            return Err(ParseError::InvalidValue {
+                                message: "Network chunk size must be positive".to_string(),
+                                usage: "network request <requestId> --chunk-size <bytes>",
+                            });
+                        }
+                        cmd["chunkBytes"] = json!(size);
+                        index += 2;
+                    }
+                    option if option.starts_with("--") => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown network request option: {option}"),
+                            usage: "network request <requestId> [--body request|response] [--continuation <token>] [--chunk-size <bytes>]",
+                        });
+                    }
+                    argument => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unexpected network request argument: {argument}"),
+                            usage: "network request <requestId> [--body request|response] [--continuation <token>] [--chunk-size <bytes>]",
+                        });
+                    }
+                }
+            }
+            Ok(cmd)
         }
         Some("har") => {
             const HAR_VALID: &[&str] = &["start", "stop"];

@@ -609,10 +609,12 @@ Cookie 设置只能使用一种 scope：`--url <url>`，或
 浏览器写入前返回 `errorType: "invalid_value"`；合法的 URL-only 与
 domain/path-only 组合保留各自 scope。
 
-### 9.5 C9 诊断与网络详情
+### 9.5 C9/C11 诊断与网络详情
 
 - `moat console` 与 `moat errors` 的每条记录都带 `_tag` 类别、`sessionId`、稳定的 `pageId`/`frameId`、事件发生时的 `pageUrl`/`frameUrl` 和 Unix 毫秒 `timestamp`。`ResourceFailureDiagnostic` 表示资源加载失败（含 URL、资源类型和可用的 HTTP 状态或失败原因）；`PolicyBlockedDiagnostic` 表示 CSP/其他安全策略拦截（含被拦截 URL 和策略文本）。这些记录来自远程浏览器本身，不要求页面预先写诊断标记；跨导航和 iframe 记录不会改写成当前页面。
-- `moat network request <id>` 的人类输出与 `--json` 使用同一份 Controller detail：URL、method、resource type、status、请求/响应 headers、请求 body，以及 response body 或明确的 `pending`/`absent`/其他 Controller 提供的完整性状态。人类模式不以 `✓ Done` 替代 detail，也不把缺失 body 当作成功正文。
+- `moat network requests` 只返回有界 metadata page；通过 `--page-size` 与返回的 `nextPage.token`/`--page-token` 继续取，句柄绑定当前 session 和过滤条件。`moat network request <id>` 的 detail 可用 `--body request|response` 选择正文，并用 `--continuation`/`--chunk-size` 续取 base64 分块。body readiness 与 transfer 分开建模：`Pending` 可与已到达的 HTTP status 共存，未知字节数保持 `null`；只有 `Complete` 才表示正文已取完，另有 `Absent`、`Failed`、`Restricted` 和 `Truncated` 状态。
+- `moat network har stop [path]` 只有在 Controller 生成的 owner/session 产物完成、长度和 JSON `log.entries` 核对通过后才由 SDK 分块取回、校验并原子落盘并报告路径；pending/failed/restricted 只返回带阶段和下一步的 incomplete 结果，不留下半文件或虚假路径。session 清理会回收产物和 continuation。
+- network encoded envelope 采用 8 MiB 目标（含 JSON/base64 后的 wire 大小）；普通 list 以 metadata 分页，正文与 HAR 以续取分块避免整包传输。无法容纳的 envelope 返回带阶段、大小和重试建议的 `command_failed`，不暴露裸 WebSocket `Message too long`/`Space limit exceeded`。
 - wire failure 的 `code` 是 Controller/SDK 内部编号；为保持 agent-browser 兼容的 `Response` JSON 形状，CLI 不暴露该字段，也不把它当作进程退出码。机器判别请使用 `errorType`（基础设施失败再读取 `cause`），错误文案只用于展示。
 
 ### 9.6 Wire 协议
@@ -909,6 +911,7 @@ type WireResponse = {
 ```
 
 `BrowserCommand` / `BrowserResponse` 的字段结构对齐 agent-browser，通过 arktype schema 做运行时验证。TS SDK 和 Controller 直接使用这些类型，Rust SDK 维护等价的 Rust struct + serde 定义。
+网络完整性命令是协议的有界扩展：`requests` 只传分页 metadata，`request_detail` 通过 session/request 绑定的 continuation 传正文分块，`har_stop` 通过 session/owner 绑定的服务端产物句柄传完整 HAR。正文 readiness、传输状态和产物状态分别使用 `_tag` ADT 表示，避免用 HTTP status、空字符串或 `0` 猜测正文是否完整。
 
 ### 10.2 Controller 内部 ADT
 
@@ -949,7 +952,7 @@ ControllerError 在序列化到 wire 时，映射到 agent-browser 响应的 `er
 - arktype 做运行时验证，TypeScript 类型做编译时检查
 - 函数返回 `Result | Error` union，不 throw
 - 不使用 `any`、`as` 类型断言（除非与第三方库交互必须）
-- 命令/响应 schema 对齐 agent-browser，不重新发明；moat 只加 session envelope 和 Controller 内部 ADT
+- 命令/响应基础字段对齐 agent-browser；网络完整性使用上述显式分页、续取和产物 ADT 扩展，避免重新发明无界整包传输
 - `packages/types` 是 wire 协议的 canonical 定义，Rust SDK 保持等价 schema
 
 ---

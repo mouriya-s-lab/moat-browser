@@ -41,9 +41,10 @@ Browser and runtime state:
   device list                  List remote Chromium emulation descriptors
   set viewport|device|geo|offline|headers|credentials|media
   network route|unroute|requests|request
-                                 route accepts only --abort/--body; unsupported
-                                 route options are rejected before installation
-  console | errors | batch | diff
+                                 requests is bounded metadata pagination;
+                                 request bodies are explicit readiness states
+                                 with continuation chunks; har stop verifies
+                                 an owner-scoped artifact before returning a path
 
 Unavailable in moat architecture (stable unsupported_in_moat error):
   auth                         Authentication uses moat profiles + neko login
@@ -188,7 +189,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
             "first, last, and nth support click, fill, type, hover, dblclick, focus, select, check, and uncheck; unknown actions and invalid occurrences fail before page side effects."
         },
         "network" => {
-            "route accepts only --abort and --body <json>; unsupported options such as --status, --delay, and --headers are rejected before installation. Network request detail shows URL, method, resource type, status, request/response headers, and response-body content or an explicit body state."
+            "route accepts only --abort and --body <json>; network requests returns bounded metadata pages (--page-token/--page-size), request detail reports pending/complete/absent/failed body readiness and resumable base64 chunks (--continuation/--chunk-size), and HAR stop returns a path only after owner-scoped artifact length and JSON entry verification."
         },
         "console" | "errors" => {
             "Diagnostics include category, session/page/frame identity, event-time page/frame URLs, and a timestamp; browser resource and policy failures are included."

@@ -8,10 +8,11 @@ use error::SdkError;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::future::Future;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::{timeout_at, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::time::{timeout_at, Instant};
 use wire::{CapacityDetails, CommandFailureCause, DialogPage, Response, WireRequest, WireResponse};
 
 type WsStream =
@@ -20,7 +21,7 @@ const DEFAULT_SERVER_COMMAND_BUDGET_MS: u64 = 25_000;
 const REGISTER_SERVER_BUDGET_MS: u64 = 45_000;
 const CLIENT_GRACE_MS: u64 = 5_000;
 const MAX_EXPLICIT_COMMAND_BUDGET_MS: u64 = 120_000;
-
+const MAX_ENCODED_WIRE_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Copy)]
 struct ClientDeadline {
     at: Instant,
@@ -609,12 +610,38 @@ impl MoatClient {
 
     async fn command_remote(&self, request: Value) -> Result<Response, SdkError> {
         let deadline = ClientDeadline::new(command_server_budget(&request));
+        self.command_remote_at(request, deadline).await
+    }
+
+    async fn command_remote_at(
+        &self,
+        request: Value,
+        deadline: ClientDeadline,
+    ) -> Result<Response, SdkError> {
         with_client_deadline(
             deadline,
             "command",
             self.command_remote_inner(request, deadline),
         )
         .await
+    }
+
+    async fn command_remote_wire(
+        &self,
+        request: Value,
+        deadline: ClientDeadline,
+    ) -> Result<WireResponse, SdkError> {
+        let (mut ws, _) = connect_async(&self.url)
+            .await
+            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+        let wire_req = WireRequest::Command {
+            session_id: self.session_id.clone(),
+            command: request,
+        };
+        send_json(&mut ws, &wire_req).await?;
+        let response = recv_json(&mut ws, deadline).await?;
+        let _ = ws.close(None).await;
+        Ok(response)
     }
 
     async fn command_remote_inner(
@@ -648,122 +675,33 @@ impl MoatClient {
             });
         }
 
-        let (mut ws, _) = connect_async(&self.url)
-            .await
-            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
-
-        let wire_req = WireRequest::Command {
-            session_id: self.session_id.clone(),
-            command: request,
-        };
-        send_json(&mut ws, &wire_req).await?;
-        let resp = recv_json(&mut ws, deadline).await?;
-
-        let _ = ws.close(None).await;
-
-        match resp {
-            WireResponse::CommandResult {
-                success: true,
-                mut data,
-                ..
-            } => {
-                // Strip _tag from data (CLI doesn't need discriminant)
-                if let Some(d) = &mut data {
-                    if let Some(obj) = d.as_object_mut() {
-                        obj.remove("_tag");
-                    }
-                }
-                if let (Some(output), Some(d)) = (&screenshot_output, &mut data) {
-                    materialize_screenshot_response(d, output)?;
-                }
-                if let (Some(output), Some(d)) = (&binary_output, &mut data) {
-                    materialize_binary_response(d, output)?;
-                }
-                Ok(Response {
-                    success: true,
-                    data,
-                    error: None,
-                    error_type: None,
-                    details: None,
-                    cause: None,
-                    operation_id: None,
-                    dialog_id: None,
-                    page: None,
-
-                    owner: None,
-                    current: None,
-                    limit: None,
-                    owner_current: None,
-                    owner_limit: None,
-                    retry_condition: None,
-                    warning: None,
-                })
+        let action = request
+            .get("action")
+            .and_then(Value::as_str)
+            .map(String::from);
+        let mut response = decode_wire_response(self.command_remote_wire(request, deadline).await?)?;
+        if action.as_deref() == Some("har_stop") {
+            if !response.success {
+                return Ok(response);
             }
-            WireResponse::CommandResult {
-                success: false,
-                error,
-                error_type,
-                cause,
-                operation_id,
-                dialog_id,
-                page,
-                details,
-                owner,
-                current,
-                limit,
-                owner_current,
-                owner_limit,
-                retry_condition,
-                ..
-            } => {
-                let cause = validate_wire_failure(error_type.as_deref(), cause)?;
-                let (operation_id, dialog_id, page) = validate_dialog_pending_failure(
-                    error_type.as_deref(),
-                    cause.as_ref(),
-                    operation_id,
-                    dialog_id,
-                    page,
-                )?;
-                Ok(Response {
-                    success: false,
-                    data: None,
-                    error,
-                    error_type,
-                    details,
-                    cause,
-                    operation_id,
-                    dialog_id,
-                    page,
-                    owner,
-                    current,
-                    limit,
-                    owner_current,
-                    owner_limit,
-                    retry_condition,
-                    warning: None,
-                })
-            }
-            WireResponse::Error { error, .. } => Ok(Response {
-                success: false,
-                data: None,
-                error: Some(error),
-                error_type: Some("command_failed".into()),
-                details: None,
-                cause: Some(CommandFailureCause::Transport),
-                operation_id: None,
-                dialog_id: None,
-                page: None,
-
-                owner: None,
-                current: None,
-                limit: None,
-                owner_current: None,
-                owner_limit: None,
-                retry_condition: None,
-                warning: None,
-            }),
-            _ => Err(protocol_error("unexpected response")),
+            let output = binary_output
+                .as_ref()
+                .ok_or_else(|| command_error("HAR output path state is missing".into()))?;
+            return self.materialize_har_response(response.data.take(), output, deadline).await;
         }
+        // Strip _tag from data (CLI doesn't need discriminant)
+        if let Some(data) = &mut response.data {
+            if let Some(obj) = data.as_object_mut() {
+                obj.remove("_tag");
+            }
+        }
+        if let (Some(output), Some(data)) = (&screenshot_output, &mut response.data) {
+            materialize_screenshot_response(data, output)?;
+        }
+        if let (Some(output), Some(data)) = (&binary_output, &mut response.data) {
+            materialize_binary_response(data, output)?;
+        }
+        Ok(response)
     }
 
     /// Destroy session — opens ws, sends Deregister, closes ws.
@@ -1045,6 +983,179 @@ impl MoatClient {
         }
     }
 
+    async fn materialize_har_response(
+        &self,
+        data: Option<Value>,
+        output: &BinaryOutput,
+        deadline: ClientDeadline,
+    ) -> Result<Response, SdkError> {
+        let mut descriptor = data.ok_or_else(|| command_error(
+            "HAR stop returned no artifact descriptor (phase=descriptor)".into(),
+        ))?;
+        if let Some(obj) = descriptor.as_object_mut() {
+            obj.remove("_tag");
+        }
+        let status = descriptor.get("status").and_then(Value::as_str);
+        if status == Some("incomplete") {
+            return Ok(success(descriptor));
+        }
+        if status != Some("complete") {
+            return Err(command_error(
+                "HAR stop returned an unknown artifact status (phase=descriptor)".into(),
+            ));
+        }
+        let artifact_id = descriptor
+            .get("artifactId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| command_error("HAR descriptor has no artifactId (phase=descriptor)".into()))?
+            .to_string();
+        let expected_bytes = descriptor
+            .get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| command_error("HAR descriptor has no byte length (phase=descriptor)".into()))?;
+        let expected_requests = descriptor
+            .get("requestCount")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| command_error("HAR descriptor has no request count (phase=descriptor)".into()))?;
+        let suggested = descriptor
+            .get("suggestedFilename")
+            .and_then(Value::as_str)
+            .unwrap_or(&output.default_filename);
+        let destination = match output.requested_path.as_deref() {
+            Some(requested) => {
+                let requested_path = PathBuf::from(requested);
+                if requested.ends_with(std::path::MAIN_SEPARATOR) || requested_path.is_dir() {
+                    requested_path.join(suggested)
+                } else {
+                    requested_path
+                }
+            }
+            None => std::env::temp_dir().join(&output.default_directory).join(suggested),
+        };
+        if let Some(parent) = destination.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    command_error(format!("HAR create destination directory (phase=prepare): {error}"))
+                })?;
+            }
+        }
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| command_error(format!("HAR temp name clock failed (phase=prepare): {error}")))?
+            .as_nanos();
+        let temporary = PathBuf::from(format!("{}.part-{}", destination.display(), nonce));
+        let result: Result<(), SdkError> = async {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| command_error(format!("HAR open temporary output (phase=write): {error}")))?;
+            let mut offset = 0_u64;
+            let mut continuation: Option<String> = None;
+            loop {
+                let mut command = serde_json::json!({
+                    "action": "network_artifact_read",
+                    "artifactId": artifact_id,
+                });
+                if let Some(token) = continuation.take() {
+                    command["continuation"] = Value::String(token);
+                }
+                let response = decode_wire_response(self.command_remote_wire(command, deadline).await?)?;
+                let chunk = require_success(response)?;
+                let chunk_offset = chunk
+                    .get("offset")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| command_error("HAR chunk has no offset (phase=read)".into()))?;
+                let chunk_total = chunk
+                    .get("totalBytes")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| command_error("HAR chunk has no total length (phase=read)".into()))?;
+                if chunk_offset != offset || chunk_total != expected_bytes {
+                    return Err(command_error(format!(
+                        "HAR chunk offset/length mismatch at {} bytes (phase=read, expected={expected_bytes})",
+                        offset
+                    )));
+                }
+                let encoded = chunk
+                    .get("base64")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| command_error("HAR chunk has no base64 data (phase=read)".into()))?;
+                let bytes = STANDARD
+                    .decode(encoded)
+                    .map_err(|error| command_error(format!("HAR chunk base64 invalid (phase=read): {error}")))?;
+                let declared = chunk
+                    .get("bytes")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| command_error("HAR chunk has no byte count (phase=read)".into()))?;
+                if declared != bytes.len() as u64 || offset.saturating_add(declared) > expected_bytes {
+                    return Err(command_error(format!(
+                        "HAR chunk byte count mismatch at {} bytes (phase=read)",
+                        offset
+                    )));
+                }
+                file.write_all(&bytes)
+                    .map_err(|error| command_error(format!("HAR write failed at {offset} bytes (phase=write): {error}")))?;
+                offset = offset.saturating_add(declared);
+                continuation = chunk
+                    .get("continuation")
+                    .and_then(|value| value.get("token"))
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                if continuation.is_none() {
+                    if offset != expected_bytes {
+                        return Err(command_error(format!(
+                            "HAR ended at {offset} of {expected_bytes} bytes (phase=read); retry artifact retrieval"
+                        )));
+                    }
+                    break;
+                }
+            }
+            file.sync_all()
+                .map_err(|error| command_error(format!("HAR sync failed at {offset} bytes (phase=verify): {error}")))?;
+            drop(file);
+            let metadata = std::fs::metadata(&temporary)
+                .map_err(|error| command_error(format!("HAR temporary length read failed (phase=verify): {error}")))?;
+            if metadata.len() != expected_bytes {
+                return Err(command_error(format!(
+                    "HAR length check failed: {} of {expected_bytes} bytes (phase=verify)",
+                    metadata.len()
+                )));
+            }
+            let contents = std::fs::read(&temporary)
+                .map_err(|error| command_error(format!("HAR readback failed (phase=verify): {error}")))?;
+            let parsed: Value = serde_json::from_slice(&contents)
+                .map_err(|error| command_error(format!("HAR JSON check failed (phase=verify): {error}")))?;
+            let entries = parsed
+                .get("log")
+                .and_then(|value| value.get("entries"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| command_error("HAR has no log.entries (phase=verify)".into()))?;
+            if entries.len() as u64 != expected_requests {
+                return Err(command_error(format!(
+                    "HAR entry count check failed: {} of {expected_requests} entries (phase=verify)",
+                    entries.len()
+                )));
+            }
+            std::fs::rename(&temporary, &destination)
+                .map_err(|error| command_error(format!("HAR atomic rename failed (phase=commit): {error}")))?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        if let Some(obj) = descriptor.as_object_mut() {
+            obj.insert(
+                "path".into(),
+                Value::String(destination.to_string_lossy().to_string()),
+            );
+            obj.insert("size".into(), Value::Number(expected_bytes.into()));
+            obj.remove("artifactId");
+        }
+        Ok(success(descriptor))
+    }
+
     async fn capture_screenshot(&self, request: &Value) -> Result<Vec<u8>, SdkError> {
         let mut command = serde_json::json!({
             "action": "screenshot",
@@ -1063,6 +1174,108 @@ impl MoatClient {
     }
 }
 
+fn decode_wire_response(resp: WireResponse) -> Result<Response, SdkError> {
+    match resp {
+        WireResponse::CommandResult {
+            success: true,
+            data,
+            operation_id,
+            dialog_id,
+            page,
+            details,
+            ..
+        } => Ok(Response {
+            success: true,
+            data,
+            error: None,
+            error_type: None,
+            details,
+            cause: None,
+            operation_id,
+            dialog_id,
+            page,
+            owner: None,
+            current: None,
+            limit: None,
+            owner_current: None,
+            owner_limit: None,
+            retry_condition: None,
+            warning: None,
+        }),
+        WireResponse::CommandResult {
+            success: false,
+            error,
+            error_type,
+            cause,
+            operation_id,
+            dialog_id,
+            page,
+            details,
+            owner,
+            current,
+            limit,
+            owner_current,
+            owner_limit,
+            retry_condition,
+            ..
+        } => {
+            let cause = validate_wire_failure(error_type.as_deref(), cause)?;
+            let (operation_id, dialog_id, page) = validate_dialog_pending_failure(
+                error_type.as_deref(),
+                cause.as_ref(),
+                operation_id,
+                dialog_id,
+                page,
+            )?;
+            Ok(Response {
+                success: false,
+                data: None,
+                error,
+                error_type,
+                details,
+                cause,
+                operation_id,
+                dialog_id,
+                page,
+                owner,
+                current,
+                limit,
+                owner_current,
+                owner_limit,
+                retry_condition,
+                warning: None,
+            })
+        }
+        WireResponse::Error { error, .. } => {
+            let error = if error.contains("Message too long")
+                || error.contains("Space limit exceeded")
+            {
+                "Encoded network envelope exceeded the receive budget; retry with pagination or smaller body chunks".into()
+            } else {
+                error
+            };
+            Ok(Response {
+                success: false,
+                data: None,
+                error: Some(error),
+                error_type: Some("command_failed".into()),
+                details: None,
+                cause: Some(CommandFailureCause::Transport),
+                operation_id: None,
+                dialog_id: None,
+                page: None,
+                owner: None,
+                current: None,
+                limit: None,
+                owner_current: None,
+                owner_limit: None,
+                retry_condition: None,
+                warning: None,
+            })
+        }
+        _ => Err(protocol_error("unexpected response")),
+    }
+}
 fn command_error(error: String) -> SdkError {
     SdkError::CommandFailed {
         error,
@@ -1076,11 +1289,11 @@ fn success(data: Value) -> Response {
         success: true,
         data: Some(data),
         error: None,
+        details: None,
         operation_id: None,
         dialog_id: None,
         page: None,
         error_type: None,
-        details: None,
         cause: None,
         owner: None,
         current: None,
@@ -1548,6 +1761,13 @@ fn default_screenshot_filename(format: &str) -> Result<String, SdkError> {
 
 async fn send_json<T: serde::Serialize>(ws: &mut WsStream, msg: &T) -> Result<(), SdkError> {
     let json = serde_json::to_string(msg).map_err(|e| SdkError::WebSocket(e.to_string()))?;
+    if json.len() > MAX_ENCODED_WIRE_BYTES {
+        return Err(command_error(format!(
+            "Encoded wire request is {} bytes, above the {}-byte budget; retry with network pagination or smaller body chunks",
+            json.len(),
+            MAX_ENCODED_WIRE_BYTES
+        )));
+    }
     ws.send(Message::Text(json))
         .await
         .map_err(|e| SdkError::WebSocket(e.to_string()))
@@ -1665,7 +1885,6 @@ mod tests {
             "action": "state_load",
             "path": path.to_string_lossy()
         });
-
         let outputs = prepare_command(&mut request).unwrap();
 
         assert_eq!(outputs, (None, None));
@@ -1869,15 +2088,31 @@ async fn recv_json(
             .map_err(|_| client_timeout(deadline, "receive response"))?;
         match message {
             Some(Ok(Message::Text(text))) => {
-                return serde_json::from_str(&text)
-                    .map_err(|e| SdkError::WebSocket(format!("parse: {} | raw: {}", e, text)));
+                if text.len() > MAX_ENCODED_WIRE_BYTES {
+                    return Err(command_error(format!(
+                        "Encoded wire response is {} bytes, above the {}-byte budget; retry with network pagination or smaller body chunks",
+                        text.len(),
+                        MAX_ENCODED_WIRE_BYTES
+                    )));
+                }
+                return serde_json::from_str(&text).map_err(|e| {
+                    command_error(format!("Wire response decode failed (phase=receive): {e}"))
+                });
             }
             Some(Ok(Message::Ping(_))) => continue,
             Some(Ok(Message::Pong(_))) => continue,
             Some(Ok(Message::Close(_))) => {
                 return Err(SdkError::WebSocket("connection closed".into()));
             }
-            Some(Err(e)) => return Err(SdkError::WebSocket(e.to_string())),
+            Some(Err(e)) => {
+                let message = e.to_string();
+                if message.contains("Message too long") || message.contains("Space limit exceeded") {
+                    return Err(command_error(
+                        "Encoded network envelope exceeded the receive budget; retry with pagination or smaller body chunks".into(),
+                    ));
+                }
+                return Err(SdkError::WebSocket(message));
+            }
             None => return Err(SdkError::WebSocket("stream ended".into())),
             _ => continue,
         }

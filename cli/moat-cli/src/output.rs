@@ -349,6 +349,78 @@ fn render_geometry(value: &serde_json::Value) -> String {
 }
 
 
+fn print_network_body(label: &str, snapshot: &serde_json::Value) {
+    let readiness = snapshot.get("readiness");
+    let state = readiness
+        .and_then(|value| value.get("_tag"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let known = readiness
+        .and_then(|value| value.get("knownBytes"))
+        .and_then(|value| (!value.is_null()).then(|| render_json_value(value)))
+        .unwrap_or_else(|| "unknown".to_string());
+    let total = readiness
+        .and_then(|value| value.get("totalBytes"))
+        .and_then(|value| (!value.is_null()).then(|| render_json_value(value)))
+        .unwrap_or_else(|| "unknown".to_string());
+    let transfer = snapshot
+        .get("transfer")
+        .and_then(|value| value.get("_tag"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    println!(
+        "  {label} state: {state} (known bytes: {known}, total bytes: {total}, transfer: {transfer})"
+    );
+    if let Some(continuation) = readiness
+        .and_then(|value| value.get("continuation"))
+        .and_then(|value| value.get("token"))
+        .and_then(|value| value.as_str())
+    {
+        println!("  {label} continuation: {continuation}");
+    }
+    if let Some(continuation) = snapshot
+        .get("transfer")
+        .and_then(|value| value.get("continuation"))
+        .and_then(|value| value.get("token"))
+        .and_then(|value| value.as_str())
+    {
+        println!("  {label} chunk continuation: {continuation}");
+    }
+    if let Some(next_action) = readiness
+        .and_then(|value| value.get("nextAction"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            snapshot
+                .get("transfer")
+                .and_then(|value| value.get("nextAction"))
+                .and_then(|value| value.as_str())
+        })
+    {
+        println!("  {label} next action: {next_action}");
+    }
+}
+fn network_body_summary(request: &serde_json::Value) -> String {
+    let Some(snapshot) = request.get("responseBody") else {
+        return "body=unknown".to_string();
+    };
+    let readiness = snapshot.get("readiness");
+    let state = readiness
+        .and_then(|value| value.get("_tag"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let known = readiness
+        .and_then(|value| value.get("knownBytes"))
+        .map(render_json_value)
+        .unwrap_or_else(|| "unknown".to_string());
+    let transfer = snapshot
+        .get("transfer")
+        .and_then(|value| value.get("_tag"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    format!("body={state}/{transfer} bytes={known}")
+}
+
+
 fn print_request_detail(request: &serde_json::Value) {
     let request_id = request
         .get("requestId")
@@ -389,18 +461,18 @@ fn print_request_detail(request: &serde_json::Value) {
             .map(render_json_value)
             .unwrap_or_else(|| "absent (no response received)".to_string())
     );
-    if let Some(post_data) = request.get("postData") {
+    if let Some(bytes) = request.get("requestBodyBytes") {
+        println!("  Request body bytes: {}", render_json_value(bytes));
+    }
+    if let Some(snapshot) = request.get("requestBody") {
+        print_network_body("Request body", snapshot);
+    } else if let Some(post_data) = request.get("postData") {
         println!("  Request body: {}", render_json_value(post_data));
     } else {
         println!("  Request body: absent");
     }
-    let body_state = ["responseBodyState", "responseBodyStatus", "bodyState", "bodyStatus"]
-        .iter()
-        .find_map(|key| request.get(*key).and_then(|value| value.as_str()));
-    if let Some(state) = body_state {
-        println!("  Response body state: {}", state);
-    } else if let Some(body) = request.get("responseBody") {
-        println!("  Response body: {}", render_json_value(body));
+    if let Some(snapshot) = request.get("responseBody") {
+        print_network_body("Response body", snapshot);
     } else if request.get("status").is_none() {
         println!("  Response body: pending (response has not completed)");
     } else {
@@ -1113,12 +1185,16 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                         .unwrap_or("");
                     let request_id = req.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
                     let status = req.get("status").and_then(|v| v.as_i64());
+                    let body = network_body_summary(req);
                     match status {
                         Some(s) => println!(
-                            "[{}] {} {} ({}) {}",
-                            request_id, method, url, resource_type, s
+                            "[{}] {} {} ({}) {} {}",
+                            request_id, method, url, resource_type, s, body
                         ),
-                        None => println!("[{}] {} {} ({})", request_id, method, url, resource_type),
+                        None => println!(
+                            "[{}] {} {} ({}) {}",
+                            request_id, method, url, resource_type, body
+                        ),
                     }
                 }
             }
@@ -1288,6 +1364,26 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             println!("{} Trace stopped", color::success_indicator());
             return;
         }
+        if action == Some("har_stop")
+            && data.get("status").and_then(|value| value.as_str()) == Some("incomplete")
+        {
+            let message = data
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("HAR capture is incomplete");
+            let next_action = data
+                .get("nextAction")
+                .and_then(|value| value.as_str())
+                .unwrap_or("retry HAR recording after the request bodies settle");
+            println!(
+                "{} HAR incomplete: {}. Next: {}",
+                color::warning_indicator(),
+                message,
+                next_action
+            );
+            return;
+        }
+
         // Path-based operations (screenshot/pdf/trace/har/download/state/video)
         if !matches!(action, Some("state_show" | "state_rename")) {
             if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
@@ -2567,14 +2663,19 @@ Subcommands:
     --abort                  Abort matching requests
     --body <json>            Respond with custom body
   unroute [url]              Remove route (all if no URL)
-  requests [options]         List captured requests
+  requests [options]         List bounded request metadata pages
     --clear                  Clear request log
     --filter <pattern>       Filter by URL pattern
     --type <types>           Filter by resource type (comma-separated: xhr,fetch,document)
     --method <method>        Filter by HTTP method (GET, POST, etc.)
     --status <code>          Filter by status (200, 2xx, 400-499)
-  request <requestId>        View full request/response detail (including body)
-  har <start|stop> [path]    Record and export a HAR file
+    --page-token <token>     Continue a page returned by the Controller
+    --page-size <n>          Request a positive page size (Controller bounds it)
+  request <requestId>        View detail and explicit body readiness state
+    --body <request|response> Select request or response body
+    --continuation <token>  Continue a base64 body chunk
+    --chunk-size <bytes>    Bound a body chunk (Controller caps encoded wire size)
+  har <start|stop> [path]    Stop returns a path only after artifact verification
 
 Global Options:
   --json               Output as JSON

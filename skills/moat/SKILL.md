@@ -314,6 +314,23 @@ navigation and iframes; they do not depend on DOM markers.
 `--json`: URL, method, resource type, status, request/response headers, request
 body, and response body or an explicit `pending`/`absent`/controller-provided
 completeness state. Human output never replaces detail with only `Done`.
+`moat network requests` returns metadata pages only. Use `--page-size` and the
+returned `nextPage.token` with `--page-token`; the Controller keeps each token
+bound to the current session and filter set. Body snapshots are separate from
+transfer: a response can be `Pending` with an unknown byte count while status is
+already available, or `Complete`, `Absent`, or `Failed`. Use
+`moat network request <id> --continuation <token>` (and optionally
+`--chunk-size`) to retrieve base64 chunks and rebuild the exact body; a
+continuation is bound to its request and session.
+
+`moat network har stop [path]` returns an incomplete result, without a path,
+when a required body is pending or failed. For a complete capture the
+Controller owns a temporary artifact and the SDK retrieves it in bounded
+chunks, verifies its byte length, JSON structure, and entry count, then
+atomically writes the requested path. Artifact handles and cleanup remain
+session/owner-scoped. Encoded network envelopes target 8 MiB; an envelope
+guard returns an actionable `command_failed` diagnostic rather than exposing a
+raw WebSocket size exception.
 
 The wire `code` is a Controller/SDK internal number. The CLI deliberately does
 not expose it in the agent-browser-compatible `Response` shape or use it as
