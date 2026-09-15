@@ -57,16 +57,16 @@ describe("wireRequestSchema — valid requests", () => {
     });
   });
 
-  test("command — scroll", () => {
+  test("command — scroll with selector", () => {
     const result = wireRequestSchema({
       type: "command",
       sessionId: "s1",
-      command: { action: "scroll", direction: "down", amount: 500 },
+      command: { action: "scroll", direction: "down", amount: 500, selector: "#scroll-container" },
     });
     expect(result).toEqual({
       type: "command",
       sessionId: "s1",
-      command: { action: "scroll", direction: "down", amount: 500 },
+      command: { action: "scroll", direction: "down", amount: 500, selector: "#scroll-container" },
     });
   });
 

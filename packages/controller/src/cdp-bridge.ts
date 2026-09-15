@@ -23,6 +23,8 @@ import type {
   TabInfo,
   TabResult,
   CookiesResult,
+  ScrollPosition,
+  ScrollResult,
   VoidResult,
   WaitResult,
   GetTextResult,
@@ -3107,15 +3109,139 @@ export async function executeCommand(
         await page.keyboard.press(command.key);
         return ok({ _tag: "VoidResult" } as const);
 
-      case "scroll":
-        await scope.evaluate(({ dir, amt }) => {
-          const m: Record<string, [number, number]> = {
-            up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0],
-          };
-          const [x, y] = m[dir]!;
-          window.scrollBy(x * amt, y * amt);
-        }, { dir: command.direction, amt: command.amount ?? 300 });
-        return ok({ _tag: "VoidResult" } as const);
+      case "scroll": {
+        type ScrollEvaluation =
+          | { readonly status: "invalid_selector" }
+          | { readonly status: "missing" }
+          | {
+              readonly status: "not_scrollable";
+              readonly axis: "x" | "y";
+              readonly before: ScrollPosition;
+              readonly max: ScrollPosition;
+            }
+          | {
+              readonly status: "scrolled";
+              readonly before: ScrollPosition;
+              readonly after: ScrollPosition;
+              readonly delta: ScrollPosition;
+              readonly max: ScrollPosition;
+              readonly clipped: boolean;
+            };
+        const amount = command.amount ?? 300;
+        if (command.selector !== undefined && command.selector.trim() === "") {
+          return err({ _tag: "ValidationFailed", message: "scroll selector must not be empty" });
+        }
+        const evaluation = await scope.evaluate(
+          ({ dir, amt, selector }): ScrollEvaluation => {
+            const horizontal = dir === "left" || dir === "right";
+            const sign = dir === "up" || dir === "left" ? -1 : 1;
+            const requestedDelta = sign * amt;
+            const position = (x: number, y: number): ScrollPosition => ({ x, y });
+            const clamp = (value: number, max: number): number =>
+              Math.min(Math.max(value, 0), max);
+            const clipped = (
+              before: ScrollPosition,
+              after: ScrollPosition,
+            ): boolean => horizontal
+              ? Math.abs(after.x - before.x) < Math.abs(amt)
+              : Math.abs(after.y - before.y) < Math.abs(amt);
+
+            if (selector !== undefined) {
+              let target: Element | null;
+              try {
+                target = document.querySelector(selector);
+              } catch {
+                return { status: "invalid_selector" };
+              }
+              if (target === null) return { status: "missing" };
+
+              const before = position(target.scrollLeft, target.scrollTop);
+              const max = position(
+                Math.max(0, target.scrollWidth - target.clientWidth),
+                Math.max(0, target.scrollHeight - target.clientHeight),
+              );
+              const axis: "x" | "y" = horizontal ? "x" : "y";
+              const rootTarget = target === document.scrollingElement
+                || target === document.documentElement
+                || target === document.body;
+              const axisMax = horizontal ? max.x : max.y;
+              if (rootTarget || axisMax <= 0) {
+                return { status: "not_scrollable", axis, before, max };
+              }
+
+              if (horizontal) target.scrollLeft = clamp(before.x + requestedDelta, max.x);
+              else target.scrollTop = clamp(before.y + requestedDelta, max.y);
+
+              const after = position(target.scrollLeft, target.scrollTop);
+              return {
+                status: "scrolled",
+                before,
+                after,
+                delta: position(after.x - before.x, after.y - before.y),
+                max,
+                clipped: clipped(before, after),
+              };
+            }
+
+            const before = position(window.scrollX, window.scrollY);
+            const scrollingElement = document.scrollingElement;
+            const max = scrollingElement === null
+              ? before
+              : position(
+                Math.max(0, scrollingElement.scrollWidth - window.innerWidth),
+                Math.max(0, scrollingElement.scrollHeight - window.innerHeight),
+              );
+            window.scrollBy(horizontal ? requestedDelta : 0, horizontal ? 0 : requestedDelta);
+            const after = position(window.scrollX, window.scrollY);
+            return {
+              status: "scrolled",
+              before,
+              after,
+              delta: position(after.x - before.x, after.y - before.y),
+              max,
+              clipped: clipped(before, after),
+            };
+          },
+          { dir: command.direction, amt: amount, selector: command.selector },
+        );
+        if (evaluation.status === "invalid_selector") {
+          return err({ _tag: "ValidationFailed", message: `Invalid scroll selector: ${command.selector}` });
+        }
+        if (evaluation.status === "missing") {
+          return err({ _tag: "ElementNotFound", selector: command.selector });
+        }
+        if (evaluation.status === "not_scrollable") {
+          return err({
+            _tag: "ValidationFailed",
+            message: `Element ${command.selector} is not scrollable on the ${evaluation.axis} axis`,
+          });
+        }
+        const result: ScrollResult = command.selector === undefined
+          ? {
+              _tag: "ScrollResult",
+              target: "window",
+              direction: command.direction,
+              requested: amount,
+              before: evaluation.before,
+              after: evaluation.after,
+              delta: evaluation.delta,
+              max: evaluation.max,
+              clipped: evaluation.clipped,
+            }
+          : {
+              _tag: "ScrollResult",
+              target: "element",
+              selector: command.selector,
+              direction: command.direction,
+              requested: amount,
+              before: evaluation.before,
+              after: evaluation.after,
+              delta: evaluation.delta,
+              max: evaluation.max,
+              clipped: evaluation.clipped,
+            };
+        return ok(result);
+      }
 
       case "tab_list": {
         const result: TabResult & { readonly activeFrame?: string } = {

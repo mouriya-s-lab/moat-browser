@@ -410,6 +410,7 @@ moat CLI **是 agent-browser（`github.com/vercel-labs/agent-browser`）的 fork
   - 元素定位：Playwright 语义定位器（主）+ `@eN` 引用（辅）
   - 输出格式：text 模式 + `--json` 模式 + content boundary nonce
   - Exit code 体系
+  - `scroll` without `--selector` moves the active window; `scroll ... --selector <css>` moves only the first matching element in the active page/frame and leaves the window unchanged. Successful results expose measured before/after positions, actual delta, maximum position, and boundary clipping; missing targets are `target_not_found`, and an axis with no overflow is `invalid_value`.
   - 配置文件合并规则（user > project > CLI flag）
 - **修改**（唯一实质改动）：
   - transport 层：原来直接走本地 Unix socket → 本地 daemon，改为调用 Rust SDK → 远程 WebSocket → Controller

@@ -15,8 +15,10 @@ Navigation and page actions:
   click | dblclick | type | fill | hover | focus | check | uncheck | select
   click <selector> [--new-tab]   Open an HTTP(S) link in a new active tab
   press | keyboard | keydown | keyup | drag | mouse | tap | swipe | scroll
+  scroll --selector             Scroll only the matching active-page element;
+                                 output reports measured movement and clipping
   keydown/keyup                 Explicit held-key pairing; high-level input
-                                 rejects while a modifier remains held
+                               rejects while a modifier remains held
   wait | find | get | is | eval | highlight
   get text <selector> [--all|--nth <index>]
                                Strict by default; --all reads all matches in order
@@ -107,7 +109,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "keydown" => "keydown <key>",
         "keyup" => "keyup <key>",
         "keyboard" => "keyboard <type|inserttext> <text>",
-        "scroll" => "scroll <up|down|left|right> [pixels]",
+        "scroll" => "scroll <up|down|left|right> [pixels] [--selector <sel>]",
         "scrollintoview" | "scrollinto" => "scrollintoview <selector>",
         "wait" => "wait <selector|milliseconds|--text|--url|--load|--fn|--download> [value] [--timeout <ms>]  # integer 1-120000ms; default 25000ms",
         "screenshot" => "screenshot [selector] [output-path] [--full|-f] [--annotate]",
@@ -165,6 +167,9 @@ pub fn command_help_text(command: &str) -> Option<String> {
     };
 
     let description = match command {
+        "scroll" => {
+            "Without --selector, scrolls the active window. With --selector, scrolls only the first matching element in the active page/frame and leaves the window unchanged. Successful output reports before/after positions, actual delta, maximum position, and boundary clipping; missing selectors return target_not_found and non-scrollable axes return invalid_value."
+        },
         "get" => {
             "text is strict for one match by default; use `--all` for all matches or `--nth <index>` for one zero-based match. `attr` reports missing versus present-empty explicitly, and `styles` preserves fractional geometry with a distinct no-layout state."
         },
