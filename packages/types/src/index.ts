@@ -579,6 +579,12 @@ export type ControllerError =
   | { readonly _tag: "StaleReference"; readonly ref: string; readonly reason: RefStaleReason }
   | { readonly _tag: "Timeout"; readonly operation: string }
   | { readonly _tag: "CommandFailed"; readonly message: string }
+  | {
+      readonly _tag: "DialogPending";
+      readonly operationId: string;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+    }
   | { readonly _tag: "ValidationFailed"; readonly message: string }
   | {
       readonly _tag: "CapacityExceeded";
@@ -590,13 +596,36 @@ export type ControllerError =
       readonly retryCondition: string;
     };
 
+// ─── Command failure wire shape ───
 export type CommandFailureCause =
   | { readonly _tag: "container_creation" }
   | { readonly _tag: "cdp" }
   | { readonly _tag: "cleanup" }
-  | { readonly _tag: "transport" };
+  | { readonly _tag: "transport" }
+  | {
+      readonly _tag: "dialog_pending";
+      readonly operationId: string;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+    };
 
 export type CommandFailureCauseTag = CommandFailureCause["_tag"];
+
+type GenericCommandFailedWireFailure = {
+  readonly errorType: "command_failed";
+  readonly cause: Exclude<CommandFailureCauseTag, "dialog_pending">;
+  readonly operationId?: never;
+  readonly dialogId?: never;
+  readonly page?: never;
+};
+
+type DialogPendingWireFailure = {
+  readonly errorType: "command_failed";
+  readonly cause: "dialog_pending";
+  readonly operationId: string;
+  readonly dialogId: string;
+  readonly page: DialogPage;
+};
 
 export type WireErrorType = "target_not_found" | "invalid_value" | "command_failed" | "capacity_exceeded" | "timeout";
 
@@ -613,10 +642,8 @@ export type WireFailure =
       readonly errorType: "timeout";
       readonly cause?: never;
     }
-  | {
-      readonly errorType: "command_failed";
-      readonly cause: CommandFailureCauseTag;
-    }
+  | GenericCommandFailedWireFailure
+  | DialogPendingWireFailure
   | {
       readonly errorType: "capacity_exceeded";
       readonly cause?: never;
@@ -645,7 +672,6 @@ export type SessionState =
   | { readonly _tag: "Expired"; readonly reason: string };
 
 // ─── ErrorCode ───
-
 export const ErrorCode: Record<ControllerError["_tag"], number> = {
   SessionNotFound: 77,
   SessionExpired: 83,
@@ -659,9 +685,11 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   StaleReference: 67,
   Timeout: 75,
   CommandFailed: 1,
+  DialogPending: 1,
   ValidationFailed: 2,
   CapacityExceeded: 84,
 };
+
 
 // ─── BrowserCommand ───
 

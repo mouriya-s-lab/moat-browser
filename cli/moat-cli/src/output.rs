@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use crate::color;
 use crate::connection::Response;
+use moat_sdk::wire::CommandFailureCause;
 
 static BOUNDARY_NONCE: OnceLock<String> = OnceLock::new();
 
@@ -362,16 +363,31 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
         // JSON mode includes the warning field in the JSON payload already
         return;
     }
-
     if !resp.success {
-        eprintln!(
-            "{} {}",
-            color::error_indicator(),
-            resp.error.as_deref().unwrap_or("Unknown error")
-        );
-        // Still print dialog warning after errors, since a pending dialog
-        // is the most common cause of commands timing out
-        if let Some(ref warning) = resp.warning {
+        if matches!(resp.cause.as_ref(), Some(CommandFailureCause::DialogPending)) {
+            let operation_id = resp.operation_id.as_deref().unwrap_or("unknown");
+            let dialog_id = resp.dialog_id.as_deref().unwrap_or("unknown");
+            let page_id = resp
+                .page
+                .as_ref()
+                .map(|page| page.page_id.as_str())
+                .unwrap_or("unknown");
+            eprintln!(
+                "{} Dialog pending (operation={}, dialog={}, page={}); run `dialog accept|dismiss`",
+                color::error_indicator(),
+                operation_id,
+                dialog_id,
+                page_id,
+            );
+        } else {
+            eprintln!(
+                "{} {}",
+                color::error_indicator(),
+                resp.error.as_deref().unwrap_or("Unknown error")
+            );
+        }
+        // Preserve any server warning alongside the structured failure.
+        if let Some(warning) = &resp.warning {
             eprintln!("{} {}", color::warning_indicator(), warning);
         }
         return;

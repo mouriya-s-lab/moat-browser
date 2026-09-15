@@ -208,11 +208,13 @@ override. `set offline` accepts only `on`, `off`, `true`, or `false`,
 case-insensitively. Unknown values, unknown descriptor names, and missing
 arguments are rejected before changing browser state.
 
-For machine-readable failures, inspect `errorType` rather than matching
-`error`: `unsupported_in_moat`, `missing_arguments`, `invalid_value`,
-`target_not_found`, `capacity_exceeded`, and `timeout` are stable classes.
-`command_failed` is reserved for infrastructure failures and always carries a
-structured `cause`.
+For machine-readable failures, inspect `errorType` and, for
+`command_failed`, its structured `cause` rather than matching `error`:
+`unsupported_in_moat`, `missing_arguments`, `invalid_value`, `target_not_found`,
+`capacity_exceeded`, and `timeout` are stable classes. `command_failed` carries
+a required cause; `dialog_pending` means a command was rejected before page
+side effects because the active Page still has a modal, and includes the
+original `operationId`, `dialogId`, and `page` identity.
 
 When choosing a wait budget, agents should omit `--timeout` for the normal
 25s command budget. Use `--timeout <ms>` when the expected condition has a

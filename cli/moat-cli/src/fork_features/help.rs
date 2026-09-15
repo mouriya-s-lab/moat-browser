@@ -179,7 +179,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         },
         "device" => "List remote Chromium descriptors usable by `set device`.",
         "dialog" => {
-            "Dialog status and handling are Page-scoped. An eval-triggered modal waits up to 3s for explicit accept/dismiss so a concurrent client receives the original result; otherwise eval returns a pending operation handle. Complete it with `dialog accept|dismiss`, then inspect the settled value with `dialog result <operation-id>`."
+            "Dialog status and handling are Page-scoped. An eval-triggered modal waits up to 3s for explicit accept/dismiss so a concurrent client receives the original result; within grace eval returns its script result, otherwise eval returns a pending operation handle. Complete it with `dialog accept|dismiss`, then inspect the settled value with `dialog result <operation-id>`. A command sent to the same Page while its modal is pending is rejected before page side effects with `cause: \"dialog_pending\"` and the operation/dialog/Page identities."
         },
         "status" => {
             "Show the local session/config view; this command does not probe remote Controller health."

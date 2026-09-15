@@ -6,7 +6,6 @@ import { join } from "node:path";
 import type {
   BrowserCommand,
   CommandResultData,
-  CommandFailureCause,
   ControllerError,
   CookieEntry,
   KeyStateResult,
@@ -1175,16 +1174,27 @@ async function executeEvalWithDialog(
 ): Promise<Result<CommandResultData, ControllerError>> {
   const state = getSessionRuntimeState(sessionId);
   const activeOperation = evalOperationForPage(state, page);
-  if (
-    activeOperation !== undefined
-    && activeOperation._tag !== "Settled"
-    && activeOperation._tag !== "Failed"
-    && activeOperation._tag !== "TimedOut"
-  ) {
-    return err({
-      _tag: "CommandFailed",
-      message: "The active page already has an unresolved dialog evaluation",
-    });
+  switch (activeOperation?._tag) {
+    case "DialogObserved":
+    case "Pending":
+      return err({
+        _tag: "DialogPending",
+        operationId: activeOperation.operationId,
+        dialogId: activeOperation.dialogId,
+        page: dialogPageFor(state, context, activeOperation.page),
+      });
+    case "Running":
+      return err({
+        _tag: "CommandFailed",
+        message: "The active page already has an unresolved evaluation",
+      });
+    case "Settled":
+    case "Failed":
+    case "TimedOut":
+    case undefined:
+      break;
+    default:
+      return exhaustive(activeOperation);
   }
 
   const operationId = `operation-${state.nextOperationId++}`;
