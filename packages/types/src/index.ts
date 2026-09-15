@@ -576,15 +576,29 @@ export type CommandFailureDetails = {
   readonly value: EvalValue;
 };
 
-export type BatchResultEntry = {
-  readonly success: boolean;
-  readonly data?: CommandResultData;
-  readonly error?: string;
-};
+export type BatchResultEntry =
+  | {
+      readonly success: true;
+      readonly data: CommandResultData;
+    }
+  | {
+      readonly success: false;
+      readonly error: string;
+    }
+  | {
+      readonly success: false;
+      readonly error: string;
+      readonly cause: "dialog_pending";
+      readonly operationId?: string;
+      readonly dialogId: string;
+      readonly page: DialogPage;
+    };
 
 export type BatchResult = {
   readonly _tag: "BatchResult";
   readonly results: ReadonlyArray<BatchResultEntry>;
+  /** Index of the child command that stopped execution on a pending dialog. */
+  readonly stoppedAt?: number;
 };
 
 export type CommandResultData =
@@ -652,7 +666,7 @@ export type ControllerError =
   | { readonly _tag: "CommandFailed"; readonly message: string }
   | {
       readonly _tag: "DialogPending";
-      readonly operationId: string;
+      readonly operationId?: string;
       readonly dialogId: string;
       readonly page: DialogPage;
     }
@@ -680,7 +694,7 @@ export type CommandFailureCause =
   | { readonly _tag: "transport" }
   | {
       readonly _tag: "dialog_pending";
-      readonly operationId: string;
+      readonly operationId?: string;
       readonly dialogId: string;
       readonly page: DialogPage;
     };
@@ -698,7 +712,7 @@ type GenericCommandFailedWireFailure = {
 type DialogPendingWireFailure = {
   readonly errorType: "command_failed";
   readonly cause: "dialog_pending";
-  readonly operationId: string;
+  readonly operationId?: string;
   readonly dialogId: string;
   readonly page: DialogPage;
 };

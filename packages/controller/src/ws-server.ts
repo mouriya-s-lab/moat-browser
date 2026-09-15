@@ -184,7 +184,10 @@ function formatError(error: ControllerError): string {
     case "CommandFailed":
       return `Command failed: ${error.message}`;
     case "DialogPending":
-      return `Dialog pending on ${error.page.pageId}: operation ${error.operationId}, dialog ${error.dialogId}; handle it with dialog accept or dismiss`;
+      if (error.operationId !== undefined) {
+        return `Dialog pending on ${error.page.pageId}: operation ${error.operationId}, dialog ${error.dialogId}; handle it with dialog accept or dismiss`;
+      }
+      return `Dialog pending on ${error.page.pageId}: dialog ${error.dialogId}; handle it with dialog accept or dismiss`;
     case "CommandFailedWithValue":
       return `Command failed: ${error.message}`;
     case "ValidationFailed":
