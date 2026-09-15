@@ -1205,7 +1205,7 @@ describe("cdp-bridge", () => {
       expect(detach).toHaveBeenCalledTimes(1);
     });
 
-    it("HAR start clears prior requests and stop exports captured requests", async () => {
+    it("HAR stop reports pending without a captured response body", async () => {
       const handlers = new Map<string, (value: unknown) => void>();
       page = mockPage({
         on: mock((event: string, handler: (value: unknown) => void) => {
@@ -1225,12 +1225,11 @@ describe("cdp-bridge", () => {
 
       const data = assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION));
 
-      expect(data._tag).toBe("BinaryFileResult");
-      if (data._tag === "BinaryFileResult") {
-        const har = JSON.parse(Buffer.from(data.base64, "base64").toString());
-        expect(data.requestCount).toBe(1);
-        expect(har.log.version).toBe("1.2");
-        expect(har.log.entries[0].request.url).toBe("https://example.com/api");
+      expect(data._tag).toBe("NetworkArtifactResult");
+      if (data._tag === "NetworkArtifactResult") {
+        expect(data.status).toBe("incomplete");
+        expect(data.reason).toBe("pending");
+        expect(data).not.toHaveProperty("path");
       }
     });
   });

@@ -1,6 +1,7 @@
 import { chromium, devices } from "patchright";
 import type { Browser, BrowserContext, CDPSession, Dialog, Frame, Locator, Page, Request } from "patchright";
-import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -46,11 +47,17 @@ import type {
   DiagnosticContext,
   DiagnosticRecord,
   ConsoleResult,
-  PageErrorsResult,
   ClearedResult,
+  PageErrorsResult,
+  NetworkContinuation,
+  NetworkBodyReadiness,
+  NetworkBodySnapshot,
+  NetworkBodyTransfer,
   NetworkRequestEntry,
   NetworkRequestsResult,
   NetworkRequestDetailResult,
+  NetworkArtifactResult,
+  NetworkArtifactChunkResult,
   BinaryFileResult,
   ClipboardResult,
   DialogResult,
@@ -217,6 +224,88 @@ type CdpRequestIdentity = {
   readonly frameId?: string;
   readonly resourceType?: string;
 };
+type CapturedNetworkBody =
+  | {
+      readonly _tag: "Complete";
+      readonly text: string;
+      readonly bytes: number;
+      readonly totalBytes: number;
+    }
+  | {
+      readonly _tag: "Absent";
+      readonly bytes: 0;
+      readonly totalBytes: 0;
+    }
+  | {
+      readonly _tag: "Failed";
+      readonly knownBytes: number | null;
+      readonly totalBytes: number | null;
+      readonly message: string;
+      readonly nextAction: string;
+    };
+
+type NetworkRequestRecord = {
+  readonly requestId: string;
+  readonly url: string;
+  readonly method: string;
+  readonly resourceType: string;
+  readonly requestHeaders: Readonly<Record<string, string>>;
+  readonly postData?: string;
+  status?: number;
+  responseHeaders?: Readonly<Record<string, string>>;
+  responseBody:
+    | { _tag: "Pending"; readonly totalBytes: number | null }
+    | CapturedNetworkBody;
+  responsePromise?: Promise<CapturedNetworkBody>;
+};
+
+type BodyKind = "request" | "response";
+
+type InternalNetworkContinuation =
+  | {
+      readonly _tag: "Page";
+      readonly token: string;
+      readonly signature: string;
+      readonly index: number;
+      readonly expiresAt: number;
+    }
+  | {
+      readonly _tag: "Body";
+      readonly token: string;
+      readonly requestId: string;
+      readonly bodyKind: BodyKind;
+      readonly offset: number;
+      readonly expiresAt: number;
+    }
+  | {
+      readonly _tag: "Artifact";
+      readonly token: string;
+      readonly artifactId: string;
+      readonly offset: number;
+      readonly expiresAt: number;
+    };
+
+type NetworkArtifactRecord = {
+  readonly artifactId: string;
+  readonly path: string;
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly requestCount: number;
+  readonly expiresAt: number;
+};
+
+const NETWORK_WIRE_TARGET_BYTES = 8 * 1024 * 1024;
+const NETWORK_WIRE_RESERVE_BYTES = 64 * 1024;
+const NETWORK_RESULT_BUDGET_BYTES = NETWORK_WIRE_TARGET_BYTES - NETWORK_WIRE_RESERVE_BYTES;
+// 1 MiB raw -> ~1.4 MB base64 wire frame. Large single frames cross the Docker
+// published-port (userland-proxy) hop where throughput can collapse to ~120 KB/s;
+// this bound keeps every chunk's worst-case transfer well inside the 25s command
+// deadline (the prior 4 MiB -> 5.6 MB frame needed >45s at that floor and timed out).
+const NETWORK_BODY_CHUNK_BYTES = 1 * 1024 * 1024;
+const NETWORK_PAGE_SIZE = 50;
+const NETWORK_MAX_PAGE_SIZE = 100;
+const NETWORK_CONTINUATION_TTL_MS = 5 * 60 * 1000;
+
 
 type CdpConsoleArg = {
   readonly type: string;
@@ -372,7 +461,11 @@ type SessionRuntimeState = {
   readonly consoleMessages: Array<DiagnosticRecord>;
   readonly pageErrors: Array<DiagnosticRecord>;
   readonly requestIds: WeakMap<Request, string>;
-  readonly requests: Map<string, NetworkRequestEntry>;
+  readonly requests: Map<string, NetworkRequestRecord>;
+  readonly continuations: Map<string, InternalNetworkContinuation>;
+  readonly bodyContinuationTokens: Map<string, string>;
+  readonly artifacts: Map<string, NetworkArtifactRecord>;
+  readonly artifactTimers: Map<string, NodeJS.Timeout>;
   readonly pageIds: WeakMap<Page, string>;
   readonly frameIds: WeakMap<Frame, string>;
   readonly cdpFrameUrls: WeakMap<Page, Map<string, string>>;
@@ -503,7 +596,11 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     consoleMessages: [],
     pageErrors: [],
     requestIds: new WeakMap<Request, string>(),
-    requests: new Map<string, NetworkRequestEntry>(),
+    requests: new Map<string, NetworkRequestRecord>(),
+    continuations: new Map<string, InternalNetworkContinuation>(),
+    bodyContinuationTokens: new Map<string, string>(),
+    artifacts: new Map<string, NetworkArtifactRecord>(),
+    artifactTimers: new Map<string, NodeJS.Timeout>(),
     frameIds: new WeakMap<Frame, string>(),
     cdpFrameUrls: new WeakMap<Page, Map<string, string>>(),
     executionContexts: new WeakMap<Page, Map<number, CdpFrameIdentity>>(),
@@ -732,6 +829,756 @@ function cdpRequestsFor(
   state.cdpRequests.set(page, created);
   return created;
 }
+function continuationValue(token: string, expiresAt: number): NetworkContinuation {
+  return { _tag: "NetworkContinuation", token, expiresAt };
+}
+
+function bodyContinuation(
+  state: SessionRuntimeState,
+  requestId: string,
+  bodyKind: BodyKind,
+  offset: number,
+): NetworkContinuation {
+  const key = `${requestId}:${bodyKind}:${offset}`;
+  const existingToken = state.bodyContinuationTokens.get(key);
+  if (existingToken !== undefined) {
+    const existing = state.continuations.get(existingToken);
+    if (existing?._tag === "Body" && existing.expiresAt > Date.now()) {
+      return continuationValue(existing.token, existing.expiresAt);
+    }
+  }
+  const token = randomBytes(16).toString("hex");
+  const expiresAt = Date.now() + NETWORK_CONTINUATION_TTL_MS;
+  state.bodyContinuationTokens.set(key, token);
+  state.continuations.set(token, {
+    _tag: "Body",
+    token,
+    requestId,
+    bodyKind,
+    offset,
+    expiresAt,
+  });
+  return continuationValue(token, expiresAt);
+}
+
+function contentLength(headers: Readonly<Record<string, string>>): number | null {
+  const value = headers["content-length"];
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+function networkCaptureFailure(error: unknown, totalBytes: number | null): CapturedNetworkBody {
+  const detail = error instanceof Error ? error.message.toLowerCase() : "";
+  const cacheLimited = detail.includes("evicted from inspector cache")
+    || detail.includes("response body is not available");
+  const size = totalBytes === null ? "unknown" : String(totalBytes);
+  return {
+    _tag: "Failed",
+    knownBytes: null,
+    totalBytes,
+    message: cacheLimited
+      ? `Response body capture is unavailable at ${size} bytes (phase=capture): browser inspector cache limit`
+      : `Response body capture failed at ${size} bytes (phase=capture): browser did not expose the response body`,
+    nextAction: cacheLimited
+      ? "retry with a smaller response body or an application endpoint that supports ranged retrieval"
+      : "retry network request detail after the response has settled",
+  };
+}
+
+
+function requestBodyReadiness(record: NetworkRequestRecord): NetworkBodyReadiness {
+  if (record.postData === undefined) {
+    return { _tag: "Absent", knownBytes: 0, totalBytes: 0, reason: "no_body" };
+  }
+  const bytes = Buffer.byteLength(record.postData, "utf8");
+  return { _tag: "Complete", knownBytes: bytes, totalBytes: bytes };
+}
+
+function responseBodyReadiness(
+  state: SessionRuntimeState,
+  record: NetworkRequestRecord,
+): NetworkBodyReadiness {
+  switch (record.responseBody._tag) {
+    case "Pending":
+      return {
+        _tag: "Pending",
+        knownBytes: null,
+        totalBytes: record.responseBody.totalBytes,
+        continuation: bodyContinuation(state, record.requestId, "response", 0),
+      };
+    case "Complete":
+      return {
+        _tag: "Complete",
+        knownBytes: record.responseBody.bytes,
+        totalBytes: record.responseBody.totalBytes,
+      };
+    case "Absent":
+      return { _tag: "Absent", knownBytes: 0, totalBytes: 0, reason: "no_body" };
+    case "Failed":
+      return {
+        _tag: "Failed",
+        knownBytes: record.responseBody.knownBytes,
+        totalBytes: record.responseBody.totalBytes,
+        message: record.responseBody.message,
+        nextAction: record.responseBody.nextAction,
+      };
+    default:
+      return exhaustive(record.responseBody);
+  }
+}
+
+function bodyBuffer(record: NetworkRequestRecord, bodyKind: BodyKind): Buffer | undefined {
+  if (bodyKind === "request") {
+    return record.postData === undefined ? undefined : Buffer.from(record.postData, "utf8");
+  }
+  return record.responseBody._tag === "Complete"
+    ? Buffer.from(record.responseBody.text, "utf8")
+    : undefined;
+}
+
+function bodySnapshot(
+  state: SessionRuntimeState,
+  record: NetworkRequestRecord,
+  bodyKind: BodyKind,
+  transfer: NetworkBodyTransfer,
+): NetworkBodySnapshot {
+  const readiness = bodyKind === "request"
+    ? requestBodyReadiness(record)
+    : responseBodyReadiness(state, record);
+  return { readiness, transfer };
+}
+
+function networkRequestEntry(
+  state: SessionRuntimeState,
+  record: NetworkRequestRecord,
+): NetworkRequestEntry {
+  const requestBodyBytes = record.postData === undefined
+    ? 0
+    : Buffer.byteLength(record.postData, "utf8");
+  const responseBodyBytes = record.responseBody._tag === "Complete"
+    ? record.responseBody.bytes
+    : record.responseBody._tag === "Absent"
+      ? 0
+      : record.responseBody._tag === "Failed"
+        ? record.responseBody.knownBytes
+        : null;
+  return {
+    requestId: record.requestId,
+    url: record.url,
+    method: record.method,
+    resourceType: record.resourceType,
+    requestHeaders: record.requestHeaders,
+    ...(record.status === undefined ? {} : { status: record.status }),
+    ...(record.responseHeaders === undefined ? {} : { responseHeaders: record.responseHeaders }),
+    requestBodyBytes,
+    requestBody: bodySnapshot(state, record, "request", { _tag: "NotTransferred" }),
+    responseBodyBytes,
+    responseBody: bodySnapshot(state, record, "response", { _tag: "NotTransferred" }),
+  };
+}
+
+function encodedNetworkBytes(sessionId: string, data: CommandResultData): number {
+  return Buffer.byteLength(JSON.stringify({
+    type: "command_result",
+    sessionId,
+    success: true,
+    data,
+  }), "utf8");
+}
+
+function networkEnvelopeFailure(
+  phase: string,
+  encodedBytes: number,
+): ControllerError {
+  return {
+    _tag: "CommandFailed",
+    message: `Network ${phase} envelope is ${encodedBytes} bytes, above the ${NETWORK_RESULT_BUDGET_BYTES}-byte encoded budget; retry with pagination or a smaller body chunk`,
+  };
+}
+
+function detailNetworkEntry(
+  state: SessionRuntimeState,
+  sessionId: string,
+  record: NetworkRequestRecord,
+  bodyKind: BodyKind,
+  offset: number,
+  requestedChunkBytes: number | undefined,
+): Result<NetworkRequestEntry, ControllerError> {
+  const base = networkRequestEntry(state, record);
+  const body = bodyBuffer(record, bodyKind);
+  if (body === undefined) {
+    const data: NetworkRequestDetailResult = {
+      _tag: "NetworkRequestDetailResult",
+      bodyKind,
+      request: base,
+    };
+    const encodedBytes = encodedNetworkBytes(sessionId, data);
+    return encodedBytes <= NETWORK_RESULT_BUDGET_BYTES
+      ? ok(base)
+      : err(networkEnvelopeFailure("detail metadata", encodedBytes));
+  }
+  if (!Number.isInteger(offset) || offset < 0 || offset > body.length) {
+    return err({
+      _tag: "ValidationFailed",
+      message: `Network ${bodyKind} body offset ${offset} is outside 0-${body.length}`,
+    });
+  }
+  const requested = requestedChunkBytes === undefined
+    ? NETWORK_BODY_CHUNK_BYTES
+    : Math.min(requestedChunkBytes, NETWORK_BODY_CHUNK_BYTES);
+  let chunkBytes = Math.min(requested, body.length - offset);
+  if (body.length === offset) chunkBytes = 0;
+  while (chunkBytes > 0 || body.length === 0) {
+    const end = offset + chunkBytes;
+    const next = end < body.length
+      ? bodyContinuation(state, record.requestId, bodyKind, end)
+      : undefined;
+    const transfer: NetworkBodyTransfer = {
+      _tag: "Chunk",
+      offset,
+      bytes: chunkBytes,
+      totalBytes: body.length,
+      encoding: "base64",
+      base64: body.subarray(offset, end).toString("base64"),
+      ...(next === undefined ? {} : { continuation: next }),
+    };
+    const entry = bodyKind === "request"
+      ? { ...base, requestBody: bodySnapshot(state, record, bodyKind, transfer) }
+      : { ...base, responseBody: bodySnapshot(state, record, bodyKind, transfer) };
+    const data: NetworkRequestDetailResult = {
+      _tag: "NetworkRequestDetailResult",
+      bodyKind,
+      request: entry,
+    };
+    const encodedBytes = encodedNetworkBytes(sessionId, data);
+    if (encodedBytes <= NETWORK_RESULT_BUDGET_BYTES) return ok(entry);
+    if (chunkBytes === 0) break;
+    chunkBytes = Math.floor(chunkBytes / 2);
+  }
+  const continuation = bodyContinuation(state, record.requestId, bodyKind, offset);
+  const transfer: NetworkBodyTransfer = {
+    _tag: "Restricted",
+    offset,
+    bytes: 0,
+    totalBytes: body.length,
+    maxEncodedBytes: NETWORK_RESULT_BUDGET_BYTES,
+    continuation,
+    nextAction: `retry network request ${record.requestId} with --chunk-size below ${NETWORK_BODY_CHUNK_BYTES}`,
+  };
+  const entry = bodyKind === "request"
+    ? { ...base, requestBody: bodySnapshot(state, record, bodyKind, transfer) }
+    : { ...base, responseBody: bodySnapshot(state, record, bodyKind, transfer) };
+  const data: NetworkRequestDetailResult = {
+    _tag: "NetworkRequestDetailResult",
+    bodyKind,
+    request: entry,
+  };
+  const encodedBytes = encodedNetworkBytes(sessionId, data);
+  return encodedBytes <= NETWORK_RESULT_BUDGET_BYTES
+    ? ok(entry)
+    : err(networkEnvelopeFailure("detail metadata", encodedBytes));
+}
+
+
+function networkPageSignature(
+  command: Extract<BrowserCommand, { readonly action: "requests" }>,
+): string {
+  return JSON.stringify({
+    filter: command.filter ?? null,
+    type: command.type ?? null,
+    method: command.method?.toUpperCase() ?? null,
+    status: command.status ?? null,
+  });
+}
+
+function pageContinuation(
+  state: SessionRuntimeState,
+  signature: string,
+  index: number,
+): NetworkContinuation {
+  const token = randomBytes(16).toString("hex");
+  const expiresAt = Date.now() + NETWORK_CONTINUATION_TTL_MS;
+  state.continuations.set(token, {
+    _tag: "Page",
+    token,
+    signature,
+    index,
+    expiresAt,
+  });
+  return continuationValue(token, expiresAt);
+}
+
+async function settleResponseCapture(
+  record: NetworkRequestRecord,
+  options: CommandExecutionOptions | undefined,
+): Promise<void> {
+  const capture = record.responsePromise;
+  if (record.responseBody._tag !== "Pending" || capture === undefined || options === undefined) {
+    return;
+  }
+  const totalBytes = record.responseBody.totalBytes;
+  try {
+    const result = await withOperationTimeout(() => capture, options);
+    record.responseBody = result;
+  } catch (error) {
+    if (!(error instanceof OperationTimeoutError)) {
+      record.responseBody = networkCaptureFailure(error, totalBytes);
+    }
+  }
+}
+
+function filteredNetworkRequests(
+  state: SessionRuntimeState,
+  command: Extract<BrowserCommand, { readonly action: "requests" }>,
+): ReadonlyArray<NetworkRequestRecord> {
+  const types = command.type?.split(",").map((value) => value.trim());
+  return [...state.requests.values()].filter((request) =>
+    (command.filter === undefined || request.url.includes(command.filter))
+    && (types === undefined || types.includes(request.resourceType))
+    && (command.method === undefined || request.method === command.method.toUpperCase())
+    && (command.status === undefined || statusMatches(request.status, command.status)),
+  );
+}
+
+function networkListResult(
+  state: SessionRuntimeState,
+  sessionId: string,
+  command: Extract<BrowserCommand, { readonly action: "requests" }>,
+): Result<NetworkRequestsResult, ControllerError> {
+  const signature = networkPageSignature(command);
+  let index = 0;
+  if (command.pageToken !== undefined) {
+    const continuation = state.continuations.get(command.pageToken);
+    if (
+      continuation === undefined
+      || continuation._tag !== "Page"
+      || continuation.expiresAt <= Date.now()
+      || continuation.signature !== signature
+    ) {
+      return err({
+        _tag: "ValidationFailed",
+        message: "Network list continuation is expired or does not match its filters; restart pagination",
+      });
+    }
+    index = continuation.index;
+  }
+  const filtered = filteredNetworkRequests(state, command);
+  const pageSize = Math.min(
+    Math.max(1, command.pageSize ?? NETWORK_PAGE_SIZE),
+    NETWORK_MAX_PAGE_SIZE,
+  );
+  const start = Math.min(index, filtered.length);
+  let end = Math.min(start + pageSize, filtered.length);
+  while (true) {
+    const entries = filtered.slice(start, end).map((request) => networkRequestEntry(state, request));
+    const nextPage = end < filtered.length
+      ? pageContinuation(state, signature, end)
+      : undefined;
+    const result: NetworkRequestsResult = {
+      _tag: "NetworkRequestsResult",
+      requests: entries,
+      pageSize,
+      returned: entries.length,
+      total: filtered.length,
+      ...(nextPage === undefined ? {} : { nextPage }),
+    };
+    const encodedBytes = encodedNetworkBytes(sessionId, result);
+    if (encodedBytes <= NETWORK_RESULT_BUDGET_BYTES) return ok(result);
+    if (nextPage !== undefined) state.continuations.delete(nextPage.token);
+    if (end === start) return err(networkEnvelopeFailure("list metadata", encodedBytes));
+    end = start + Math.floor((end - start) / 2);
+  }
+}
+function artifactDirectory(sessionId: string): string {
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return join(process.env.PROFILES_WORK ?? "/data/profiles", ".moat-artifacts", safeSessionId);
+}
+function forgetNetworkArtifact(state: SessionRuntimeState, artifactId: string): void {
+  const artifact = state.artifacts.get(artifactId);
+  if (artifact === undefined) return;
+  state.artifacts.delete(artifactId);
+  const timer = state.artifactTimers.get(artifactId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    state.artifactTimers.delete(artifactId);
+  }
+  for (const [token, continuation] of state.continuations) {
+    if (continuation._tag === "Artifact" && continuation.artifactId === artifactId) {
+      state.continuations.delete(token);
+    }
+  }
+  void rm(artifact.path, { force: true }).catch(() => {});
+}
+
+
+function artifactIncomplete(
+  reason: "pending" | "failed" | "restricted",
+  requestCount: number,
+  message: string,
+  nextAction: string,
+): NetworkArtifactResult {
+  return {
+    _tag: "NetworkArtifactResult",
+    status: "incomplete",
+    reason,
+    requestCount,
+    message,
+    nextAction,
+  };
+}
+
+function harEntryForRequest(request: NetworkRequestRecord): Record<string, unknown> {
+  const requestBodyBytes = request.postData === undefined
+    ? 0
+    : Buffer.byteLength(request.postData, "utf8");
+  const responseBody = request.responseBody;
+  const responseBodyBytes = responseBody._tag === "Complete"
+    ? responseBody.bytes
+    : responseBody._tag === "Absent"
+      ? 0
+      : 0;
+  const requestEntry: Record<string, unknown> = {
+    method: request.method,
+    url: request.url,
+    httpVersion: "HTTP/1.1",
+    headers: Object.entries(request.requestHeaders).map(([name, value]) => ({ name, value })),
+    queryString: [],
+    cookies: [],
+    headersSize: -1,
+    bodySize: requestBodyBytes,
+    ...(request.postData === undefined
+      ? {}
+      : { postData: { mimeType: "", text: request.postData } }),
+  };
+  const content: Record<string, unknown> = {
+    size: responseBodyBytes,
+    mimeType: request.responseHeaders?.["content-type"] ?? "",
+  };
+  if (responseBody._tag === "Complete") content.text = responseBody.text;
+  return {
+    startedDateTime: new Date().toISOString(),
+    time: 0,
+    request: requestEntry,
+    response: {
+      status: request.status ?? 0,
+      statusText: "",
+      httpVersion: "HTTP/1.1",
+      headers: Object.entries(request.responseHeaders ?? {}).map(([name, value]) => ({ name, value })),
+      cookies: [],
+      content,
+      redirectURL: "",
+      headersSize: -1,
+      bodySize: responseBodyBytes,
+    },
+    cache: {},
+    timings: { send: 0, wait: 0, receive: 0 },
+  };
+}
+
+async function stopNetworkHar(
+  state: SessionRuntimeState,
+  sessionId: string,
+  options: CommandExecutionOptions | undefined,
+): Promise<Result<NetworkArtifactResult, ControllerError>> {
+  const requests = [...state.requests.values()];
+  state.harActive = false;
+  const stopOptions = options === undefined
+    ? undefined
+    : { ...options, deadline: options.deadline - CDP_DEADLINE_GUARD_MS };
+  if (stopOptions !== undefined && stopOptions.deadline <= Date.now()) {
+    return ok(artifactIncomplete(
+      "restricted",
+      requests.length,
+      "HAR stop reached its bounded assembly budget (phase=stop)",
+      "retry HAR stop after request bodies settle; no HAR path was created",
+    ));
+  }
+  for (const request of requests) {
+    if (request.responseBody._tag === "Pending") {
+      const capture = request.responsePromise;
+      if (capture === undefined) {
+        return ok(artifactIncomplete(
+          "pending",
+          requests.length,
+          `HAR capture stopped while request ${request.requestId} response body was not ready`,
+          `wait for request ${request.requestId} to settle, then restart HAR recording`,
+        ));
+      }
+      if (options === undefined) {
+        return ok(artifactIncomplete(
+          "pending",
+          requests.length,
+          `HAR capture stopped while request ${request.requestId} response body was pending`,
+          `restart HAR recording after request ${request.requestId} has settled`,
+        ));
+      }
+      try {
+        request.responseBody = await withOperationTimeout(() => capture, stopOptions);
+      } catch (error) {
+        if (error instanceof OperationTimeoutError) {
+          return ok(artifactIncomplete(
+            "pending",
+            requests.length,
+            `HAR response body for request ${request.requestId} is still pending at the command deadline`,
+            `retry after request ${request.requestId} settles; no HAR path was created`,
+          ));
+        }
+        return ok(artifactIncomplete(
+          "failed",
+          requests.length,
+          `HAR response body capture failed for request ${request.requestId}`,
+          "restart HAR recording after the failed request can be retried",
+        ));
+      }
+    }
+    if (request.responseBody._tag === "Failed") {
+      return ok(artifactIncomplete(
+        "failed",
+        requests.length,
+        `HAR response body for request ${request.requestId} failed: ${request.responseBody.message}`,
+        request.responseBody.nextAction,
+      ));
+    }
+  }
+  if (stopOptions !== undefined && stopOptions.deadline <= Date.now()) {
+    return ok(artifactIncomplete(
+      "restricted",
+      requests.length,
+      "HAR stop reached its bounded assembly budget (phase=serialization)",
+      "retry HAR stop after request bodies settle; no HAR path was created",
+    ));
+  }
+
+  const harValue = {
+    log: {
+      version: "1.2",
+      creator: { name: "moat-browser", version: "0.1.0" },
+      entries: requests.map((request) => harEntryForRequest(request)),
+    },
+  };
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(JSON.stringify(harValue, null, 2), "utf8");
+    const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+    if (
+      typeof parsed !== "object"
+      || parsed === null
+      || !("log" in parsed)
+      || typeof parsed.log !== "object"
+      || parsed.log === null
+      || !("entries" in parsed.log)
+      || !Array.isArray(parsed.log.entries)
+      || parsed.log.entries.length !== requests.length
+    ) {
+      return ok(artifactIncomplete(
+        "failed",
+        requests.length,
+        "HAR serialization did not produce a readable entry list",
+        "restart HAR recording and retry after the request capture is stable",
+      ));
+    }
+  } catch (error) {
+    return ok(artifactIncomplete(
+      "failed",
+      requests.length,
+      `HAR serialization failed: ${error instanceof Error ? error.message : String(error)}`,
+      "restart HAR recording after reducing captured request volume",
+    ));
+  }
+
+  const artifactId = randomBytes(16).toString("hex");
+  const directory = artifactDirectory(sessionId);
+  const finalPath = join(directory, `${artifactId}.har`);
+  const temporaryPath = join(directory, `.${artifactId}.har.partial`);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  try {
+    await withOperationTimeout(() => mkdir(directory, { recursive: true }), stopOptions);
+    await withOperationTimeout(() => writeFile(temporaryPath, bytes, { flag: "wx" }), stopOptions);
+    await withOperationTimeout(() => rename(temporaryPath, finalPath), stopOptions);
+    const handle = await withOperationTimeout(() => open(finalPath, "r"), stopOptions);
+    try {
+      const stat = await withOperationTimeout(() => handle.stat(), stopOptions);
+      if (stat.size !== bytes.length) {
+        await rm(finalPath, { force: true });
+        return ok(artifactIncomplete(
+          "failed",
+          requests.length,
+          `HAR artifact length check failed: wrote ${stat.size} bytes, expected ${bytes.length}`,
+          "restart HAR recording and retry the artifact download",
+        ));
+      }
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    await Promise.allSettled([
+      rm(temporaryPath, { force: true }),
+      rm(finalPath, { force: true }),
+    ]);
+    return ok(artifactIncomplete(
+      "failed",
+      requests.length,
+      `HAR artifact write failed at ${bytes.length} bytes: ${error instanceof Error ? error.message : String(error)}`,
+      "retry HAR stop; no partial HAR path was returned",
+    ));
+  }
+
+  const expiresAt = Date.now() + NETWORK_CONTINUATION_TTL_MS;
+  const artifact: NetworkArtifactRecord = {
+    artifactId,
+    path: finalPath,
+    bytes: bytes.length,
+    sha256: digest,
+    requestCount: requests.length,
+    expiresAt,
+  };
+  const result: NetworkArtifactResult = {
+    _tag: "NetworkArtifactResult",
+    status: "complete",
+    artifactId,
+    bytes: bytes.length,
+    sha256: digest,
+    requestCount: requests.length,
+    chunkBytes: NETWORK_BODY_CHUNK_BYTES,
+    expiresAt,
+  };
+  const encodedBytes = encodedNetworkBytes(sessionId, result);
+  if (encodedBytes > NETWORK_RESULT_BUDGET_BYTES) {
+    state.artifacts.delete(artifactId);
+    await rm(finalPath, { force: true });
+    return ok(artifactIncomplete(
+      "restricted",
+      requests.length,
+      `HAR descriptor envelope is ${encodedBytes} bytes, above the encoded budget`,
+      "restart HAR recording after reducing request metadata",
+    ));
+  }
+  state.artifacts.set(artifactId, artifact);
+  const expiryTimer = setTimeout(() => {
+    forgetNetworkArtifact(state, artifactId);
+  }, NETWORK_CONTINUATION_TTL_MS);
+  state.artifactTimers.set(artifactId, expiryTimer);
+  return ok(result);
+}
+
+async function readArtifactChunk(
+  path: string,
+  offset: number,
+  length: number,
+  options: CommandExecutionOptions | undefined,
+): Promise<Buffer> {
+  const handle = await withOperationTimeout(() => open(path, "r"), options);
+  try {
+    const buffer = Buffer.alloc(length);
+    const result = await withOperationTimeout(
+      () => handle.read(buffer, 0, length, offset),
+      options,
+    );
+    return buffer.subarray(0, result.bytesRead);
+  } finally {
+    await withOperationTimeout(() => handle.close(), options);
+  }
+}
+
+async function readNetworkArtifact(
+  state: SessionRuntimeState,
+  sessionId: string,
+  command: Extract<BrowserCommand, { readonly action: "network_artifact_read" }>,
+  options: CommandExecutionOptions | undefined,
+): Promise<Result<NetworkArtifactChunkResult, ControllerError>> {
+  const artifact = state.artifacts.get(command.artifactId);
+  if (artifact === undefined || artifact.expiresAt <= Date.now()) {
+    if (artifact !== undefined) forgetNetworkArtifact(state, artifact.artifactId);
+    return err({
+      _tag: "StaleReference",
+      ref: command.artifactId,
+      reason: "artifact",
+    });
+  }
+  let offset = 0;
+  if (command.continuation !== undefined) {
+    const continuation = state.continuations.get(command.continuation);
+    if (
+      continuation === undefined
+      || continuation._tag !== "Artifact"
+      || continuation.artifactId !== artifact.artifactId
+      || continuation.expiresAt <= Date.now()
+    ) {
+      return err({
+        _tag: "StaleReference",
+        ref: command.artifactId,
+        reason: "artifact",
+      });
+    }
+    offset = continuation.offset;
+  }
+  if (offset < 0 || offset > artifact.bytes) {
+    return err({
+      _tag: "ValidationFailed",
+      message: `HAR artifact offset ${offset} is outside 0-${artifact.bytes}`,
+    });
+  }
+  const requested = command.chunkBytes === undefined
+    ? NETWORK_BODY_CHUNK_BYTES
+    : Math.min(command.chunkBytes, NETWORK_BODY_CHUNK_BYTES);
+  let chunkBytes = Math.min(requested, artifact.bytes - offset);
+  if (artifact.bytes === offset) chunkBytes = 0;
+  while (chunkBytes > 0 || artifact.bytes === 0) {
+    let bytes: Buffer;
+    try {
+      bytes = await readArtifactChunk(artifact.path, offset, chunkBytes, options);
+    } catch (error) {
+      forgetNetworkArtifact(state, artifact.artifactId);
+      if (error instanceof OperationTimeoutError && options !== undefined) {
+        return err(timeoutError("network_artifact_read", options));
+      }
+      return err({
+        _tag: "CommandFailed",
+        message: `HAR artifact read failed at ${offset}/${artifact.bytes} bytes (phase=read): ${error instanceof Error ? error.message : String(error)}; retry HAR stop in the owning session`,
+      });
+    }
+    if (bytes.length === 0 && artifact.bytes > offset) {
+      forgetNetworkArtifact(state, artifact.artifactId);
+      return err({
+        _tag: "CommandFailed",
+        message: `HAR artifact read made no progress at ${offset}/${artifact.bytes} bytes (phase=read); retry HAR stop in the owning session`,
+      });
+    }
+    const end = offset + bytes.length;
+    const next = end < artifact.bytes
+      ? continuationValue(
+        randomBytes(16).toString("hex"),
+        Date.now() + NETWORK_CONTINUATION_TTL_MS,
+      )
+      : undefined;
+    if (next !== undefined) {
+      state.continuations.set(next.token, {
+        _tag: "Artifact",
+        token: next.token,
+        artifactId: artifact.artifactId,
+        offset: end,
+        expiresAt: next.expiresAt,
+      });
+    }
+    const result: NetworkArtifactChunkResult = {
+      _tag: "NetworkArtifactChunkResult",
+      artifactId: artifact.artifactId,
+      offset,
+      bytes: bytes.length,
+      totalBytes: artifact.bytes,
+      encoding: "base64",
+      base64: bytes.toString("base64"),
+      sha256: artifact.sha256,
+      ...(next === undefined ? {} : { continuation: next }),
+    };
+    const encodedBytes = encodedNetworkBytes(sessionId, result);
+    if (encodedBytes <= NETWORK_RESULT_BUDGET_BYTES) return ok(result);
+    if (chunkBytes === 0) break;
+    chunkBytes = Math.floor(chunkBytes / 2);
+  }
+  return err(networkEnvelopeFailure("HAR artifact chunk", NETWORK_RESULT_BUDGET_BYTES + 1));
+}
+
 
 function cdpFrameOverrides(
   state: SessionRuntimeState,
@@ -1225,6 +2072,7 @@ function dialogGuardTarget(
     case "credentials":
     case "requests":
     case "request_detail":
+    case "network_artifact_read":
     case "window_new":
     case "cdp_url":
     case "inspect":
@@ -1387,11 +2235,23 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
       method: request.method(),
       resourceType: request.resourceType(),
       requestHeaders: request.headers(),
+      responseBody: { _tag: "Pending", totalBytes: null },
       ...(postData !== null ? { postData } : {}),
     });
   });
   page.on("requestfailed", (request) => {
     const failure = request.failure();
+    const requestId = state.requestIds.get(request);
+    const current = requestId === undefined ? undefined : state.requests.get(requestId);
+    if (current !== undefined && current.status === undefined) {
+      current.responseBody = {
+        _tag: "Failed",
+        knownBytes: null,
+        totalBytes: null,
+        message: failure?.errorText ?? "Network request failed before a response was received",
+        nextAction: "retry the request or inspect the resource failure diagnostics",
+      };
+    }
     const frame = requestFrame(request, page);
     const context = diagnosticContext(state, sessionId, page, frame);
     recordConsole(state, {
@@ -1409,11 +2269,13 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
     const current = state.requests.get(requestId);
     if (!current) return;
     const status = response.status();
-    state.requests.set(requestId, {
-      ...current,
-      status,
-      responseHeaders: response.headers(),
-    });
+    const responseHeaders = response.headers();
+    current.status = status;
+    current.responseHeaders = responseHeaders;
+    current.responseBody = {
+      _tag: "Pending",
+      totalBytes: contentLength(responseHeaders),
+    };
     if (status >= 400) {
       const context = diagnosticContext(state, sessionId, page, requestFrame(request, page));
       recordConsole(state, {
@@ -1424,10 +2286,24 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
         status,
       });
     }
-    response.text().then((responseBody) => {
+    let capture: Promise<CapturedNetworkBody>;
+    try {
+      capture = response.text().then((text): CapturedNetworkBody => {
+        if (status === 204 || status === 304) {
+          return { _tag: "Absent", bytes: 0, totalBytes: 0 };
+        }
+        const bytes = Buffer.byteLength(text, "utf8");
+        return { _tag: "Complete", text, bytes, totalBytes: bytes };
+      }).catch((error: unknown): CapturedNetworkBody =>
+        networkCaptureFailure(error, contentLength(responseHeaders)));
+    } catch (error) {
+      capture = Promise.resolve(networkCaptureFailure(error, contentLength(responseHeaders)));
+    }
+    current.responsePromise = capture;
+    void capture.then((result) => {
       const latest = state.requests.get(requestId);
-      if (latest) state.requests.set(requestId, { ...latest, responseBody });
-    }).catch(() => {});
+      if (latest === current) current.responseBody = result;
+    });
   });
   return state;
 }
@@ -1764,6 +2640,14 @@ export function clearSessionRuntimeState(sessionId: string): void {
     state.heldMouseButtons.clear();
     state.heldMouseButtonPages.clear();
     for (const cdp of state.environmentSessions) void cdp.detach().catch(() => {});
+    for (const timer of state.artifactTimers.values()) clearTimeout(timer);
+    state.artifactTimers.clear();
+    for (const artifact of state.artifacts.values()) {
+      void rm(artifact.path, { force: true }).catch(() => {});
+    }
+    state.artifacts.clear();
+    state.continuations.clear();
+    state.bodyContinuationTokens.clear();
   }
   sessionRuntimeState.delete(sessionId);
   sessionTabIndex.delete(sessionId);
@@ -2887,6 +3771,9 @@ export async function executeCommand(
   if (command.action === "batch") {
     return executeBatchCommand(context, command, refStore, sessionId, options);
   }
+  if (command.action === "network_artifact_read") {
+    return readNetworkArtifact(getSessionRuntimeState(sessionId), sessionId, command, options);
+  }
   const runtimeState = observeContextRuntime(sessionId, context);
   let activeTabIndex = sessionTabIndex.get(sessionId) ?? 0;
   const pages = context.pages();
@@ -3869,18 +4756,14 @@ export async function executeCommand(
       case "requests": {
         if (command.clear) {
           runtimeState.requests.clear();
+          runtimeState.continuations.clear();
+          runtimeState.bodyContinuationTokens.clear();
           const r: ClearedResult = { _tag: "ClearedResult", cleared: true };
           return ok(r);
         }
-        const types = command.type?.split(",").map((value) => value.trim());
-        const requests = [...runtimeState.requests.values()].filter((request) =>
-          (command.filter === undefined || request.url.includes(command.filter))
-          && (types === undefined || types.includes(request.resourceType))
-          && (command.method === undefined || request.method === command.method.toUpperCase())
-          && (command.status === undefined || statusMatches(request.status, command.status)),
-        );
-        const r: NetworkRequestsResult = { _tag: "NetworkRequestsResult", requests };
-        return ok(r);
+        const result = networkListResult(runtimeState, sessionId, command);
+        if (result._tag === "Err") return result;
+        return ok(result.value);
       }
 
       case "request_detail": {
@@ -3888,9 +4771,44 @@ export async function executeCommand(
         if (!request) {
           return err({ _tag: "CommandFailed", message: `Unknown request ID: ${command.requestId}` });
         }
-        const r: NetworkRequestDetailResult = { _tag: "NetworkRequestDetailResult", request };
-        return ok(r);
+        let bodyKind: BodyKind = command.body ?? "response";
+        let offset = 0;
+        if (command.continuation !== undefined) {
+          const continuation = runtimeState.continuations.get(command.continuation);
+          if (
+            continuation === undefined
+            || continuation.expiresAt <= Date.now()
+            || continuation._tag !== "Body"
+            || continuation.requestId !== command.requestId
+          ) {
+            return err({
+              _tag: "ValidationFailed",
+              message: "Network body continuation is expired or belongs to another request/session",
+            });
+          }
+          bodyKind = continuation.bodyKind;
+          offset = continuation.offset;
+        }
+        if (bodyKind === "response") {
+          await settleResponseCapture(request, options);
+        }
+        const entry = detailNetworkEntry(
+          runtimeState,
+          sessionId,
+          request,
+          bodyKind,
+          offset,
+          command.chunkBytes,
+        );
+        if (entry._tag === "Err") return entry;
+        const result: NetworkRequestDetailResult = {
+          _tag: "NetworkRequestDetailResult",
+          bodyKind,
+          request: entry.value,
+        };
+        return ok(result);
       }
+
 
       case "window_new": {
         invalidateRefs(refStore, sessionId, "page");
@@ -4301,6 +5219,8 @@ export async function executeCommand(
           return err({ _tag: "CommandFailed", message: "HAR recording already active" });
         }
         runtimeState.requests.clear();
+        runtimeState.continuations.clear();
+        runtimeState.bodyContinuationTokens.clear();
         runtimeState.harActive = true;
         const r: StartedResult = { _tag: "StartedResult", started: true };
         return ok(r);
@@ -4310,53 +5230,7 @@ export async function executeCommand(
         if (!runtimeState.harActive) {
           return err({ _tag: "CommandFailed", message: "No HAR recording in progress" });
         }
-        runtimeState.harActive = false;
-        const entries = [...runtimeState.requests.values()].map((request) => ({
-          startedDateTime: new Date().toISOString(),
-          time: 0,
-          request: {
-            method: request.method,
-            url: request.url,
-            httpVersion: "HTTP/1.1",
-            headers: Object.entries(request.requestHeaders).map(([name, value]) => ({ name, value })),
-            queryString: [],
-            cookies: [],
-            headersSize: -1,
-            bodySize: request.postData?.length ?? 0,
-            ...(request.postData === undefined ? {} : { postData: { mimeType: "", text: request.postData } }),
-          },
-          response: {
-            status: request.status ?? 0,
-            statusText: "",
-            httpVersion: "HTTP/1.1",
-            headers: Object.entries(request.responseHeaders ?? {}).map(([name, value]) => ({ name, value })),
-            cookies: [],
-            content: {
-              size: request.responseBody?.length ?? 0,
-              mimeType: request.responseHeaders?.["content-type"] ?? "",
-              ...(request.responseBody === undefined ? {} : { text: request.responseBody }),
-            },
-            redirectURL: "",
-            headersSize: -1,
-            bodySize: request.responseBody?.length ?? 0,
-          },
-          cache: {},
-          timings: { send: 0, wait: 0, receive: 0 },
-        }));
-        const bytes = Buffer.from(JSON.stringify({
-          log: {
-            version: "1.2",
-            creator: { name: "moat-browser", version: "0.1.0" },
-            entries,
-          },
-        }, null, 2));
-        const r: BinaryFileResult = {
-          _tag: "BinaryFileResult",
-          base64: bytes.toString("base64"),
-          suggestedFilename: "network.har",
-          requestCount: entries.length,
-        };
-        return ok(r);
+        return await stopNetworkHar(runtimeState, sessionId, options);
       }
 
       case "cookies_set":
