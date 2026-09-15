@@ -526,6 +526,54 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
     }
 
     if let Some(data) = &resp.data {
+        if action == Some("scroll") {
+            let target = match data.get("target").and_then(|v| v.as_str()) {
+                Some("element") => format!(
+                    "element {}",
+                    data.get("selector").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                ),
+                _ => "window".to_string(),
+            };
+            let direction = data
+                .get("direction")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let requested = data
+                .get("requested")
+                .map(render_json_value)
+                .unwrap_or_else(|| "unknown".to_string());
+            let before = data
+                .get("before")
+                .map(render_json_value)
+                .unwrap_or_else(|| "unknown".to_string());
+            let after = data
+                .get("after")
+                .map(render_json_value)
+                .unwrap_or_else(|| "unknown".to_string());
+            let delta = data
+                .get("delta")
+                .map(render_json_value)
+                .unwrap_or_else(|| "unknown".to_string());
+            let max = data
+                .get("max")
+                .map(render_json_value)
+                .unwrap_or_else(|| "unknown".to_string());
+            let clipped = data.get("clipped").and_then(|v| v.as_bool()).unwrap_or(false);
+            println!(
+                "{} Scroll {} {}: before={} after={} delta={} requested={} max={} clipped={}",
+                color::success_indicator(),
+                target,
+                direction,
+                before,
+                after,
+                delta,
+                requested,
+                max,
+                clipped,
+            );
+            return;
+        }
+
         if data.get("_tag").and_then(|v| v.as_str()) == Some("BatchResult") {
             let entries = data
                 .get("results")
@@ -2045,11 +2093,14 @@ Use Cases:
         // === Scroll ===
         "scroll" => {
             r##"
-agent-browser scroll - Scroll the page
+agent-browser scroll - Scroll the page or a specific element
 
 Usage: agent-browser scroll [direction] [amount] [options]
 
-Scrolls the page or a specific element in the specified direction.
+Scrolls the window when no selector is supplied. With --selector, scrolls only
+the first matching element in the active page/frame; the window is unchanged.
+Successful output reports before/after positions, actual delta, maximum position,
+and whether the requested amount was clipped by a boundary.
 
 Arguments:
   direction            up, down, left, right (default: down)
@@ -2057,6 +2108,10 @@ Arguments:
 
 Options:
   -s, --selector <sel> CSS selector for a scrollable container
+
+Selector failures:
+  target_not_found     selector matches no element
+  invalid_value        matching element cannot scroll on the requested axis
 
 Global Options:
   --json               Output as JSON

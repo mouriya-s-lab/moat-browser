@@ -46,6 +46,35 @@ export type NavigateResult = {
 export type VoidResult = {
   readonly _tag: "VoidResult";
 };
+export type ScrollPosition = {
+  readonly x: number;
+  readonly y: number;
+};
+
+export type ScrollResult =
+  | {
+      readonly _tag: "ScrollResult";
+      readonly target: "window";
+      readonly direction: "up" | "down" | "left" | "right";
+      readonly requested: number;
+      readonly before: ScrollPosition;
+      readonly after: ScrollPosition;
+      readonly delta: ScrollPosition;
+      readonly max: ScrollPosition;
+      readonly clipped: boolean;
+    }
+  | {
+      readonly _tag: "ScrollResult";
+      readonly target: "element";
+      readonly selector: string;
+      readonly direction: "up" | "down" | "left" | "right";
+      readonly requested: number;
+      readonly before: ScrollPosition;
+      readonly after: ScrollPosition;
+      readonly delta: ScrollPosition;
+      readonly max: ScrollPosition;
+      readonly clipped: boolean;
+    };
 
 export type LocatorResult = {
   readonly _tag: "LocatorResult";
@@ -570,7 +599,6 @@ export type BooleanResult = {
   readonly enabled?: boolean;
   readonly checked?: boolean;
 };
-
 export type CommandFailureDetails = {
   readonly _tag: "ThrownValue";
   readonly value: EvalValue;
@@ -600,10 +628,10 @@ export type BatchResult = {
   /** Index of the child command that stopped execution on a pending dialog. */
   readonly stoppedAt?: number;
 };
-
 export type CommandResultData =
   | NavigateResult
   | VoidResult
+  | ScrollResult
   | LocatorResult
   | KeyStateResult
   | SnapshotResult
@@ -870,7 +898,7 @@ export type BrowserCommand =
   | { readonly action: "press"; readonly key: string }
 
   // 滚动
-  | { readonly action: "scroll"; readonly direction: "up" | "down" | "left" | "right"; readonly amount?: number }
+  | { readonly action: "scroll"; readonly direction: "up" | "down" | "left" | "right"; readonly amount?: number; readonly selector?: string }
 
   // Tab 管理
   | { readonly action: "tab_new"; readonly url?: string }
@@ -1244,6 +1272,7 @@ const browserCommandSchema = type({
     action: "'scroll'",
     direction: "'up' | 'down' | 'left' | 'right'",
     "amount?": "number",
+    "selector?": "string",
   })
   .or({ action: "'tab_new'", "url?": "string" })
   .or({ action: "'tab_switch'", index: "number" })

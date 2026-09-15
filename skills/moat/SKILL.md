@@ -123,11 +123,19 @@ moat type @e1 "text"
 moat hover @e1
 moat press Enter
 moat screenshot
+moat scroll down 300
+moat scroll down 300 --selector "#scroll-container"
 moat eval "document.title"
 moat window new
 moat get cdp-url  # returns unsupported_in_moat; CDP is Controller-private
 moat batch
 ```
+`scroll` without `--selector` moves the active window. With `--selector`, only
+the first matching element in the active page/frame is changed and the window
+stays unchanged. Results expose measured `before`, `after`, `delta`, `max`, and
+`clipped` fields so boundary clamping is explicit. A missing selector returns
+`target_not_found`; an element without overflow on the requested axis returns
+`invalid_value` before any page scroll side effect.
 For repeated targets, use the getter-level selector options instead of relying
 on a strict multi-match locator:
 

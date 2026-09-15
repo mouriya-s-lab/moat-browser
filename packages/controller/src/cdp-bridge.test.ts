@@ -519,9 +519,9 @@ describe("cdp-bridge", () => {
       expect(assertOk(r)._tag).toBe("VoidResult");
     });
 
-    it("scroll returns VoidResult", async () => {
+    it("scroll returns measured ScrollResult", async () => {
       const r = await executeCommand(ctx, { action: "scroll", direction: "down" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
+      expect(assertOk(r)._tag).toBe("ScrollResult");
     });
 
     it("wait returns VoidResult", async () => {
