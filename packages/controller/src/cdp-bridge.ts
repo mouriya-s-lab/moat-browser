@@ -6,11 +6,14 @@ import { join } from "node:path";
 import type {
   BrowserCommand,
   CommandResultData,
+  CommandFailureCause,
   ControllerError,
   CookieEntry,
+  KeyStateResult,
   EvalResult,
   LocatorResult,
   NavigateResult,
+  NthSubaction,
   ScreenshotResult,
   SnapshotResult,
   TabInfo,
@@ -187,6 +190,7 @@ type SessionRuntimeState = {
   readonly requestIds: WeakMap<Request, string>;
   readonly requests: Map<string, NetworkRequestEntry>;
   activePage?: Page;
+  readonly heldModifiers: Set<string>;
   activeFrame?: Frame;
   activeFrameSelector?: string;
   nextRefNumber: number;
@@ -201,6 +205,41 @@ type SessionRuntimeState = {
   harActive: boolean;
   nextRequestId: number;
 };
+const MODIFIER_KEYS: Record<string, true> = {
+  Alt: true,
+  Control: true,
+  Meta: true,
+  Shift: true,
+};
+
+function modifierConflict(state: SessionRuntimeState): ControllerError | undefined {
+  if (state.heldModifiers.size === 0) return undefined;
+  return {
+    _tag: "CommandFailed",
+    message: `Held modifier(s): ${[...state.heldModifiers].join(", ")}. Release them with keyup before using a high-level input action`,
+  };
+}
+
+function keyStateResult(state: SessionRuntimeState): KeyStateResult {
+  return {
+    _tag: "KeyStateResult",
+    heldModifiers: [...state.heldModifiers],
+  };
+}
+
+async function releaseHeldModifiers(
+  page: Page,
+  state: SessionRuntimeState,
+): Promise<void> {
+  for (const key of state.heldModifiers) {
+    try {
+      await page.keyboard.up(key);
+    } catch {
+      // The page may already be closed; state still must not leak into reuse.
+    }
+  }
+  state.heldModifiers.clear();
+}
 
 const sessionRuntimeState = new Map<string, SessionRuntimeState>();
 
@@ -220,6 +259,7 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     requestIds: new WeakMap<Request, string>(),
     requests: new Map<string, NetworkRequestEntry>(),
     nextRefNumber: 1,
+    heldModifiers: new Set<string>(),
     traceActive: false,
     harActive: false,
     nextRequestId: 1,
@@ -377,6 +417,7 @@ export function clearSessionRuntimeState(sessionId: string): void {
   const state = sessionRuntimeState.get(sessionId);
   if (state) {
     for (const cdp of state.observerSessions) void cdp.detach().catch(() => {});
+    state.heldModifiers.clear();
   }
   sessionRuntimeState.delete(sessionId);
   sessionTabIndex.delete(sessionId);
@@ -404,15 +445,22 @@ async function readCdpStream(cdp: CDPSession, handle: string): Promise<Buffer> {
 
 // ─── Locator subaction type ───
 
-type LocatorSubaction = "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+type LocatorSubaction = NthSubaction;
 
 // ─── executeLocatorAction ───
 
 async function executeLocatorAction(
   locator: Locator,
   subaction: LocatorSubaction | undefined,
+  state: SessionRuntimeState,
   value?: string,
+  options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
+  if (subaction !== undefined) {
+    const conflict = modifierConflict(state);
+    if (conflict) return err(conflict);
+  }
+  const timeout = operationTimeout(options);
   switch (subaction) {
     case undefined: {
       const count = await locator.count();
@@ -422,27 +470,42 @@ async function executeLocatorAction(
     }
 
     case "click":
-      await locator.click();
+      await locator.click({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "fill":
-      await locator.fill(value!);
+      await locator.fill(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!);
+      await locator.pressSequentially(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "check":
-      await locator.check();
+      await locator.check({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "uncheck":
-      await locator.uncheck();
+      await locator.uncheck({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "hover":
-      await locator.hover();
+      await locator.hover({ timeout });
+      return ok({ _tag: "VoidResult" } as const);
+
+    case "dblclick":
+      await locator.dblclick({ timeout });
+      return ok({ _tag: "VoidResult" } as const);
+
+    case "focus":
+      await locator.focus({ timeout });
+      return ok({ _tag: "VoidResult" } as const);
+
+    case "select":
+      if (value === undefined) {
+        return err({ _tag: "ValidationFailed", message: "select requires a value" });
+      }
+      await locator.selectOption([value], { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     default:
@@ -474,32 +537,88 @@ async function executeElementAction(
   ref: string | undefined,
   selector: string | undefined,
   action: "click" | "fill" | "type" | "hover",
+  state: SessionRuntimeState,
   value?: string,
+  options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
   const resolved = resolveLocator(scope, refStore, sessionId, refScope, ref, selector);
   if (resolved._tag === "Err") return resolved;
+  const conflict = modifierConflict(state);
+  if (conflict) return err(conflict);
   const locator = resolved.value;
+  const timeout = operationTimeout(options);
 
   switch (action) {
     case "click":
-      await locator.click();
+      await locator.click({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "fill":
-      await locator.fill(value!);
+      await locator.fill(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!);
+      await locator.pressSequentially(value!, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "hover":
-      await locator.hover();
+      await locator.hover({ timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     default:
       return exhaustive(action);
   }
+}
+async function executeNewTabClick(
+  context: BrowserContext,
+  page: Page,
+  locator: Locator,
+  sessionId: string,
+  options?: CommandExecutionOptions,
+): Promise<Result<CommandResultData, ControllerError>> {
+  const href = await locator.getAttribute("href", { timeout: operationTimeout(options) });
+  if (href === null || href.trim() === "") {
+    return err({
+      _tag: "CommandFailed",
+      message: "click --new-tab requires an element with a non-empty href",
+    });
+  }
+
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(href, page.url());
+  } catch {
+    return err({
+      _tag: "CommandFailed",
+      message: `click --new-tab received an invalid href: ${href}`,
+    });
+  }
+  if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
+    return err({
+      _tag: "CommandFailed",
+      message: `click --new-tab cannot open href with protocol ${targetUrl.protocol}`,
+    });
+  }
+
+  const newPage = await context.newPage();
+  try {
+    await newPage.goto(targetUrl.toString(), { timeout: operationTimeout(options) });
+  } catch (error) {
+    await newPage.close().catch(() => {});
+    return err(mapPlaywrightError(error, "click", options));
+  }
+
+  const newIndex = context.pages().indexOf(newPage);
+  if (newIndex < 0) {
+    await newPage.close().catch(() => {});
+    return err({
+      _tag: "CommandFailed",
+      message: "click --new-tab opened a page that is no longer available",
+    });
+  }
+  sessionTabIndex.set(sessionId, newIndex);
+  observePageRuntime(sessionId, newPage);
+  return ok({ _tag: "VoidResult" } as const);
 }
 
 // ─── buildAriaSnapshot ───
@@ -809,47 +928,73 @@ export async function executeCommand(
         if (command.nth !== undefined) {
           loc = loc.nth(command.nth);
         }
-        return executeLocatorAction(loc, command.subaction, command.value);
+        return executeLocatorAction(loc, command.subaction, runtimeState, command.value, options);
       }
 
       case "getbylabel":
         return executeLocatorAction(
           scope.getByLabel(command.label, { exact: command.exact }),
-          command.subaction, command.value,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "getbyplaceholder":
         return executeLocatorAction(
           scope.getByPlaceholder(command.placeholder, { exact: command.exact }),
-          command.subaction, command.value,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "getbytext":
         return executeLocatorAction(
           scope.getByText(command.text, { exact: command.exact }),
-          command.subaction,
+          command.subaction, runtimeState, undefined, options,
         );
 
       case "getbyalttext":
         return executeLocatorAction(
           scope.getByAltText(command.text, { exact: command.exact }),
-          command.subaction,
+          command.subaction, runtimeState, undefined, options,
         );
 
       case "getbytitle":
         return executeLocatorAction(
           scope.getByTitle(command.text, { exact: command.exact }),
-          command.subaction,
+          command.subaction, runtimeState, undefined, options,
         );
 
       case "getbytestid":
         return executeLocatorAction(
           scope.getByTestId(command.testId),
-          command.subaction, command.value,
+          command.subaction, runtimeState, command.value, options,
         );
 
-      case "click":
-        return executeElementAction(scope, refStore, sessionId, refScope, command.ref, command.selector, "click");
+      case "click": {
+        const conflict = modifierConflict(runtimeState);
+        if (conflict) return err(conflict);
+        if (command.newTab) {
+          const resolved = resolveLocator(
+            scope,
+            refStore,
+            sessionId,
+            refScope,
+            command.ref,
+            command.selector,
+          );
+          if (resolved._tag === "Err") return resolved;
+          return executeNewTabClick(context, page, resolved.value, sessionId, options);
+        }
+        return executeElementAction(
+          scope,
+          refStore,
+          sessionId,
+          refScope,
+          command.ref,
+          command.selector,
+          "click",
+          runtimeState,
+          undefined,
+          options,
+        );
+      }
 
       case "fill":
         return executeElementAction(
@@ -860,7 +1005,9 @@ export async function executeCommand(
           command.ref,
           command.selector,
           "fill",
+          runtimeState,
           command.value,
+          options,
         );
 
       case "type":
@@ -872,12 +1019,24 @@ export async function executeCommand(
           command.ref,
           command.selector,
           "type",
+          runtimeState,
           command.text,
+          options,
         );
 
       case "hover":
-        return executeElementAction(scope, refStore, sessionId, refScope, command.ref, command.selector, "hover");
-
+        return executeElementAction(
+          scope,
+          refStore,
+          sessionId,
+          refScope,
+          command.ref,
+          command.selector,
+          "hover",
+          runtimeState,
+          undefined,
+          options,
+        );
       case "snapshot": {
         const snapshotResult = await buildAriaSnapshot(scope, refStore, sessionId, refScope, command);
         if (snapshotResult._tag === "Err") return snapshotResult;
@@ -1235,43 +1394,64 @@ export async function executeCommand(
 
       // ─── P1 element operations ───
 
-      case "dblclick":
+      case "dblclick": {
+        const conflict = modifierConflict(runtimeState);
+        if (conflict) return err(conflict);
         await scope.locator(command.selector).dblclick();
         return ok({ _tag: "VoidResult" } as const);
+      }
 
-      case "check":
+      case "check": {
+        const conflict = modifierConflict(runtimeState);
+        if (conflict) return err(conflict);
         await scope.locator(command.selector).check();
         return ok({ _tag: "VoidResult" } as const);
+      }
 
-      case "uncheck":
+      case "uncheck": {
+        const conflict = modifierConflict(runtimeState);
+        if (conflict) return err(conflict);
         await scope.locator(command.selector).uncheck();
         return ok({ _tag: "VoidResult" } as const);
+      }
 
       case "select": {
+        const conflict = modifierConflict(runtimeState);
+        if (conflict) return err(conflict);
         const values = Array.isArray(command.values) ? command.values : [command.values];
         await scope.locator(command.selector).selectOption(values);
         return ok({ _tag: "VoidResult" } as const);
       }
 
-      case "focus":
+      case "focus": {
+        const conflict = modifierConflict(runtimeState);
+        if (conflict) return err(conflict);
         await scope.locator(command.selector).focus();
         return ok({ _tag: "VoidResult" } as const);
+      }
 
-      case "keyboard":
+      case "keyboard": {
+        const conflict = modifierConflict(runtimeState);
+        if (conflict) return err(conflict);
         if (command.subaction === "type") {
           await page.keyboard.type(command.text);
         } else {
           await page.keyboard.insertText(command.text);
         }
         return ok({ _tag: "VoidResult" } as const);
+      }
 
       case "keydown":
         await page.keyboard.down(command.key);
-        return ok({ _tag: "VoidResult" } as const);
+        if (MODIFIER_KEYS[command.key] === true) {
+          runtimeState.heldModifiers.add(command.key);
+        }
+        return ok(keyStateResult(runtimeState));
 
       case "keyup":
         await page.keyboard.up(command.key);
-        return ok({ _tag: "VoidResult" } as const);
+        runtimeState.heldModifiers.delete(command.key);
+        return ok(keyStateResult(runtimeState));
 
       case "scrollintoview":
         await scope.locator(command.selector).scrollIntoViewIfNeeded();
@@ -1480,16 +1660,17 @@ export async function executeCommand(
         }
 
         const target = loc.nth(index);
-        if (command.subaction === "click") {
-          await target.click();
-        } else if (command.subaction === "fill" && command.value) {
-          await target.fill(command.value);
-        } else if (command.subaction === "type" && command.value) {
-          await target.pressSequentially(command.value);
-        } else if (command.subaction === "hover") {
-          await target.hover();
+        const subaction = command.subaction;
+        if (
+          command.value === undefined
+          && (subaction === "fill" || subaction === "type" || subaction === "select")
+        ) {
+          return err({
+            _tag: "ValidationFailed",
+            message: `nth ${subaction} requires a value`,
+          });
         }
-        return ok({ _tag: "VoidResult" } as const);
+        return executeLocatorAction(target, subaction, runtimeState, command.value, options);
       }
 
       case "upload":
@@ -1932,6 +2113,7 @@ export async function executeCommand(
         return exhaustive(command);
     }
   } catch (e) {
+    await releaseHeldModifiers(page, runtimeState);
     return err(mapPlaywrightError(e, command.action, options));
   }
 }

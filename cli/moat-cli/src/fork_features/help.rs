@@ -13,7 +13,10 @@ Session:
 Navigation and page actions:
   open <url> | back | forward | reload
   click | dblclick | type | fill | hover | focus | check | uncheck | select
-  press | keyboard | drag | mouse | tap | swipe | scroll | scrollintoview
+  click <selector> [--new-tab]   Open an HTTP(S) link in a new active tab
+  press | keyboard | keydown | keyup | drag | mouse | tap | swipe | scroll
+  keydown/keyup                 Explicit held-key pairing; high-level input
+                                 rejects while a modifier remains held
   wait | find | get | is | eval | highlight
   wait --timeout <ms>          Integer 1-120000ms; default 25000ms
 
@@ -29,6 +32,8 @@ Browser and runtime state:
   window new                   Open a new tab in the shared browser context
   set viewport|device|geo|offline|headers|credentials|media
   network route|unroute|requests
+                                 route accepts only --abort/--body; unsupported
+                                 route options are rejected before installation
   console | errors | batch | diff
 
 Unavailable in moat architecture (stable unsupported_in_moat error):
@@ -156,9 +161,21 @@ pub fn command_help_text(command: &str) -> Option<String> {
 
     let description = match command {
         "window" => "Open a new tab in the shared browser context for the active session.",
+        "click" => {
+            "With --new-tab, open a non-empty HTTP(S) link in a new active tab and leave the original tab unchanged; elements without an openable link are rejected."
+        },
+        "find" => {
+            "first, last, and nth support click, fill, type, hover, dblclick, focus, select, check, and uncheck; unknown actions and invalid occurrences fail before page side effects."
+        },
+        "network" => {
+            "route accepts only --abort and --body <json>; unsupported options such as --status, --delay, and --headers are rejected before installation."
+        },
+        "keydown" | "keyup" => {
+            "Low-level key state is explicit and paired; high-level input rejects while a modifier remains held."
+        },
         "status" => {
             "Show the local session/config view; this command does not probe remote Controller health."
-        }
+        },
         _ => "This command runs against the active Controller-managed session.",
     };
     Some(format!(

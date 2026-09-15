@@ -128,6 +128,39 @@ moat window new
 moat get cdp-url  # returns unsupported_in_moat; CDP is Controller-private
 moat batch
 ```
+For repeated targets, select an occurrence explicitly instead of relying on a
+strict multi-match locator:
+
+```bash
+moat find first "input.same-target" fill "first"
+moat find last "input.same-target" type "suffix"
+moat find nth 1 "input.same-target" focus
+```
+
+`find first`, `find last`, and `find nth` support `click`, `fill`, `type`,
+`hover`, `dblclick`, `focus`, `select`, `check`, and `uncheck`. `fill ""` is
+valid and clears the selected input. An unknown action name, a missing value,
+or an out-of-range occurrence returns a non-success result before changing
+the page.
+
+`moat click <selector> --new-tab` opens an element's HTTP(S) link in a new
+active tab and leaves the original tab unchanged. An element without a
+non-empty link is rejected instead of being clicked in the original tab.
+
+Network routing accepts only `--abort` and `--body <json>`:
+
+```bash
+moat network route "**/api" --abort
+moat network route "**/api" --body '{"ok":true}'
+```
+
+Unsupported route options such as `--status`, `--delay`, and `--headers` are
+rejected before a route is installed.
+
+`keydown` and `keyup` are explicit paired low-level operations. While a
+modifier remains held, high-level `type`, `fill`, and `click` actions are
+rejected before input; release it with `keyup` (or use an explicit `press`
+combination). Key-state results show the currently held modifiers.
 
 `moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
 

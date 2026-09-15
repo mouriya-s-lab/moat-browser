@@ -1881,6 +1881,9 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         "last",
         "nth",
     ];
+    const NTH_ACTIONS: &[&str] = &[
+        "click", "fill", "type", "hover", "dblclick", "focus", "select", "check", "uncheck",
+    ];
 
     let locator = rest.first().ok_or_else(|| ParseError::MissingArguments {
         context: "find".to_string(),
@@ -1934,22 +1937,62 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                             i += 1;
                         }
                         token => {
-                            if subaction.is_none()
-                                && matches!(
-                                    token,
-                                    "click" | "fill" | "type" | "check" | "uncheck" | "hover"
-                                )
+                            if matches!(*locator, "first" | "last")
+                                && subaction.is_none()
+                                && NTH_ACTIONS.contains(&token)
                             {
                                 subaction = Some(token);
-                            } else {
-                                fill_parts.push(token);
+                                i += 1;
+                                continue;
                             }
+                            if matches!(*locator, "first" | "last") {
+                                if subaction.is_none() {
+                                    return Err(ParseError::InvalidValue {
+                                        message: format!(
+                                            "Unknown find action `{token}`; valid actions: {}",
+                                            NTH_ACTIONS.join(", ")
+                                        ),
+                                        usage: if *locator == "first" {
+                                            "find first <selector> [action] [text]"
+                                        } else {
+                                            "find last <selector> [action] [text]"
+                                        },
+                                    });
+                                }
+                                if !matches!(subaction, Some("fill" | "type" | "select")) {
+                                    return Err(ParseError::InvalidValue {
+                                        message: format!(
+                                            "Action `{}` does not accept a value",
+                                            subaction.unwrap_or_default()
+                                        ),
+                                        usage: if *locator == "first" {
+                                            "find first <selector> [action]"
+                                        } else {
+                                            "find last <selector> [action]"
+                                        },
+                                    });
+                                }
+                            }
+                            fill_parts.push(token);
                             i += 1;
                         }
                     }
                 }
             }
 
+            if matches!(*locator, "first" | "last")
+                && matches!(subaction, Some("fill" | "type" | "select"))
+                && fill_parts.is_empty()
+            {
+                return Err(ParseError::MissingArguments {
+                    context: format!("find {} {}", locator, subaction.unwrap_or_default()),
+                    usage: if *locator == "first" {
+                        "find first <selector> <action> <text>"
+                    } else {
+                        "find last <selector> <action> <text>"
+                    },
+                });
+            }
             let fill_value = if fill_parts.is_empty() {
                 None
             } else {
@@ -2066,6 +2109,35 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                 usage: "find nth <index> <selector> [action] [text]",
             })?;
             let sub = rest.get(3).copied();
+            if let Some(action) = sub {
+                if !NTH_ACTIONS.contains(&action) {
+                    return Err(ParseError::InvalidValue {
+                        message: format!(
+                            "Unknown find action `{action}`; valid actions: {}",
+                            NTH_ACTIONS.join(", ")
+                        ),
+                        usage: "find nth <index> <selector> [action] [text]",
+                    });
+                }
+                let requires_value = matches!(action, "fill" | "type" | "select");
+                if requires_value && rest.get(4).is_none() {
+                    return Err(ParseError::MissingArguments {
+                        context: format!("find nth {idx} {sel} {action}"),
+                        usage: "find nth <index> <selector> <action> <text>",
+                    });
+                }
+                if !requires_value && rest.len() > 4 {
+                    return Err(ParseError::InvalidValue {
+                        message: format!("Action `{action}` does not accept a value"),
+                        usage: "find nth <index> <selector> <action>",
+                    });
+                }
+            } else if rest.len() > 3 {
+                return Err(ParseError::InvalidValue {
+                    message: "A find nth query does not accept an action value".to_string(),
+                    usage: "find nth <index> <selector> [action] [text]",
+                });
+            }
             let fv = if rest.len() > 4 {
                 Some(rest[4..].join(" "))
             } else {
@@ -2285,9 +2357,59 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                 context: "network route".to_string(),
                 usage: "network route <url> [--abort|--body <json>]",
             })?;
-            let abort = rest.contains(&"--abort");
-            let body_idx = rest.iter().position(|&s| s == "--body");
-            let body = body_idx.and_then(|i| rest.get(i + 1).copied());
+            let mut abort = false;
+            let mut body: Option<&str> = None;
+            let mut i = 2;
+            while i < rest.len() {
+                match rest[i] {
+                    "--abort" => {
+                        abort = true;
+                        i += 1;
+                    }
+                    "--body" => {
+                        body =
+                            Some(
+                                *rest
+                                    .get(i + 1)
+                                    .ok_or_else(|| ParseError::MissingArguments {
+                                        context: "network route".to_string(),
+                                        usage: "network route <url> [--abort|--body <json>]",
+                                    })?,
+                            );
+                        i += 2;
+                    }
+                    "--headers" => {
+                        return Err(ParseError::Unsupported {
+                            message: "unsupported_in_moat: network route --headers is unavailable"
+                                .into(),
+                        });
+                    }
+                    option
+                        if option == "--status"
+                            || option.starts_with("--status=")
+                            || option == "--delay"
+                            || option.starts_with("--delay=") =>
+                    {
+                        return Err(ParseError::Unsupported {
+                            message: format!(
+                                "unsupported_in_moat: network route {option} is unavailable; use only --abort or --body"
+                            ),
+                        });
+                    }
+                    option if option.starts_with("--") => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown network route option: {option}"),
+                            usage: "network route <url> [--abort|--body <json>]",
+                        });
+                    }
+                    argument => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unexpected network route argument: {argument}"),
+                            usage: "network route <url> [--abort|--body <json>]",
+                        });
+                    }
+                }
+            }
             let mut cmd = json!({ "id": id, "action": "route", "url": url, "abort": abort });
             if let Some(body) = body {
                 cmd["body"] = json!(body);

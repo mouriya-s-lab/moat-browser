@@ -510,6 +510,10 @@ PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
 
 - `moat window new` 保留同一 BrowserContext 的能力，但创建的是当前共享会话中的新 tab，不是隔离 browser context 或操作系统窗口。
 - `moat get cdp-url` 在 moat 架构中不可用，返回 `unsupported_in_moat`；agent-chrome 的 CDP 端口仅供 Controller 在 Docker 内部网络访问，CLI 不返回容器地址。
+- `moat click <selector> --new-tab` 会把带非空 HTTP(S) `href` 的链接打开到新的活动 tab，并保留原 tab；没有可打开链接时在导航前返回错误。
+- `moat network route` 目前只接受 `--abort` 与 `--body <json>`；`--status`、`--delay`、`--headers` 等不支持选项会在安装 route 前返回 `unsupported_in_moat`。
+- `find first`、`find last`、`find nth` 只接受已登记的动作名；未知动作、缺少动作值和越界 occurrence 会在页面副作用前失败，`fill ""` 仍表示清空输入。`keydown`/`keyup` 是显式配对的低层操作；未释放 modifier 时，高层输入会在副作用前拒绝并返回当前 held modifiers。
+
 - `moat --json --help`、`-h`、`help`、`--version` 与 `-V` 都返回单个 JSON 值。错误对象的 `errorType` 是机器判别字段，`error` 只用于展示。
 
 机器错误分类使用结构化 `errorType`，而不是匹配 `error` 文案：
@@ -672,7 +676,24 @@ moat find placeholder <text> [action] [text]
 moat find text <text> [action]
 moat find testid <id> [action] [text]
 
-Actions: click (default), fill <text>, type <text>, check, uncheck, hover
+Actions: click (default), fill <text>, type <text>, hover, dblclick, focus, select <value>, check, uncheck
+
+For repeated targets, use `find first`, `find last`, or `find nth` to select
+one occurrence. These forms support `click`, `fill`, `type`, `hover`, `dblclick`,
+`focus`, `select`, `check`, and `uncheck`; `fill ""` clears the selected input.
+Unknown actions, missing values, and out-of-range occurrences fail before page
+side effects.
+
+`moat click <selector> --new-tab` opens a non-empty HTTP(S) link in a new
+active tab and leaves the original tab unchanged. Elements without an openable
+link are rejected before navigation.
+
+Network routing accepts only `--abort` and `--body <json>`. Unsupported options
+such as `--status`, `--delay`, and `--headers` are rejected before installation.
+
+`keydown` and `keyup` are explicit paired low-level operations. High-level
+`type`, `fill`, and `click` actions reject while a modifier is held; use `keyup`
+to release it. Key-state results show the currently held modifiers.
 
 ## Fallback commands (exploration)
 
