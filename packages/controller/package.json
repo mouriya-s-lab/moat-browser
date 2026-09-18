@@ -16,7 +16,7 @@
   "dependencies": {
     "@moat-browser/types": "workspace:*",
     "arktype": "^2.1.0",
-    "patchright": "^1.59.2",
+    "patchright": "1.59.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {

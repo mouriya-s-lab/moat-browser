@@ -1,11 +1,27 @@
 #!/usr/bin/env bun
-/** Exhaustive, black-box moat CLI contract runner for issue #220. */
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+/** Exhaustive, black-box moat CLI contract runner. */
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 type Availability = "controller" | "local" | "orchestrated" | "stable_unsupported";
-type Case = { action: string; argv: string[]; availability: Availability; verify?: string[]; contains?: string; notContains?: string; artifacts?: string[] };
+type EntryKind = "static" | "dynamic";
+type RejectedCase = { argv: string[]; errorType: string };
+type Case = {
+  action: string;
+  argv: string[];
+  availability: Availability;
+  verify?: string[];
+  contains?: string;
+  notContains?: string;
+  artifacts?: string[];
+  coverageAction?: string;
+  coverageExempt?: boolean;
+  rejected?: RejectedCase[];
+  harMode?: "text" | "all" | "none";
+};
+type ContractEntry = { action: string; sourceKind: EntryKind; dynamicSources: string[]; availability: Availability };
+type Contract = { entries: ContractEntry[]; topLevel: Record<string, TopLevelKind>; gaps: Record<string, string[]>; counts: Record<string, number> };
 type Run = { exit: number; stdout: string; stderr: string; value?: Record<string, unknown>; jsonValues: number };
 type TopLevelKind = "local_output" | "local_session" | "controller_session" | "stable_unsupported";
 type TopLevelResult = { name: string; kind: TopLevelKind; argv: string[]; exit: number; passed: boolean; jsonValues: number; diagnostic: string };
@@ -26,26 +42,40 @@ const html = `<!doctype html><title>Moat CLI Matrix</title><style>body{min-heigh
 <h1 title="matrix-title">Moat CLI Matrix</h1><label>Name <input id="input" placeholder="Your name" data-testid="name"></label>
 <button id="button" onclick="this.dataset.clicked='yes'">Run</button><input id="check" type="checkbox"><select id="select"><option value="a">A</option><option value="b">B</option></select>
 <img alt="pixel" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="><div id="source" draggable="true">drag</div><div id="target">drop</div>
-<input id="file" type="file"><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button>
+<input id="file" type="file"><a href="/target">Target</a><a id="download" download="fixture.txt" href="data:text/plain,download-ok">download</a><button id="prompt" onclick="prompt('value?')">prompt</button><output id="route">initial</output><script>if(location.pathname === '/router')window.next={router:{push(url){history.pushState(null,'',url);document.querySelector('#route').textContent='router:'+url}}}</script>
 <iframe id="frame" srcdoc="<p id='inside'>frame</p>"></iframe>`;
 // A non-opaque origin is mandatory: cookies, local/session storage, permission
 // grants, state save/load, and request headers cannot be proven on a data URL.
 // The runner installs the deterministic DOM after each navigation that would
 // otherwise replace it.
 const fixture = process.env.MOAT_FIXTURE_URL ?? "https://example.com/";
-const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop'])document.addEventListener(event,()=>window.matrixEvents.push(event));document.addEventListener('dragover',e=>e.preventDefault());true`];
+const installFixtureArgv = ["eval", `document.open();document.write(${JSON.stringify(html)});document.close();window.matrixReady=true;window.matrixEvents=[];localStorage.clear();sessionStorage.clear();console.log('matrix-console');for(const event of ['dblclick','focus','keydown','keyup','mousemove','mousedown','mouseup','wheel','touchstart','touchend','drop','popstate','navigate']){const target=event==='popstate'||event==='navigate'?window:document;target.addEventListener(event,()=>window.matrixEvents.push(event));}document.addEventListener('dragover',e=>e.preventDefault());true`];
 
-const C = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string, artifacts?: string[]): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts });
+const C = (
+  action: string,
+  argv: string[],
+  verify?: string[],
+  contains?: string,
+  notContains?: string,
+  artifacts?: string[],
+  coverageAction?: string,
+  rejected?: RejectedCase[],
+  harMode?: Case["harMode"],
+): Case => ({ action, argv, availability: "controller", verify, contains, notContains, artifacts, coverageAction, rejected, harMode });
 const L = (action: string, argv: string[], verify?: string[], contains?: string, notContains?: string): Case => ({ action, argv, availability: "local", verify, contains, notContains });
 const O = (action: string, argv: string[], artifacts?: string[]): Case => ({ action, argv, availability: "orchestrated", artifacts });
-const U = (action: string, argv: string[]): Case => ({ action, argv, availability: "stable_unsupported" });
+const U = (action: string, argv: string[], coverageExempt = false): Case => ({ action, argv, availability: "stable_unsupported", coverageExempt });
 const shot = join(artifacts, "screen.png"), pdf = join(artifacts, "page.pdf"), state = "matrix-state";
 const statePath = join(home, ".moat", "states", `${state}.json`);
 const cases: Case[] = [
   C("cookies_clear", ["cookies", "clear"]), C("navigate", ["open", fixture]),
   C("url", ["get","url"]), C("title",["get","title"],undefined,"Moat CLI Matrix"), C("back",["back"]), C("forward",["forward"]), C("reload",["reload"]),
+  C("pushstate",["pushstate","/matrix-pushstate"],["eval","window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"],"popstate,navigate"),
+  C("addinitscript",["addinitscript","(() => { const mark = () => { if (document.body) document.body.dataset.moatMatrixInit = 'active'; }; mark(); window.addEventListener('DOMContentLoaded', mark); })()"]),
+  C("removeinitscript",["removeinitscript","missing-matrix-init-script"]),
   C("click",["click","#button"],["eval","document.querySelector('#button').dataset.clicked"],"yes"), C("dblclick",["dblclick","#button"],["eval","window.matrixEvents.includes('dblclick')"],"true"),
   C("fill",["fill","#input","filled"],["get","value","#input"],"filled"), C("type",["type","#input","-typed"],["get","value","#input"],"typed"),
+  C("type_clear_delay",["type","#input","fresh","--clear","--delay","0"],["get","value","#input"],"fresh",undefined,undefined,"type"),
   C("hover",["hover","#button"],["eval","document.querySelector('#button').matches(':hover')"],"true"), C("focus",["focus","#input"],["eval","document.activeElement.id"],"input"), C("check",["check","#check"],["is","checked","#check"],"true"),
   C("uncheck",["uncheck","#check"],["is","checked","#check"],"false"), C("select",["select","#select","b"],["get","value","#select"],"b"),
   C("drag",["drag","#source","#target"],["eval","window.matrixEvents.includes('drop')"],"true"), C("upload",["upload","#file",upload],["eval","document.querySelector('#file').files[0].name"],"upload.txt"), C("download",["download","#download",join(artifacts,"download.txt")],undefined,undefined,undefined,[join(artifacts,"download.txt")]),
@@ -53,11 +83,17 @@ const cases: Case[] = [
   C("scroll",["scroll","down","100"],["eval","window.scrollY > 0"],"true"), C("scrollintoview",["scrollintoview","#target"],["eval","document.querySelector('#target').getBoundingClientRect().top < innerHeight"],"true"), C("wait",["wait","10"]),
   C("waitforurl",["wait","--url",`${new URL(fixture).origin}/*`]), C("waitforloadstate",["wait","--load","domcontentloaded"]), C("waitforfunction",["wait","--fn","document.querySelector('h1')?.textContent === 'Moat CLI Matrix'"]),
   C("waitfordownload",["wait","--download",join(artifacts,"wait-download.txt"),"--timeout","10000"],undefined,undefined,undefined,[join(artifacts,"wait-download.txt")]),
-  C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]), C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
+  C("screenshot",["screenshot",shot],undefined,undefined,undefined,[shot]), C("pdf",["pdf",pdf],undefined,undefined,undefined,[pdf]), C("snapshot",["snapshot","-i"]),
+  C("snapshot_urls",["snapshot","-i","--urls","-s","body"],undefined,new URL("/target",fixture).toString(),undefined,undefined,"snapshot"),
+  C("evaluate",["eval","document.title"],undefined,"Moat CLI Matrix"),
   C("gettext",["get","text","h1"],undefined,"Moat CLI Matrix"), C("innerhtml",["get","html","h1"]), C("inputvalue",["get","value","#input"]),
-  C("getattribute",["get","attr","h1","title"],undefined,"matrix-title"), C("count",["get","count","button"]), C("boundingbox",["get","box","h1"]), C("styles",["get","styles","h1"]), U("cdp_url",["get","cdp-url"]),
+  C("getattribute",["get","attr","h1","title"],undefined,"matrix-title"), C("count",["get","count","button"]), C("boundingbox",["get","box","h1"]), C("styles",["get","styles","h1"]), U("cdp_url",["get","cdp-url"],true),
   C("isvisible",["is","visible","h1"],undefined,"true"), C("isenabled",["is","enabled","#button"],undefined,"true"), C("ischecked",["is","checked","#check"]),
   C("getbyrole",["find","role","heading","--name","Moat CLI Matrix"]), C("getbytext",["find","text","Moat CLI Matrix"]), C("getbylabel",["find","label","Name"]),
+  C("getbyrole_check",["find","role","checkbox","check"],["is","checked","#check"],"true",undefined,undefined,"getbyrole"),
+  C("getbyrole_hover",["find","role","button","hover","--name","Run"],["eval","window.matrixEvents.includes('mousemove')"],"true",undefined,undefined,"getbyrole"),
+  C("getbylabel_fill",["find","label","Name","fill","semantic"],["get","value","#input"],"semantic",undefined,undefined,"getbylabel"),
+  C("getbytext_text",["find","text","Moat CLI Matrix","text"],["get","text","h1"],"Moat CLI Matrix",undefined,undefined,"getbytext"),
   C("getbyplaceholder",["find","placeholder","Your name"]), C("getbyalttext",["find","alt","pixel"]), C("getbytitle",["find","title","matrix-title"]), C("getbytestid",["find","testid","name"]), C("nth",["find","nth","0","button"]),
   C("mousemove",["mouse","move","10","10"],["eval","window.matrixEvents.includes('mousemove')"],"true"), C("mousedown",["mouse","down"],["eval","window.matrixEvents.includes('mousedown')"],"true"), C("mouseup",["mouse","up"],["eval","window.matrixEvents.includes('mouseup')"],"true"), C("wheel",["mouse","wheel","100","0"],["eval","window.matrixEvents.includes('wheel')"],"true"),
   C("viewport",["set","viewport","1024","768"],["eval","innerWidth + 'x' + innerHeight"],"1024x768"), C("device",["set","device","Desktop Chrome"],["eval","innerWidth + 'x' + innerHeight"],"1280x720"), C("geolocation",["set","geo","35.6812","139.7671"],["eval","new Promise(r => navigator.geolocation.getCurrentPosition(p => r(p.coords.latitude.toFixed(4))))"],"35.6812"),
@@ -65,27 +101,40 @@ const cases: Case[] = [
   C("storage_set",["storage","local","set","matrix","stored"],["storage","local","get","matrix"],"stored"), C("storage_get",["storage","local","get","matrix"],undefined,"stored"), C("storage_clear",["storage","local","clear"],["storage","local","get","matrix"],undefined,"stored"),
   C("cookies_set",["cookies","set","matrix","cookie"],["cookies","get"],"matrix"), C("cookies_get",["cookies","get"],undefined,"matrix"),
   C("route",["network","route","**/matrix-route","--body",'{"ok":true}'],["eval","fetch('https://moat.invalid/matrix-route').then(r => r.text())"],"ok"), C("requests",["network","requests"]),
-  C("request_detail",["network","request","missing-request-id"],undefined,"x-moat-matrix"), C("unroute",["network","unroute","**/matrix-route"],["eval","fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"],"unrouted"), C("har_start",["network","har","start"]), C("har_stop",["network","har","stop",join(artifacts,"network.har")],undefined,undefined,undefined,[join(artifacts,"network.har")]),
+C("route_resource_type",["network","route","**/matrix-route-resource","--resource-type","XHR, Fetch","--body",'{"resource":"matched"}'],["eval","fetch('https://moat.invalid/matrix-route-resource').then(r => r.text())"],"resource",undefined,undefined,"route",[
+    { argv: ["network","route","**/matrix-route-resource-rejected","--status","201"], errorType: "unsupported_in_moat" },
+    { argv: ["network","route","**/matrix-route-resource-rejected","--delay","10"], errorType: "unsupported_in_moat" },
+    { argv: ["network","route","**/matrix-route-resource-rejected","--headers",'{"X-Rejected":"yes"}'], errorType: "unsupported_in_moat" },
+  ]),
+  C("request_detail",["network","request","missing-request-id"],undefined,"x-moat-matrix"), C("unroute",["network","unroute","**/matrix-route"],["eval","fetch('https://moat.invalid/matrix-route').then(() => 'unexpected').catch(() => 'unrouted')"],"unrouted"),
+  C("har_start",["network","har","start","--content","text"]), C("har_stop",["network","har","stop",join(artifacts,"network-text.har")],undefined,undefined,undefined,[join(artifacts,"network-text.har")],undefined,undefined,"text"),
+  C("har_start_all",["network","har","start","--content","all"],undefined,undefined,undefined,undefined,"har_start"), C("har_stop_all",["network","har","stop",join(artifacts,"network-all.har")],undefined,undefined,undefined,[join(artifacts,"network-all.har")],"har_stop",undefined,"all"),
+  C("har_start_none",["network","har","start","--content","none"],undefined,undefined,undefined,undefined,"har_start"), C("har_stop_none",["network","har","stop",join(artifacts,"network-none.har")],undefined,undefined,undefined,[join(artifacts,"network-none.har")],"har_stop",undefined,"none"),
   C("console",["console"],undefined,"matrix-console"), C("errors",["errors"],undefined,"matrix-page-error"), C("highlight",["highlight","h1"]), C("clipboard",["clipboard","write","matrix-clipboard"],["clipboard","read"],"matrix-clipboard"),
-  C("tab_new",["tab","new",fixture],["get","url"],fixture), C("tab_list",["tab","list"],undefined,fixture), C("tab_switch",["tab","switch","0"],["get","url"],fixture), C("tab_close",["tab","close"]),
+  C("tab_new",["tab","new",fixture],["get","url"],fixture), C("tab_list",["tab","list"],undefined,fixture), C("tab_switch",["tab","switch","0"],["get","url"],fixture), C("tab_close",["tab","close"]), U("tab_label",["tab","new",fixture,"--label","matrix-tab"],true), U("init_script_flag",["open",fixture,"--init-script","document.body.dataset.matrix='bad'"],true),
   C("window_new",["window","new"], ["get","url"], "about:blank"), C("frame",["frame","#frame"],["get","text","#inside"],"frame"), C("mainframe",["frame","main"],["get","text","h1"],"Moat CLI Matrix"), C("dialog",["dialog","accept","matrix"]),
   C("tap",["tap","#button"],["eval","window.matrixEvents.includes('touchstart') && window.matrixEvents.includes('touchend')"],"true"), C("swipe",["swipe","up","100"],["eval","window.matrixEvents.filter(x => x === 'touchstart' || x === 'touchend').length >= 4"],"true"),
   C("trace_start",["trace","start"]), C("trace_stop",["trace","stop",join(artifacts,"trace.zip")],undefined,undefined,undefined,[join(artifacts,"trace.zip")]), C("profiler_start",["profiler","start"]), C("profiler_stop",["profiler","stop",join(artifacts,"profile.json")],undefined,undefined,undefined,[join(artifacts,"profile.json")]),
   C("state_save",["state","save",statePath],undefined,undefined,undefined,[statePath]), C("state_load",["state","load",statePath],["storage","local","get","matrix-state-proof"],"saved"),
-  C("batch",["batch"]),
+  C("batch",["batch"]), C("batch_inline",["batch","get title","get url"],undefined,undefined,undefined,undefined,"batch"),
   L("state_list",["state","list"],undefined,state), L("state_show",["state","show",state],undefined,"origins"), L("state_rename",["state","rename",state,"matrix-renamed"],["state","list"],"matrix-renamed",state), L("state_clean",["state","clean","--older-than","30"]), L("state_clear",["state","clear","--all"],["state","list"],undefined,"matrix-renamed"),
   O("diff_snapshot",["diff","snapshot"]), O("diff_screenshot",["diff","screenshot","--baseline",shot,"--output",join(artifacts,"diff.png")],[join(artifacts,"diff.png")]), O("diff_url",["diff","url",`data:text/html,${encodeURIComponent("<title>First</title><h1>First</h1>")}`,`data:text/html,${encodeURIComponent("<title>Different</title><h1>Different</h1>")}`]),
-  ...[["auth_save",["auth","save","x"]],["auth_list",["auth","list"]],["auth_show",["auth","show","x"]],["auth_delete",["auth","delete","x"]],["auth_login",["auth","login","x"]],
-    ["confirm",["confirm"]],["deny",["deny"]],["inspect",["inspect"]],["launch",["launch"]],["stream_enable",["stream","enable"]],["stream_disable",["stream","disable"]],["stream_status",["stream","status"]],
-    ["recording_start",["record","start"]],["recording_stop",["record","stop"]],["recording_restart",["record","restart"]]] .map(([a,v])=>U(a as string,v as string[])),
+  ...[
+    ["a11y",["a11y"]],["auth_save",["auth","save","x"]],["auth_list",["auth","list"]],["auth_show",["auth","show","x"]],["auth_delete",["auth","delete","x"]],["auth_login",["auth","login","x"]],
+    ["confirm",["confirm"]],["deny",["deny"]],["inspect",["inspect"]],["launch",["launch"]],["read",["read",fixture]],
+    ["react_tree",["react","tree"]],["react_inspect",["react","inspect","1"]],["react_renders_start",["react","renders","start"]],["react_renders_stop",["react","renders","stop"]],["react_suspense",["react","suspense"]],
+    ["stream_enable",["stream","enable"]],["stream_disable",["stream","disable"]],["stream_status",["stream","status"]],["vitals",["vitals"]],["webmcp_list",["webmcp","list"]],["webmcp_invoke",["webmcp","invoke","matrix"]],["webmcp_result",["webmcp","result","matrix"]],["webmcp_cancel",["webmcp","cancel","matrix"]],
+    ["recording_start",["record","start"]],["recording_stop",["record","stop"]],["recording_restart",["record","restart"]]
+  ].map(([a,v])=>U(a as string,v as string[])),
   C("device_list",["device","list"]),
   C("close",["close"]),
 ];
 
 async function runRaw(argv: string[], json: boolean): Promise<Run> {
   const batch = argv[0] === "batch";
-  const proc = Bun.spawn([moat, ...(json ? ["--json"] : []), ...argv], { env: { ...process.env, HOME: home, MOAT_CONTROLLER: controller }, stdin: batch ? "pipe" : undefined, stdout: "pipe", stderr: "pipe" });
-  if (batch) { proc.stdin!.write(JSON.stringify([["get","title"],["get","url"]])); proc.stdin!.end(); }
+  const batchInline = batch && argv.slice(1).some(arg => arg !== "--bail");
+  const proc = Bun.spawn([moat, ...(json ? ["--json"] : []), ...argv], { env: { ...process.env, HOME: home, MOAT_CONTROLLER: controller }, stdin: batch && !batchInline ? "pipe" : undefined, stdout: "pipe", stderr: "pipe" });
+  if (batch && !batchInline) { proc.stdin!.write(JSON.stringify([["get","title"],["get","url"]])); proc.stdin!.end(); }
   const stdoutPromise = new Response(proc.stdout).text();
   const stderrPromise = new Response(proc.stderr).text();
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -127,18 +176,65 @@ await recordText("help", ["help"], /moat - remote Chromium/, /agent-browser/);
 await recordText("--version", ["--version"], /^moat\s+\S+\s*$/);
 await recordText("-V", ["-V"], /^moat\s+\S+\s*$/);
 
-for (const name of ["dashboard", "install", "profiles", "session", "upgrade"]) {
-  const r = await run([name]);
-  recordJson(name, "stable_unsupported", [name], r, value => value.exit !== 0 && value.value?.success === false && value.value?.errorType === "unsupported_in_moat");
+const contractProc = Bun.spawnSync(["python3",join(root,"scripts/cli-command-contract.py")],{stdout:"pipe",stderr:"pipe"});
+const contractStdout = new TextDecoder().decode(contractProc.stdout);
+let contract: Contract;
+try {
+  contract = JSON.parse(contractStdout) as Contract;
+} catch (error) {
+  throw new Error(`CLI contract inventory did not emit JSON: ${String(error)}\n${contractStdout}\n${new TextDecoder().decode(contractProc.stderr)}`);
+}
+if (contractProc.exitCode !== 0 || Object.keys(contract.gaps).length > 0) {
+  throw new Error(`CLI contract inventory has gaps: ${JSON.stringify(contract.gaps)}\n${contractStdout}`);
+}
+const contractEntries = contract.entries;
+const expected = [...new Set(contractEntries.map(entry => entry.action))].sort();
+const expectedAvailability = new Map(contractEntries.map(entry => [entry.action, entry.availability]));
+const inventoryAction = (c: Case): string | undefined => c.coverageExempt ? undefined : (c.coverageAction ?? c.action);
+const primaryCaseNames = cases.filter(c => !c.coverageExempt && c.coverageAction === undefined).map(c => c.action);
+const duplicateCases = [...new Set(primaryCaseNames.filter((action, index) => primaryCaseNames.indexOf(action) !== index))].sort();
+const unknownCases = cases
+  .map(c => ({ c, action: inventoryAction(c) }))
+  .filter(({ action }) => action !== undefined && !expectedAvailability.has(action))
+  .map(({ c }) => c.action)
+  .sort();
+const caseAvailabilityMismatches = cases.flatMap(c => {
+  const action = inventoryAction(c);
+  if (action === undefined) return [];
+  const inventory = expectedAvailability.get(action);
+  return inventory === undefined || inventory !== c.availability
+    ? [{ action: c.action, declared: c.availability, inventory: inventory ?? "missing" }]
+    : [];
+});
+const results = [] as Record<string, unknown>[];
+
+
+const topLevelUnsupportedArgs: Record<string, string[]> = {
+  auth: ["auth"], confirm: ["confirm"], deny: ["deny"], inspect: ["inspect"],
+  launch: ["launch"], record: ["record"], stream: ["stream"], read: ["read"],
+  react: ["react"], vitals: ["vitals"], "web-vitals": ["web-vitals"],
+  a11y: ["a11y"], webmcp: ["webmcp"], mcp: ["mcp"], doctor: ["doctor"],
+  skills: ["skills"], plugin: ["plugin"], plugins: ["plugins"], chat: ["chat"],
+  dashboard: ["dashboard"], install: ["install"], profiles: ["profiles"],
+  session: ["session"], upgrade: ["upgrade"],
+};
+for (const [name, argv] of Object.entries(topLevelUnsupportedArgs)) {
+  if (contract.topLevel[name] !== "stable_unsupported") continue;
+  const r = await run(argv);
+  recordJson(name, "stable_unsupported", argv, r, value => value.exit !== 0 && value.value?.success === false && value.value?.errorType === "unsupported_in_moat");
 }
 
 // Prove all lifecycle aliases against real Controller state without leaking a
-// session: init -> status -> disconnect -> absent -> connect -> command matrix.
+// session: init -> status -> use -> disconnect -> absent -> connect -> destroy.
 const init = await run(["init"]);
 recordJson("init", "controller_session", ["init"], init, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
 if (!topLevelResults.at(-1)?.passed) throw new Error(`init failed: ${init.stdout}${init.stderr}`);
+const activeSessionId = (init.value?.data as Record<string,unknown> | undefined)?.sessionId;
+if (typeof activeSessionId !== "string") throw new Error(`init did not return a session id: ${init.stdout}${init.stderr}`);
 const activeStatus = await run(["status"]);
 recordJson("status", "local_session", ["status"], activeStatus, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+const use = await run(["use", activeSessionId]);
+recordJson("use", "local_session", ["use", activeSessionId], use, r => r.exit === 0 && r.value?.success === true && (r.value?.data as Record<string,unknown> | undefined)?.sessionId === activeSessionId);
 const disconnect = await run(["disconnect"]);
 recordJson("disconnect", "controller_session", ["disconnect"], disconnect, r => r.exit === 0 && r.value?.success === true);
 const absentAfterDisconnect = await run(["status"]);
@@ -148,17 +244,22 @@ if (absentAfterDisconnect.exit !== 77 || absentAfterDisconnect.jsonValues !== 1 
 const connect = await run(["connect"]);
 recordJson("connect", "controller_session", ["connect"], connect, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
 if (!topLevelResults.at(-1)?.passed) throw new Error(`connect failed: ${connect.stdout}${connect.stderr}`);
-
-const contractProc = Bun.spawnSync(["python3",join(root,"scripts/cli-command-contract.py")],{stdout:"pipe",stderr:"pipe"});
-const contract = JSON.parse(new TextDecoder().decode(contractProc.stdout)) as { actions: Record<Availability,string[]>; topLevel: Record<string,TopLevelKind> };
-const expected = Object.values(contract.actions).flat().sort();
-const results = [] as Record<string, unknown>[];
+const destroy = await run(["destroy"]);
+recordJson("destroy", "controller_session", ["destroy"], destroy, r => r.exit === 0 && r.value?.success === true);
+const reconnectAfterDestroy = await run(["connect"]);
+recordJson("connect-after-destroy", "controller_session", ["connect"], reconnectAfterDestroy, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+const closeAlias = await run(["close"]);
+recordJson("close", "controller_session", ["close"], closeAlias, r => r.exit === 0 && r.value?.success === true);
+const reconnectAfterClose = await run(["connect"]);
+recordJson("connect-after-close", "controller_session", ["connect"], reconnectAfterClose, r => r.exit === 0 && r.value?.success === true && typeof (r.value?.data as Record<string,unknown> | undefined)?.sessionId === "string");
+let initScriptIdentifier: string | undefined;
 for (const c of cases) {
   process.stderr.write(`[cli-matrix] ${results.length + 1}/${cases.length} ${c.action}\n`);
   let argv = c.argv;
   if (c.action === "waitfordownload") {
     await run(["eval","setTimeout(() => document.querySelector('#download').click(), 500); true"]);
   }
+  if (c.action === "getbyrole_hover") await run(["eval","window.matrixEvents=[]"]);
   if (c.action === "keyboard") await run(["focus","#input"]);
   if (c.action === "offline") {
     const setup = await run(["set","offline","on"]);
@@ -183,8 +284,11 @@ for (const c of cases) {
     const requestId = findId(requestList.value);
     if (requestId) argv = ["network","request",requestId];
   }
-  if (c.action === "har_stop") {
-    await run(["eval","fetch('data:text/plain,har-activity').then(r => r.text())"]);
+  if (c.action === "removeinitscript") {
+    argv = ["removeinitscript", initScriptIdentifier ?? "missing-matrix-init-script"];
+  }
+  if (c.action.startsWith("har_stop")) {
+    await run(["eval","fetch('https://example.com/har-activity').then(r => r.text()).catch(() => 'request-observed')"]);
   }
   if (c.action === "console") {
     await run(["eval","console.log('matrix-console-live'); true"]);
@@ -222,14 +326,64 @@ for (const c of cases) {
     const currentUrl = await run(["get","url"]);
     if (JSON.stringify(currentUrl.value).includes(fixture)) await run(installFixtureArgv);
   }
+  if (c.action === "addinitscript" && r.exit === 0) {
+    const data = r.value?.data;
+    if (data && typeof data === "object" && "identifier" in data && typeof data.identifier === "string") {
+      initScriptIdentifier = data.identifier;
+    }
+  }
   const unsupported = c.availability === "stable_unsupported";
-  let effectPassed = unsupported ? r.exit !== 0 && r.value?.errorType === "unsupported_in_moat" : r.exit === 0 && r.value?.success === true;
+  let effectPassed = unsupported
+    ? r.exit !== 0 && r.value?.success === false && r.value?.errorType === "unsupported_in_moat"
+    : r.exit === 0 && r.value?.success === true;
   let diagnostic = "";
-  if (effectPassed && c.verify) {
+  if (c.action === "pushstate" && effectPassed) {
+    const responseData = r.value?.data;
+    const responseUrl = responseData && typeof responseData === "object" && "url" in responseData && typeof responseData.url === "string" ? responseData.url : "";
+    const urlResult = await run(["get", "url"]);
+    const eventsResult = await run(["eval", "window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"]);
+    const sameUrl = await run(["pushstate", "/matrix-pushstate"]);
+    const sameEventsResult = await run(["eval", "window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"]);
+    const fallbackEvents = JSON.stringify(eventsResult.value);
+    const sameEvents = JSON.stringify(sameEventsResult.value);
+    const fallbackCheck = c.verify ? await run(c.verify) : undefined;
+    const fallbackCheckRendered = fallbackCheck ? JSON.stringify(fallbackCheck.value) : "";
+    const fallbackPassed = responseUrl.includes("/matrix-pushstate")
+      && urlResult.exit === 0
+      && eventsResult.exit === 0
+      && sameUrl.exit === 0
+      && sameEventsResult.exit === 0
+      && fallbackEvents.includes("popstate,navigate")
+      && sameEvents.includes("popstate,navigate")
+      && !sameEvents.includes("popstate,navigate,popstate")
+      && (!fallbackCheck
+        || (fallbackCheck.exit === 0
+          && fallbackCheck.value?.success === true
+          && (!c.contains || fallbackCheckRendered.includes(c.contains))
+          && (!c.notContains || !fallbackCheckRendered.includes(c.notContains))));
+
+    const routerOpen = await run(["open", new URL("/router", fixture).toString()]);
+    const routerRestore = routerOpen.exit === 0 ? await run(installFixtureArgv) : routerOpen;
+    const routerPush = routerRestore.exit === 0 ? await run(["pushstate", "/routed"]) : routerRestore;
+    const routeResult = routerPush.exit === 0 ? await run(["get", "text", "#route"]) : routerPush;
+    const routerEvents = routerPush.exit === 0
+      ? await run(["eval", "window.matrixEvents.filter(x => x === 'popstate' || x === 'navigate').join(',')"])
+      : routerPush;
+    const routerPassed = routerPush.exit === 0
+      && routeResult.exit === 0
+      && routerEvents.exit === 0
+      && JSON.stringify(routeResult.value).includes("router:/routed")
+      && !JSON.stringify(routerEvents.value).includes("popstate,navigate");
+    effectPassed = fallbackPassed && routerPassed;
+    if (!effectPassed) {
+      diagnostic = `pushstate effect failed: response=${JSON.stringify(responseData)} url=${urlResult.stdout} events=${eventsResult.stdout} same=${sameEventsResult.stdout} fallback=${fallbackCheck?.stdout ?? ""} route=${routeResult.stdout} routerEvents=${JSON.stringify(routerEvents.value)}`;
+    }
+  }
+  if (effectPassed && c.verify && c.action !== "pushstate") {
     const check = await run(c.verify); const rendered = JSON.stringify(check.value);
     effectPassed = check.exit === 0 && check.value?.success === true && (!c.contains || rendered.includes(c.contains)) && (!c.notContains || !rendered.includes(c.notContains));
     if (!effectPassed) diagnostic = `effect verifier failed: ${check.stdout}${check.stderr}`;
-  } else if (effectPassed && c.contains) {
+  } else if (effectPassed && c.contains && !c.verify) {
     effectPassed = JSON.stringify(r.value).includes(c.contains);
     if (!effectPassed) diagnostic = `response missing ${c.contains}`;
   }
@@ -244,7 +398,80 @@ for (const c of cases) {
       }
     }
   }
-  if (effectPassed && c.action === "batch") {
+  if (effectPassed && c.action === "addinitscript") {
+    const data = r.value?.data;
+    const responseValid = typeof data === "object" && data !== null && "added" in data && data.added === true && "identifier" in data && typeof data.identifier === "string";
+    const wrongId = await run(["removeinitscript", "wrong-matrix-init-script"]);
+    const before = await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]);
+    const reload = await run(["reload"]);
+    const after = reload.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : reload;
+    const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
+    effectPassed = responseValid
+      && wrongId.exit !== 0
+      && wrongId.value?.errorType === "command_failed"
+      && before.exit === 0
+      && JSON.stringify(before.value).includes("undefined")
+      && reload.exit === 0
+      && after.exit === 0
+      && JSON.stringify(after.value).includes("active")
+      && restore.exit === 0;
+    if (!effectPassed) diagnostic = `addinitscript lifecycle failed: response=${JSON.stringify(data)} wrongId=${wrongId.stdout} before=${before.stdout} reload=${reload.stdout} after=${after.stdout} restore=${restore.stdout}`;
+  }
+  if (effectPassed && c.action === "removeinitscript") {
+    const data = r.value?.data;
+    const responseValid = typeof data === "object" && data !== null && "removed" in data && data.removed === true && "identifier" in data && data.identifier === initScriptIdentifier;
+    const reload = await run(["reload"]);
+    const after = reload.exit === 0 ? await run(["eval", "document.body?.dataset.moatMatrixInit ?? 'undefined'"]) : reload;
+    const restore = reload.exit === 0 ? await run(installFixtureArgv) : reload;
+    effectPassed = responseValid
+      && typeof initScriptIdentifier === "string"
+      && reload.exit === 0
+      && after.exit === 0
+      && JSON.stringify(after.value).includes("undefined")
+      && restore.exit === 0;
+    if (!effectPassed) diagnostic = `removeinitscript lifecycle failed: response=${JSON.stringify(data)} reload=${reload.stdout} after=${after.stdout} restore=${restore.stdout}`;
+  }
+  if (effectPassed && c.action === "route_resource_type") {
+    const unmatchedRoute = await run(["network","route","**/matrix-route-resource-unmatched","--resource-type","xhr","--body",'{"resource":"wrong-type"}']);
+    const unmatchedFetch = unmatchedRoute.exit === 0
+      ? await run(["eval","fetch('https://moat.invalid/matrix-route-resource-unmatched').then(r => r.text()).catch(() => 'passed-through')"])
+      : unmatchedRoute;
+    await run(["network","unroute","**/matrix-route-resource-unmatched"]);
+    effectPassed = unmatchedRoute.exit === 0
+      && unmatchedFetch.exit === 0
+      && JSON.stringify(unmatchedFetch.value).includes("passed-through");
+    if (!effectPassed) diagnostic = `resource-type route filter failed: route=${unmatchedRoute.stdout} fetch=${unmatchedFetch.stdout}`;
+  }
+  if (effectPassed && c.rejected) {
+    for (const rejection of c.rejected) {
+      const rejected = await run(rejection.argv);
+      if (rejected.exit === 0 || rejected.value?.success !== false || rejected.value?.errorType !== rejection.errorType) {
+        effectPassed = false;
+        diagnostic = `expected rejection failed for ${rejection.argv.join(" ")}: ${rejected.stdout}${rejected.stderr}`;
+        break;
+      }
+    }
+  }
+  if (effectPassed && c.harMode && c.artifacts?.[0]) {
+    try {
+      const parsed = JSON.parse(await readFile(c.artifacts[0], "utf8")) as {
+        log?: { entries?: Array<Record<string, unknown>> };
+      };
+      const entries = parsed.log?.entries ?? [];
+      const hasEmbeddedText = entries.some(entry => {
+        const response = entry.response;
+        if (!response || typeof response !== "object") return false;
+        const content = (response as Record<string, unknown>).content;
+        return !!content && typeof content === "object" && typeof (content as Record<string, unknown>).text === "string";
+      });
+      effectPassed = c.harMode === "none" ? !hasEmbeddedText : hasEmbeddedText;
+      if (!effectPassed) diagnostic = `HAR ${c.harMode} content assertion failed: entries=${entries.length}`;
+    } catch (error) {
+      effectPassed = false;
+      diagnostic = `HAR artifact assertion failed: ${String(error)}`;
+    }
+  }
+  if (effectPassed && c.action.startsWith("batch")) {
     const rendered = JSON.stringify(r.value);
     effectPassed = rendered.includes("Moat CLI Matrix") && rendered.includes(fixture);
     if (!effectPassed) diagnostic = `batch did not return both command results: ${r.stdout}`;
@@ -275,7 +502,7 @@ for (const c of cases) {
     if (!effectPassed) diagnostic = `URL diff did not contain both distinct documents: ${r.stdout}`;
   }
   if (r.jsonValues !== 1) diagnostic = `stdout is not exactly one JSON value: ${r.stdout}`;
-  results.push({ name:c.action, parserAction:c.action, availability:c.availability, argv, exit:r.exit, success:r.value?.success === true, error:r.value?.error, errorType:r.value?.errorType, jsonValues:r.jsonValues, elapsedMs, effectAssertion:c.verify ?? c.artifacts ?? (unsupported ? ["stable unsupported error"] : ["successful observable response"]), effectPassed, internalDiagnostic:diagnostic || r.stderr.trim() });
+  results.push({ name:c.action, parserAction:inventoryAction(c), coverageExempt:c.coverageExempt === true, availability:c.availability, argv, exit:r.exit, success:r.value?.success === true, error:r.value?.error, errorType:r.value?.errorType, jsonValues:r.jsonValues, elapsedMs, effectAssertion:c.verify ?? c.artifacts ?? (unsupported ? ["stable unsupported error"] : ["successful observable response"]), effectPassed, internalDiagnostic:diagnostic || r.stderr.trim() });
   // `window new` intentionally creates an about:blank page. Restore the
   // deterministic fixture only after its blank-page contract was asserted.
   if (c.action === "window_new" && r.exit === 0) {
@@ -283,12 +510,11 @@ for (const c of cases) {
     if (restore.exit === 0) await run(installFixtureArgv);
   }
 }
-const covered = [...new Set(cases.map(c=>c.action))].sort();
+const covered = [...new Set(cases.map(inventoryAction).filter((action): action is string => action !== undefined))].sort();
 const missing = expected.filter(a=>!covered.includes(a));
 const failed = results.filter(r=>r.jsonValues !== 1 || (r.availability !== "stable_unsupported" && !r.success) || (r.availability === "stable_unsupported" && (r.exit === 0 || r.errorType !== "unsupported_in_moat")));
 const noOp = results.filter(r=>r.effectPassed !== true);
-// `close` is a wire action and remains part of the 121-action matrix;
-// `close-session` is the top-level lifecycle alias that must destroy the
+// `close-session` is a top-level lifecycle alias that must destroy the
 // Controller container and clear ~/.moat/session.
 const reconnectForCloseSession = await run(["connect"]);
 if (reconnectForCloseSession.exit !== 0 || reconnectForCloseSession.value?.success !== true) {
@@ -302,8 +528,33 @@ const expectedTopLevel = Object.keys(contract.topLevel).sort();
 const coveredTopLevel = [...new Set(topLevelResults.map(result => result.name))].sort();
 const topLevelMissing = expectedTopLevel.filter(name => !coveredTopLevel.includes(name));
 const topLevelFailed = topLevelResults.filter(result => !result.passed).map(result => result.name);
-const report = { generatedAt:new Date().toISOString(), controller, moat, expectedActions:expected.length, coveredActions:covered.length, cases:results.length, missing, failed:failed.map(r=>r.name), noOp:noOp.map(r=>r.name), internalDiagnostics:results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic})), expectedTopLevel:expectedTopLevel.length, coveredTopLevel:coveredTopLevel.length, topLevelMissing, topLevelFailed, topLevelResults, isolationPassed, results };
+const inventoryGaps = Object.entries(contract.gaps).flatMap(([kind, actions]) => actions.map(action => `${kind}:${action}`));
+const internalDiagnostics = results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic}));
+const report = {
+  generatedAt:new Date().toISOString(),
+  controller,
+  moat,
+  contractCounts:contract.counts,
+  actionInventory:contractEntries,
+  expectedActions:expected.length,
+  coveredActions:covered.length,
+  cases:results.length,
+  missing,
+  unknownCases,
+  duplicateCases,
+  caseAvailabilityMismatches,
+  inventoryGaps,
+  failed:failed.map(r=>r.name),
+  noOp:noOp.map(r=>r.name),
+  internalDiagnostics,
+  expectedTopLevel:expectedTopLevel.length,
+  coveredTopLevel:coveredTopLevel.length,
+  topLevelMissing,
+  topLevelFailed,
+  topLevelResults,
+  isolationPassed,
+  results
+};
 await writeFile(resultPath, JSON.stringify(report,null,2)+"\n");
 console.log(JSON.stringify(report));
-if (ownHome) await rm(home,{recursive:true,force:true});
-if (missing.length || failed.length || noOp.length || report.internalDiagnostics.length || topLevelMissing.length || topLevelFailed.length || !isolationPassed) process.exit(1);
+if (inventoryGaps.length || missing.length || unknownCases.length || duplicateCases.length || caseAvailabilityMismatches.length || failed.length || noOp.length || internalDiagnostics.length || topLevelMissing.length || topLevelFailed.length || !isolationPassed) process.exit(1);

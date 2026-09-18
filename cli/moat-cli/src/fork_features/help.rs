@@ -28,11 +28,11 @@ Navigation and page actions:
 
 
 Page artifacts and state:
-  snapshot                     Accessibility snapshot; supports -i/-c/-d/-s
+  snapshot                     Accessibility snapshot; supports -i/-u/-c/-d/-s
   screenshot                   PNG/JPEG, selector/full-page, and --annotate
   pdf | upload | download | wait --download
   cookies | storage | state
-  trace | profiler | network har
+  trace | profiler | network har start [--content all|text|none] | stop [path]
 
 Browser and runtime state:
   tab | window | frame | dialog | clipboard
@@ -41,10 +41,14 @@ Browser and runtime state:
   device list                  List remote Chromium emulation descriptors
   set viewport|device|geo|offline|headers|credentials|media
   network route|unroute|requests|request
+                                 route supports --abort/--body/--resource-type;
                                  requests is bounded metadata pagination;
                                  request bodies are explicit readiness states
                                  with continuation chunks; har stop verifies
                                  an owner-scoped artifact before returning a path
+  pushstate | addinitscript | removeinitscript
+                                 Same-document navigation and runtime init
+                                 scripts scoped to the current tab/session
 
 Unavailable in moat architecture (stable unsupported_in_moat error):
   auth                         Authentication uses moat profiles + neko login
@@ -54,6 +58,8 @@ Unavailable in moat architecture (stable unsupported_in_moat error):
   record                       Video recording is outside the Controller contract
   stream                       Live viewing uses neko WebRTC
   get cdp-url                  Private container CDP is Controller-only
+  read | react | vitals | web-vitals | a11y | webmcp
+  mcp | doctor | skills | plugin | plugins | chat
   install | upgrade | dashboard | profiles | session
 
 Global options:
@@ -73,6 +79,9 @@ Environment:
   MOAT_CONTROLLER              Controller WebSocket URL
   ~/.moat/session              Active session ID
   ~/.moat/config.json          Optional Controller configuration
+  AGENT_BROWSER_DEFAULT_TIMEOUT Default wait-condition timeout in ms (default 25000)
+  AGENT_BROWSER_INIT_SCRIPTS   Unsupported: upstream local launcher only
+  AGENT_BROWSER_ENABLE         Unsupported: upstream plugin/runtime launcher only
 
 Examples:
   moat init
@@ -99,7 +108,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "click" => "click <selector> [--new-tab]",
         "dblclick" => "dblclick <selector>",
         "fill" => "fill <selector> <text>",
-        "type" => "type <selector> <text>",
+        "type" => "type <selector> <text> [--clear] [--delay <ms>]",
         "hover" => "hover <selector>",
         "focus" => "focus <selector>",
         "check" => "check <selector>",
@@ -117,16 +126,16 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "wait" => "wait <selector|milliseconds|--text|--url|--load|--fn|--download> [value] [--timeout <ms>]  # integer 1-120000ms; default 25000ms",
         "screenshot" => "screenshot [selector] [output-path] [--full|-f] [--annotate]",
         "pdf" => "pdf [output-path]",
-        "snapshot" => "snapshot [-i] [-c] [-d <depth>] [-s <selector>]",
+        "snapshot" => "snapshot [-i] [-u] [-c] [-d <depth>] [-s <selector>]",
         "eval" => "eval <javascript> [selector]",
         "get" => "get <url|title|text|html|value|attr|count|box|styles> [argument] [--all|--nth <index>]",
         "is" => "is <visible|enabled|checked> <selector>",
 
-        "find" => "find <role|text|label|placeholder|alt|title|testid|first|last|nth> ...",
+        "find" => "find <locator> <value> [action] [text]; omitted action queries, actions: click|fill|type|check|uncheck|hover|text",
         "mouse" => "mouse <move|down|up|wheel> ...",
         "device" => "device list",
         "set" => "set <viewport|device|geo|offline|headers|credentials|media> ...",
-        "network" => "network <route|unroute|requests|request|har> ...",
+        "network" => "network <route|unroute|requests|request|har> ... (route: --abort, --body <json>, --resource-type <csv>; har start [--content <all|text|none>])",
         "storage" => "storage <local|session> <get|set|clear> ...",
         "cookies" => "cookies <get|set|clear> ... (set uses either --url or --domain/--path, never both)",
         "tab" => "tab <new|list|switch|close> ...",
@@ -157,9 +166,14 @@ pub fn command_help_text(command: &str) -> Option<String> {
                 .to_string(),
             );
         }
-        "batch" => "batch  # reads a JSON command array from stdin",
+        "batch" => "batch [--bail] [\"command ...\" ...]  # inline or JSON stdin",
+        "pushstate" => "pushstate <url>",
+        "addinitscript" => "addinitscript <script>",
+        "removeinitscript" => "removeinitscript <identifier>",
         "auth" | "confirm" | "deny" | "inspect" | "record" | "stream" | "install"
-        | "upgrade" | "dashboard" | "profiles" | "session" | "launch" => {
+        | "upgrade" | "dashboard" | "profiles" | "session" | "launch" | "read" | "react"
+        | "vitals" | "web-vitals" | "a11y" | "webmcp" | "mcp" | "doctor" | "skills" | "plugin"
+        | "plugins" | "chat" => {
             return Some(format!(
                 "moat {command} - unavailable in the moat Controller architecture\n\n\
                  This command returns a nonzero unsupported_in_moat error.\n\
@@ -186,7 +200,7 @@ pub fn command_help_text(command: &str) -> Option<String> {
             "With --new-tab, open a non-empty HTTP(S) link in a new active tab and leave the original tab unchanged; elements without an openable link are rejected."
         },
         "find" => {
-            "first, last, and nth support click, fill, type, hover, dblclick, focus, select, check, and uncheck; unknown actions and invalid occurrences fail before page side effects."
+            "An action runs only when supplied; omitting it queries the locator. Semantic locators (role/label/text/alt/title/placeholder/testid) accept the per-locator subset of click|fill|type|check|uncheck|hover|text and forward a value; fill and type require a value and fail before any page side effect if it is missing. first, last, and nth support click, fill, type, hover, dblclick, focus, select, check, and uncheck; unknown actions and invalid occurrences fail before page side effects."
         },
         "network" => {
             "route accepts only --abort and --body <json>; network requests returns bounded metadata pages (--page-token/--page-size), request detail reports pending/complete/absent/failed body readiness and resumable base64 chunks (--continuation/--chunk-size), and HAR stop returns a path only after owner-scoped artifact length and JSON entry verification."
@@ -216,6 +230,15 @@ pub fn command_help_text(command: &str) -> Option<String> {
         "state" => {
             "State names resolve under ~/.moat/states; explicit paths stay explicit. State save/load preserves IndexedDB and per-tab sessionStorage. `state clear --all` requires --confirm (or --yes); missing confirmation returns `errorType: \"missing_arguments\"` without reading stdin or changing files."
         },
+        "pushstate" => {
+            "Same-document navigation: invokes the page-owned router when present, otherwise history.pushState plus popstate/navigate events. The same URL is a no-op and the current document is kept."
+        }
+        "addinitscript" => {
+            "Registers a script for the current tab's future documents only and returns an opaque identifier for removal; existing documents are not retroactively run and other tabs are untouched."
+        }
+        "removeinitscript" => {
+            "Stops future injection for an identifier owned by the current tab and session; an identifier owned elsewhere is rejected without affecting other scripts."
+        }
         _ => "This command runs against the active Controller-managed session.",
     };
     Some(format!(
@@ -231,8 +254,24 @@ mod tests {
 
     #[test]
     fn recognizes_supported_and_unavailable_commands() {
-        for command in ["open", "snapshot", "network", "state", "auth", "stream"] {
-            assert!(command_help_text(command).is_some());
+        for command in [
+            "open",
+            "snapshot",
+            "network",
+            "state",
+            "batch",
+            "pushstate",
+            "addinitscript",
+            "removeinitscript",
+            "auth",
+            "stream",
+            "read",
+            "react",
+            "vitals",
+            "a11y",
+            "webmcp",
+        ] {
+            assert!(command_help_text(command).is_some(), "{command}");
         }
         assert!(command_help_text("not-a-command").is_none());
     }

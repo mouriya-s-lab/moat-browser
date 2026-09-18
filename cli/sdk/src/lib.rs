@@ -1390,7 +1390,7 @@ fn required_string(request: &Value, field: &str) -> Result<String, SdkError> {
 
 fn snapshot_request(request: &Value) -> Value {
     let mut command = serde_json::json!({ "action": "snapshot" });
-    for key in ["selector", "compact", "maxDepth", "interactive"] {
+    for key in ["selector", "compact", "maxDepth", "interactive", "urls"] {
         if let Some(value) = request.get(key) {
             command[key] = value.clone();
         }
@@ -1923,6 +1923,49 @@ mod tests {
     }
 
     #[test]
+    fn prepare_route_forwards_body_and_resource_type_unchanged() {
+        // Post-#237 the CLI emits `body` directly (no `response` wrapper); the
+        // SDK must forward it and `resourceType` to the wire untouched.
+        let mut request = json!({
+            "id": "cli-id",
+            "action": "route",
+            "url": "**/json",
+            "abort": false,
+            "body": "{\"mock\":true}",
+            "resourceType": "XHR, Fetch"
+        });
+
+        let outputs = prepare_command(&mut request).unwrap();
+
+        assert_eq!(outputs, (None, None));
+        assert_eq!(
+            request,
+            json!({
+                "action": "route",
+                "url": "**/json",
+                "abort": false,
+                "body": "{\"mock\":true}",
+                "resourceType": "XHR, Fetch"
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_request_forwards_urls_option() {
+        let source = json!({
+            "id": "cli-id",
+            "action": "snapshot",
+            "selector": "main",
+            "interactive": true,
+            "urls": true
+        });
+        let built = snapshot_request(&source);
+        assert_eq!(built["urls"], true);
+        assert_eq!(built["selector"], "main");
+        assert_eq!(built["interactive"], true);
+    }
+
+    #[test]
     fn prepare_state_load_reads_and_parses_local_state_file() {
         let dir = test_dir("state-load");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1985,7 +2028,12 @@ mod tests {
             .unwrap()
             .data
             .unwrap();
-        assert_eq!(shown["summary"], json!({ "cookies": 1, "origins": 1 }));
+        // #237 state summaries always report the four counts; this file has no
+        // tabs/indexedDB, so those are zero rather than omitted.
+        assert_eq!(
+            shown["summary"],
+            json!({ "cookies": 1, "origins": 1, "tabs": 0, "indexedDB": 0 })
+        );
 
         let renamed = local_command(&json!({
             "action": "state_rename",

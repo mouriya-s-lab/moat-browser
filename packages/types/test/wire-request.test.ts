@@ -121,6 +121,72 @@ describe("wireRequestSchema — valid requests", () => {
       command: { action: "eval", code: "document.title" },
     });
   });
+
+  test("command — pushstate", () => {
+    const command = { action: "pushstate", url: "/dashboard" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — addinitscript", () => {
+    const command = { action: "addinitscript", script: "window.__moat = 1" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — removeinitscript", () => {
+    const command = { action: "removeinitscript", identifier: "init-abc" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — getbytext forwards value for value-taking subactions", () => {
+    const command = { action: "getbytext", text: "Editable", subaction: "fill", value: "hello" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — each locator accepts its contract subaction set", () => {
+    const commands = [
+      { action: "getbyrole", role: "checkbox", subaction: "uncheck" },
+      { action: "getbyrole", role: "heading", subaction: "text" },
+      { action: "getbylabel", label: "Name", subaction: "uncheck" },
+      { action: "getbyplaceholder", placeholder: "Notes", subaction: "check" },
+      { action: "getbyplaceholder", placeholder: "Notes", subaction: "hover" },
+      { action: "getbytext", text: "Probe", subaction: "text" },
+      { action: "getbyalttext", text: "Alt", subaction: "check" },
+      { action: "getbytitle", text: "Title", subaction: "hover" },
+      { action: "getbytestid", testId: "notes", subaction: "type" },
+    ];
+    for (const command of commands) {
+      const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+      expect(result).not.toBeInstanceOf(type.errors);
+    }
+  });
+
+  test("command — route with resource type filter", () => {
+    const command = { action: "route", url: "**/json", abort: false, body: "{}", resourceType: "XHR, Fetch" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — snapshot with URLs", () => {
+    const command = { action: "snapshot", interactive: true, selector: "body", urls: true };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — har_start content mode", () => {
+    const command = { action: "har_start", content: "all" };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
+
+  test("command — type with clear and delay", () => {
+    const command = { action: "type", selector: "#input", text: "ab", clear: true, delay: 300 };
+    const result = wireRequestSchema({ type: "command", sessionId: "s1", command });
+    expect(result).toEqual({ type: "command", sessionId: "s1", command });
+  });
 });
 
 describe("wireRequestSchema — invalid requests", () => {
@@ -183,6 +249,42 @@ describe("wireRequestSchema — invalid requests", () => {
 
   test("null input", () => {
     const result = wireRequestSchema(null);
+    expect(result).toBeInstanceOf(type.errors);
+  });
+
+  test("type rejects negative delay", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "type", selector: "#input", text: "ab", delay: -1 },
+    });
+    expect(result).toBeInstanceOf(type.errors);
+  });
+
+  test("getbyrole rejects null name instead of widening optional string", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "getbyrole", role: "heading", name: null },
+    });
+    expect(result).toBeInstanceOf(type.errors);
+  });
+
+  test("getbytext rejects the type subaction it does not support", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "getbytext", text: "x", subaction: "type", value: "y" },
+    });
+    expect(result).toBeInstanceOf(type.errors);
+  });
+
+  test("getbyplaceholder rejects the uncheck subaction it does not support", () => {
+    const result = wireRequestSchema({
+      type: "command",
+      sessionId: "s1",
+      command: { action: "getbyplaceholder", placeholder: "x", subaction: "uncheck" },
+    });
     expect(result).toBeInstanceOf(type.errors);
   });
 });

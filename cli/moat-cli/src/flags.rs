@@ -35,6 +35,17 @@ fn parse_idle_timeout(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
+/// Resolve the default wait timeout in milliseconds from the raw
+/// `AGENT_BROWSER_DEFAULT_TIMEOUT` value. Absent, malformed, or non-positive
+/// values fall back to the documented 25000ms default.
+pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 25_000;
+
+pub fn resolve_default_timeout(raw: Option<&str>) -> u64 {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|&ms| ms >= 1)
+        .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+}
+
 fn parse_idle_timeout_value(value: Option<String>, source: &str) -> Option<String> {
     value.and_then(|raw| match parse_idle_timeout(&raw) {
         Ok(ms) => Some(ms),
@@ -318,6 +329,9 @@ pub struct Flags {
     pub screenshot_quality: Option<u32>,
     pub screenshot_format: Option<String>,
     pub idle_timeout: Option<String>, // Canonical milliseconds string for AGENT_BROWSER_IDLE_TIMEOUT_MS
+    /// Default condition-wait timeout in milliseconds, injected into wait-family
+    /// commands that carry no explicit `--timeout` (AGENT_BROWSER_DEFAULT_TIMEOUT).
+    pub default_timeout: Option<u64>,
     pub no_auto_dialog: bool,
 
     // Track which launch-time options were explicitly passed via CLI
@@ -450,6 +464,9 @@ pub fn parse_flags(args: &[String]) -> Flags {
             "AGENT_BROWSER_IDLE_TIMEOUT_MS",
         )
         .or(config.idle_timeout),
+        default_timeout: Some(resolve_default_timeout(
+            env::var("AGENT_BROWSER_DEFAULT_TIMEOUT").ok().as_deref(),
+        )),
         no_auto_dialog: env_var_is_truthy("AGENT_BROWSER_NO_AUTO_DIALOG")
             || config.no_auto_dialog.unwrap_or(false),
         cli_executable_path: false,
@@ -845,6 +862,17 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_default_timeout_falls_back_and_honors_overrides() {
+        assert_eq!(resolve_default_timeout(None), DEFAULT_WAIT_TIMEOUT_MS);
+        assert_eq!(resolve_default_timeout(Some("5000")), 5000);
+        assert_eq!(resolve_default_timeout(Some("  7500 ")), 7500);
+        // Malformed and non-positive values fall back to the default.
+        assert_eq!(resolve_default_timeout(Some("abc")), DEFAULT_WAIT_TIMEOUT_MS);
+        assert_eq!(resolve_default_timeout(Some("0")), DEFAULT_WAIT_TIMEOUT_MS);
+        assert_eq!(resolve_default_timeout(Some("")), DEFAULT_WAIT_TIMEOUT_MS);
+    }
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()

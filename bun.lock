@@ -11,13 +11,20 @@
       "dependencies": {
         "@moat-browser/types": "workspace:*",
         "arktype": "^2.1.0",
-        "patchright": "^1.59.2",
+        "patchright": "1.59.2",
         "ws": "^8.18.0",
       },
       "devDependencies": {
         "@types/node": "^22.0.0",
         "@types/ws": "^8.5.0",
         "typescript": "^5.7.0",
+      },
+    },
+    "packages/e2e": {
+      "name": "@moat-browser/e2e",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "latest",
       },
     },
     "packages/types": {
@@ -38,7 +45,11 @@
 
     "@moat-browser/controller": ["@moat-browser/controller@workspace:packages/controller"],
 
+    "@moat-browser/e2e": ["@moat-browser/e2e@workspace:packages/e2e"],
+
     "@moat-browser/types": ["@moat-browser/types@workspace:packages/types"],
+
+    "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 
     "@types/node": ["@types/node@22.19.17", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-wGdMcf+vPYM6jikpS/qhg6WiqSV/OhG+jeeHT/KlVqxYfD40iYJf9/AE1uQxVWFvU7MipKRkRv8NSHiCGgPr8Q=="],
 
@@ -47,6 +58,8 @@
     "arkregex": ["arkregex@0.0.5", "", { "dependencies": { "@ark/util": "0.56.0" } }, "sha512-ncYjBdLlh5/QnVsAA8De16Tc9EqmYM7y/WU9j+236KcyYNUXogpz3sC4ATIZYzzLxwI+0sEOaQLEmLmRleaEXw=="],
 
     "arktype": ["arktype@2.2.0", "", { "dependencies": { "@ark/schema": "0.56.0", "@ark/util": "0.56.0", "arkregex": "0.0.5" } }, "sha512-t54MZ7ti5BhOEvzEkgKnWvqj+UbDfWig+DHr5I34xatymPusKLS0lQpNJd8M6DzmIto2QGszHfNKoFIT8tMCZQ=="],
+
+    "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
     "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
 

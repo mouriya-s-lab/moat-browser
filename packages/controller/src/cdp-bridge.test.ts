@@ -38,6 +38,8 @@ function mockLocator(overrides?: Partial<Locator>): Locator {
     }])),
     ariaSnapshot: mock(() => Promise.resolve('- heading "Test"\n- button "Click me"')),
     screenshot: mock(() => Promise.resolve(Buffer.from("locator-png-data"))),
+    innerText: mock(() => Promise.resolve("Item text")),
+    textContent: mock(() => Promise.resolve("Item text")),
     nth: mock(function (this: Locator) { return this; }),
     ...overrides,
   } as unknown as Locator;
@@ -92,6 +94,7 @@ function mockPage(overrides?: Partial<Page>): Page {
     on: mock(function (this: Page) { return this; }),
     ariaSnapshot: mock(() => Promise.resolve('- heading "Test"\n- button "Click me"')),
     close: mock(() => Promise.resolve()),
+    addInitScript: mock(() => Promise.resolve({ dispose: mock(() => Promise.resolve()) })),
     ...overrides,
   } as unknown as Page;
 }
@@ -99,6 +102,7 @@ function mockPage(overrides?: Partial<Page>): Page {
 function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): BrowserContext {
   return {
     pages: () => pages,
+    on: mock(function (this: BrowserContext) { return this; }),
     newPage: mock(async () => {
       const p = mockPage();
       pages.push(p);
@@ -1440,6 +1444,178 @@ describe("cdp-bridge", () => {
       const r = await executeCommand(failCtx, { action: "navigate", url: "https://x.com" }, refStore, SESSION);
       const e = assertErr(r);
       expect(e._tag).toBe("CommandFailed");
+    });
+  });
+
+  // ─── issue #226 / #227 additions ───
+
+  describe("page navigation and init scripts (#227)", () => {
+    it("pushstate resolves the URL through the page main world", async () => {
+      const evaluate = mock((_expr: unknown, _arg: unknown, _isolated?: boolean) =>
+        Promise.resolve("https://example.com/dashboard"));
+      const p = mockPage({ evaluate: evaluate as unknown as Page["evaluate"] });
+      const c = mockContext([p]);
+      const data = assertOk(await executeCommand(c, { action: "pushstate", url: "/dashboard" }, refStore, SESSION));
+      expect(data._tag).toBe("PushStateResult");
+      if (data._tag === "PushStateResult") expect(data.url).toBe("https://example.com/dashboard");
+      // isolatedContext=false selects the page main world where a page-owned router lives.
+      expect(evaluate.mock.calls[0][2]).toBe(false);
+    });
+
+    it("addinitscript registers an opaque identifier and removeinitscript disposes it", async () => {
+      const dispose = mock(() => Promise.resolve());
+      const addInitScript = mock(() => Promise.resolve({ dispose }));
+      const p = mockPage({ addInitScript: addInitScript as unknown as Page["addInitScript"] });
+      const c = mockContext([p]);
+      const added = assertOk(await executeCommand(c, { action: "addinitscript", script: "window.x=1" }, refStore, SESSION));
+      expect(added._tag).toBe("AddInitScriptResult");
+      const identifier = added._tag === "AddInitScriptResult" ? added.identifier : "";
+      expect(identifier).toMatch(/^init-/);
+      expect(addInitScript).toHaveBeenCalledWith("window.x=1");
+      const removed = assertOk(await executeCommand(c, { action: "removeinitscript", identifier }, refStore, SESSION));
+      expect(removed._tag).toBe("RemoveInitScriptResult");
+      if (removed._tag === "RemoveInitScriptResult") expect(removed.identifier).toBe(identifier);
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it("removeinitscript rejects an unknown identifier", async () => {
+      const error = assertErr(await executeCommand(ctx, { action: "removeinitscript", identifier: "init-unknown" }, refStore, SESSION));
+      expect(error._tag).toBe("CommandFailed");
+    });
+
+    it("removeinitscript rejects an identifier owned by another session without disposing it", async () => {
+      const dispose = mock(() => Promise.resolve());
+      const p = mockPage({ addInitScript: mock(() => Promise.resolve({ dispose })) as unknown as Page["addInitScript"] });
+      const c = mockContext([p]);
+      const added = assertOk(await executeCommand(c, { action: "addinitscript", script: "x" }, refStore, "session-owner"));
+      const identifier = added._tag === "AddInitScriptResult" ? added.identifier : "";
+      const error = assertErr(await executeCommand(c, { action: "removeinitscript", identifier }, refStore, "session-intruder"));
+      expect(error._tag).toBe("CommandFailed");
+      expect(dispose).not.toHaveBeenCalled();
+      clearSessionRuntimeState("session-owner");
+      clearSessionRuntimeState("session-intruder");
+    });
+  });
+
+  describe("type clear/delay and semantic text/value (#226)", () => {
+    it("type with clear empties the field then types with a per-character delay", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "type", selector: "#note", text: "hi", clear: true, delay: 40 }, refStore, SESSION));
+      expect(data._tag).toBe("VoidResult");
+      const loc = (page.locator as ReturnType<typeof mock>).mock.results[0].value;
+      expect(loc.fill).toHaveBeenCalledWith("", expect.anything());
+      expect(loc.pressSequentially).toHaveBeenCalledWith("hi", expect.objectContaining({ delay: 40 }));
+    });
+
+    it("type without clear does not empty the field", async () => {
+      await executeCommand(ctx, { action: "type", selector: "#note", text: "hi" }, refStore, SESSION);
+      const loc = (page.locator as ReturnType<typeof mock>).mock.results[0].value;
+      expect(loc.fill).not.toHaveBeenCalled();
+    });
+
+    it("getbytext text subaction returns the element innerText", async () => {
+      const data = assertOk(await executeCommand(ctx, { action: "getbytext", text: "Row", subaction: "text" }, refStore, SESSION));
+      expect(data._tag).toBe("GetTextResult");
+      if (data._tag === "GetTextResult") expect(data.text).toBe("Item text");
+    });
+
+    it("getbytext text subaction falls back to textContent when innerText is empty", async () => {
+      const loc = mockLocator({
+        innerText: mock(() => Promise.resolve("")) as unknown as Locator["innerText"],
+        textContent: mock(() => Promise.resolve("hidden text")) as unknown as Locator["textContent"],
+      });
+      const p = mockPage({ getByText: mock(() => loc) as unknown as Page["getByText"] });
+      const c = mockContext([p]);
+      const data = assertOk(await executeCommand(c, { action: "getbytext", text: "Row", subaction: "text" }, refStore, SESSION));
+      expect(data._tag).toBe("GetTextResult");
+      if (data._tag === "GetTextResult") expect(data.text).toBe("hidden text");
+    });
+
+    it("getbytext fill forwards the value through to the locator", async () => {
+      await executeCommand(ctx, { action: "getbytext", text: "Field", subaction: "fill", value: "typed" }, refStore, SESSION);
+      const loc = (page.getByText as ReturnType<typeof mock>).mock.results[0].value;
+      expect(loc.fill).toHaveBeenCalledWith("typed", expect.anything());
+    });
+
+    it("getbyrole fill without a value is a parameter error before any side effect", async () => {
+      const error = assertErr(await executeCommand(ctx, { action: "getbyrole", role: "textbox", subaction: "fill" }, refStore, SESSION));
+      expect(error._tag).toBe("ValidationFailed");
+      const loc = (page.getByRole as ReturnType<typeof mock>).mock.results[0].value;
+      expect(loc.fill).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("route resource type and snapshot URLs (#226)", () => {
+    it("route resourceType filters case-insensitively and passes unmatched requests through", async () => {
+      let handler: ((route: unknown) => Promise<void>) | undefined;
+      const p = mockPage({
+        route: mock((_url: string, h: (route: unknown) => Promise<void>) => {
+          handler = h;
+          return Promise.resolve();
+        }) as unknown as Page["route"],
+      });
+      const c = mockContext([p]);
+      await executeCommand(c, { action: "route", url: "**/*", abort: false, body: "{\"m\":1}", resourceType: "XHR, Fetch" }, refStore, SESSION);
+      expect(handler).toBeDefined();
+      const makeRoute = (resourceType: string) => {
+        const cont = mock(() => Promise.resolve());
+        const fulfill = mock(() => Promise.resolve());
+        const abort = mock(() => Promise.resolve());
+        return { route: { request: () => ({ resourceType: () => resourceType }), continue: cont, fulfill, abort }, cont, fulfill, abort };
+      };
+      const matched = makeRoute("Fetch");
+      await handler!(matched.route);
+      expect(matched.fulfill).toHaveBeenCalledTimes(1);
+      expect(matched.cont).not.toHaveBeenCalled();
+      const unmatched = makeRoute("image");
+      await handler!(unmatched.route);
+      expect(unmatched.cont).toHaveBeenCalledTimes(1);
+      expect(unmatched.fulfill).not.toHaveBeenCalled();
+    });
+
+    it("route abort takes precedence over a body", async () => {
+      let handler: ((route: unknown) => Promise<void>) | undefined;
+      const p = mockPage({
+        route: mock((_url: string, h: (route: unknown) => Promise<void>) => {
+          handler = h;
+          return Promise.resolve();
+        }) as unknown as Page["route"],
+      });
+      const c = mockContext([p]);
+      await executeCommand(c, { action: "route", url: "**/*", abort: true, body: "x" }, refStore, SESSION);
+      const abort = mock(() => Promise.resolve());
+      const fulfill = mock(() => Promise.resolve());
+      await handler!({ request: () => ({ resourceType: () => "xhr" }), abort, fulfill, continue: mock(() => Promise.resolve()) });
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(fulfill).not.toHaveBeenCalled();
+    });
+
+    it("snapshot urls annotates a link ref with its DOM-resolved absolute href", async () => {
+      const rootLoc = mockLocator({
+        ariaSnapshot: mock(() => Promise.resolve('- link "Home"')) as unknown as Locator["ariaSnapshot"],
+        evaluate: mock(() => Promise.resolve("https://example.com/target")) as unknown as Locator["evaluate"],
+      });
+      const p = mockPage({ locator: mock(() => rootLoc) as unknown as Page["locator"] });
+      const c = mockContext([p]);
+      const data = assertOk(await executeCommand(c, { action: "snapshot", urls: true }, refStore, SESSION));
+      expect(data._tag).toBe("SnapshotResult");
+      if (data._tag === "SnapshotResult") {
+        expect(data.snapshot).toContain("@e");
+        expect(data.snapshot).toContain("[url=https://example.com/target]");
+      }
+    });
+  });
+
+  describe("HAR content mode (#226)", () => {
+    it("har_start accepts a content mode and har_stop assembles an artifact", async () => {
+      const started = assertOk(await executeCommand(ctx, { action: "har_start", content: "all" }, refStore, SESSION));
+      expect(started._tag).toBe("StartedResult");
+      const stopped = assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION));
+      expect(stopped._tag).toBe("NetworkArtifactResult");
+    });
+
+    it("har_start defaults and accepts the none content mode", async () => {
+      expect(assertOk(await executeCommand(ctx, { action: "har_start", content: "none" }, refStore, SESSION))._tag).toBe("StartedResult");
+      expect(assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION))._tag).toBe("NetworkArtifactResult");
     });
   });
 });

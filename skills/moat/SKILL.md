@@ -43,9 +43,12 @@ Controller selection priority is `--controller` > non-empty
 
 Start a session before issuing browser commands. `--profile` accepts only a
 profile name registered by the Controller; it never accepts a local or
-Controller filesystem path:
+Controller filesystem path. The profile is selected on `init` or `connect`
+only; it is not read from `MOAT_PROFILE` or `~/.moat/config.json`:
 
 ```bash
+moat init
+moat init --profile default
 moat connect
 moat connect --profile default
 moat status
@@ -99,6 +102,11 @@ moat find label "Email" fill "user@example.com"
 moat find text "Login" click
 ```
 
+Semantic locators also support `placeholder`, `alt`, `title`, and `testid`.
+Actions are optional: omitting the action queries without clicking. Supported
+actions include `click`, `fill <text>`, `type <text>`, `check`, `uncheck`,
+`hover`, and `text`.
+
 Use snapshots only when exploring an unfamiliar page or when a semantic locator fails:
 
 ```bash
@@ -130,6 +138,62 @@ moat window new
 moat get cdp-url  # returns unsupported_in_moat; CDP is Controller-private
 moat batch
 ```
+
+`moat get url` and `moat get title` return the active page URL and title.
+`moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint
+is private to the Controller's Docker network.
+
+Navigation extensions:
+
+```bash
+moat pushstate /dashboard
+moat addinitscript "document.documentElement.dataset.ready='yes'"
+moat removeinitscript <opaque-identifier>
+```
+
+`pushstate` runs in the page main world. It calls `window.next.router.push` (or
+another page-owned router exposed by the page) when available; otherwise it
+uses `history.pushState` and dispatches the page navigation events. The result
+contains the page URL, and pushing the current URL is a no-op.
+Initialization scripts apply to future documents and reloads in the current tab
+only; they do not run retroactively in the current document or other tabs.
+Removal rejects an identifier owned by another tab/session and does not roll
+back an already-loaded document. Page, tab, session, or runtime cleanup removes
+the registration.
+
+`moat type <selector|@ref> <text> --clear --delay <ms>` clears before typing and
+waits the requested delay between characters. `find` and `getby*` subactions
+include `fill`, `check`, `hover`, and `text`; actions that need a value receive
+it as the value argument. `moat snapshot --urls` includes absolute link URLs.
+`moat tab` accepts numeric indexes only; `--label` and string tab references
+are unsupported.
+
+`moat batch [--bail] ["command ..." ...]` accepts inline shell-split command
+strings; without inline arguments it reads a JSON argv array from stdin:
+
+```bash
+moat --json batch "get title" "get url"
+printf '%s\n' '[["get","title"],["get","url"]]' | moat --json batch
+moat --json batch --bail "open https://example.com" "get title"
+```
+
+With `--json`, both forms emit one `{success,data:{results}}` envelope. Failed
+items remain in `data.results`; by default later items run and the process exits
+1 if any item failed, while `--bail` stops after the first failure. Without
+`--json`, each response is printed as human-readable output.
+
+Wait-family commands use `AGENT_BROWSER_DEFAULT_TIMEOUT` in milliseconds when
+no explicit `--timeout` is supplied (default 25000; malformed values fall back
+to the default). `--init-script`, `--enable`, `AGENT_BROWSER_INIT_SCRIPTS`, and
+`AGENT_BROWSER_ENABLE` belong to the upstream local launcher/plugin and return
+`errorType: "unsupported_in_moat"`; they are not runtime `addinitscript`.
+
+The command families `a11y`, `auth`, `confirm`, `deny`, `inspect`, `launch`,
+`read`, `react`, `record`, `stream`, `vitals`, `web-vitals`, `webmcp`, `install`,
+`upgrade`, `dashboard`, `profiles`, `session`, `device`, `mcp`, `doctor`,
+`skills`, `plugin`, `plugins`, and `chat` are intentionally unsupported and
+return `errorType: "unsupported_in_moat"`.
+
 `scroll` without `--selector` moves the active window. With `--selector`, only
 the first matching element in the active page/frame is changed and the window
 stays unchanged. Results expose measured `before`, `after`, `delta`, `max`, and
@@ -170,7 +234,9 @@ states in `--json` as distinct variants. `get styles` and `get box` preserve
 fractional geometry; an element with no layout has a distinct no-layout
 variant rather than a fabricated zero-sized box.
 
-`moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
+`moat get url` and `moat get title` are supported page queries. `moat get cdp-url`
+is intentionally unavailable: the agent-chrome CDP endpoint is private to the
+Controller's Docker network.
 
 `moat is visible <selector>` reports the browser's layout visibility only.
 It deliberately does not prove that pixels are perceptually visible or safe
@@ -198,20 +264,27 @@ non-empty link is rejected instead of being clicked in the original tab.
 `moat tab close [index]` rejects an attempt to close the last remaining tab
 before closing the page. It returns `errorType: "invalid_value"` with the stable
 message `Validation failed: Cannot close the last tab; at least one tab must remain open`;
+
 the session and tab remain usable. Use `moat disconnect` (or `moat close`) to
 destroy the whole session instead. If browser-side events leave no open pages,
 a command sent in that state returns `errorType: "target_not_found"` for
 `page`; it does not leak an engine error or expire the session.
 
-Network routing accepts only `--abort` and `--body <json>`:
+Network routing accepts `--abort`, `--body <json>`, and
+`--resource-type <csv>` (case-insensitive resource types):
 
 ```bash
 moat network route "**/api" --abort
 moat network route "**/api" --body '{"ok":true}'
+moat network route "**/api" --resource-type "XHR,Fetch" --body '{"ok":true}'
 ```
 
 Unsupported route options such as `--status`, `--delay`, and `--headers` are
 rejected before a route is installed.
+
+`moat network har start --content text|all|none` controls response bodies:
+omitted content defaults to `text`, which embeds text MIME bodies; `all`
+embeds binary bodies as base64; `none` records metadata without body text.
 
 `keydown` and `keyup` are explicit paired low-level operations. While a
 modifier remains held, high-level `type`, `fill`, and `click` actions are
@@ -248,7 +321,7 @@ Page identity. The modal remains explicitly handleable and the session stays
 usable. No dialog is accepted or dismissed automatically. Prompt text is
 passed to the page unchanged.
 
-`moat get url` and `moat get title` are not in the wire schema — use `moat eval "location.href"` and `moat eval "document.title"` instead. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
+`moat get url` and `moat get title` are supported page queries. `moat get text|html|value|attr <selector>` do work but require a selector. `moat get cdp-url` is intentionally unavailable: the agent-chrome CDP endpoint is private to the Controller's Docker network.
 
 ## Remote Chromium environment
 
@@ -393,7 +466,9 @@ scope is mutually exclusive: use either `--url <url>` or
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Command failed |
+| 1 | Usage, unsupported command, target, command failure, or timeout |
 | 69 | Session creation failed |
 | 77 | No active session |
-| 78 | `MOAT_CONTROLLER` missing |
+| 78 | Controller configuration missing or invalid |
+
+moat does not emit upstream agent-browser exit codes `2`, `66`, or `75`.

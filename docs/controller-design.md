@@ -177,7 +177,14 @@ type BrowserCommand =
   // @eN 引用操作
   | { readonly action: "click"; readonly ref: string }
   | { readonly action: "fill"; readonly ref: string; readonly value: string }
-  | { readonly action: "type"; readonly ref: string; readonly value: string }
+  | {
+      readonly action: "type";
+      readonly ref?: string;
+      readonly selector?: string;
+      readonly text: string;
+      readonly clear?: boolean;
+      readonly delay?: number;
+    }
   | { readonly action: "hover"; readonly ref: string }
 
   // 页面信息

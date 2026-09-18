@@ -16,10 +16,12 @@ use serde_json::json;
 use std::env;
 use std::process::exit;
 
-use commands::{parse_command, ParseError};
+use commands::{parse_command, shell_words_split, ParseError};
 use connection::send_command;
 use flags::{clean_args, parse_flags, ControllerOverride};
-use fork_features::{command_help_text, help_text, unsupported_command, unsupported_flag};
+use fork_features::{
+    command_help_text, help_text, unsupported_command, unsupported_environment, unsupported_flag,
+};
 use output::{print_response_with_opts, OutputOptions};
 
 use moat_sdk::error::SdkError;
@@ -250,6 +252,17 @@ async fn main() {
     if args.iter().any(|a| a == "--version" || a == "-V") {
         print_version(flags.json);
         return;
+    }
+
+    // Reject upstream-only startup environments rather than silently ignoring
+    // them. This precedes any transport or session side effect.
+    if let Some(message) = unsupported_environment() {
+        if flags.json {
+            print_json_error_with_type(message, ERROR_UNSUPPORTED);
+        } else {
+            eprintln!("{} {}", color::error_indicator(), message);
+        }
+        exit(1);
     }
     let controller_override_error = match &flags.controller {
         ControllerOverride::MissingValue => {
@@ -505,7 +518,18 @@ async fn main() {
     // ─── Batch mode ───
 
     if cmd.get("action").and_then(|v| v.as_str()) == Some("batch") {
-        run_batch(&flags).await;
+        let bail = cmd.get("bail").and_then(|v| v.as_bool()).unwrap_or(false);
+        let inline_commands = cmd
+            .get("commands")
+            .and_then(|value| value.as_array())
+            .map(|commands| {
+                commands
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(shell_words_split)
+                    .collect::<Vec<Vec<String>>>()
+            });
+        run_batch(&flags, bail, inline_commands).await;
         return;
     }
 
@@ -576,29 +600,43 @@ async fn main() {
     }
 }
 
-/// Batch mode: read commands from stdin, execute sequentially.
-async fn run_batch(flags: &flags::Flags) {
+/// Batch mode: execute inline shell-split commands when present; otherwise read
+/// the established JSON argv-array format from stdin. Each item applies the same
+/// unsupported command/flag boundary as a single invocation before any send;
+/// execution continues by default, `--bail` stops after the first failure, and
+/// any failing item makes the whole run exit 1. Output keeps the moat
+/// `{success,data:{results}}` envelope in JSON mode and per-response text
+/// otherwise.
+async fn run_batch(
+    flags: &flags::Flags,
+    bail: bool,
+    inline_commands: Option<Vec<Vec<String>>>,
+) {
     use std::io::Read as _;
 
-    let mut input = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
-        if flags.json {
-            print_json_error(format!("Failed to read stdin: {}", e));
-        } else {
-            eprintln!("{} Failed to read stdin: {}", color::error_indicator(), e);
-        }
-        exit(1);
-    }
-
-    let commands: Vec<Vec<String>> = match serde_json::from_str(&input) {
-        Ok(c) => c,
-        Err(e) => {
-            if flags.json {
-                print_json_error(format!("Invalid JSON: {}", e));
-            } else {
-                eprintln!("{} Invalid JSON: {}", color::error_indicator(), e);
+    let commands: Vec<Vec<String>> = match inline_commands {
+        Some(commands) => commands,
+        None => {
+            let mut input = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+                if flags.json {
+                    print_json_error(format!("Failed to read stdin: {}", e));
+                } else {
+                    eprintln!("{} Failed to read stdin: {}", color::error_indicator(), e);
+                }
+                exit(1);
             }
-            exit(1);
+            match serde_json::from_str(&input) {
+                Ok(c) => c,
+                Err(e) => {
+                    if flags.json {
+                        print_json_error(format!("Invalid JSON: {}", e));
+                    } else {
+                        eprintln!("{} Invalid JSON: {}", color::error_indicator(), e);
+                    }
+                    exit(1);
+                }
+            }
         }
     };
 
@@ -614,40 +652,83 @@ async fn run_batch(flags: &flags::Flags) {
         }
     };
 
-    let output_opts = OutputOptions::from_flags(&flags);
+    let output_opts = OutputOptions::from_flags(flags);
     let mut json_results = Vec::new();
-    let mut json_success = true;
+    let mut success = true;
 
-    for args in &commands {
-        let cmd = match parse_command(args, flags) {
+    for command_args in &commands {
+        if command_args.is_empty() {
+            continue;
+        }
+        let command_name = command_args[0].as_str();
+
+        // Same capability boundary as a single invocation, before any send, so
+        // target-only capabilities cannot become a silent no-op inside a batch.
+        let boundary = unsupported_command(command_name)
+            .or_else(|| unsupported_flag(command_args, command_name));
+        if let Some(message) = boundary {
+            success = false;
+            if flags.json {
+                json_results.push(json!({
+                    "command": command_args,
+                    "success": false,
+                    "error": message,
+                    "errorType": ERROR_UNSUPPORTED,
+                }));
+            } else {
+                eprintln!("{} {}", color::error_indicator(), message);
+            }
+            if bail {
+                break;
+            }
+            continue;
+        }
+
+        let cmd = match parse_command(command_args, flags) {
             Ok(c) => c,
             Err(e) => {
+                success = false;
                 if flags.json {
-                    print_json_error_with_type(e.format(), parse_error_type(&e));
+                    json_results.push(json!({
+                        "command": command_args,
+                        "success": false,
+                        "error": e.format(),
+                        "errorType": parse_error_type(&e),
+                    }));
                 } else {
                     eprintln!("{}", color::red(&e.format()));
                 }
-                exit(1);
+                if bail {
+                    break;
+                }
+                continue;
             }
         };
 
+        let action = cmd.get("action").and_then(|v| v.as_str());
         match send_command(cmd.clone(), &url).await {
             Ok(resp) => {
+                if !resp.success {
+                    success = false;
+                }
                 if flags.json {
-                    json_success &= resp.success;
                     json_results.push(serde_json::to_value(&resp).unwrap_or_default());
                 } else {
-                    let action = cmd.get("action").and_then(|v| v.as_str());
                     print_response_with_opts(&resp, action, &output_opts);
+                }
+                if !resp.success && bail {
+                    break;
                 }
             }
             Err(e) => {
+                success = false;
                 if flags.json {
-                    json_success = false;
                     json_results.push(sdk_error_json(&e));
                 } else {
                     eprintln!("{} {}", color::error_indicator(), e);
-                    exit(1);
+                }
+                if bail {
+                    break;
                 }
             }
         }
@@ -657,13 +738,13 @@ async fn run_batch(flags: &flags::Flags) {
         println!(
             "{}",
             serde_json::to_string(&json!({
-                "success": json_success,
+                "success": success,
                 "data": { "results": json_results },
             }))
             .unwrap_or_default()
         );
-        if !json_success {
-            exit(1);
-        }
+    }
+    if !success {
+        exit(1);
     }
 }
