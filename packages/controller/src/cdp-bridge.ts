@@ -1,7 +1,7 @@
 import { chromium, devices } from "patchright";
-import type { Browser, BrowserContext, CDPSession, Dialog, Frame, Locator, Page, Request } from "patchright";
+import type { Browser, BrowserContext, CDPSession, Dialog, Disposable, Frame, Locator, Page, Request } from "patchright";
 import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -21,6 +21,10 @@ import type {
   GetAttributeResult,
   LocatorResult,
   NavigateResult,
+  PushStateResult,
+  AddInitScriptResult,
+  RemoveInitScriptResult,
+  HarContentMode,
   NthSubaction,
   ScreenshotResult,
   SnapshotResult,
@@ -114,6 +118,69 @@ export type CommandExecutionOptions = {
 };
 
 const contextCdpUrls = new WeakMap<BrowserContext, string>();
+
+type InitScriptRecord = {
+  readonly sessionId: string;
+  readonly page: Page;
+  readonly disposable: Disposable;
+};
+
+const initScriptRecords = new Map<string, InitScriptRecord>();
+const pageInitScriptIdentifiers = new WeakMap<Page, Set<string>>();
+const sessionInitScriptIdentifiers = new Map<string, Set<string>>();
+const initScriptLifecyclePages = new WeakSet<Page>();
+
+function rememberInitScript(record: InitScriptRecord, identifier: string): void {
+  initScriptRecords.set(identifier, record);
+  const pageIdentifiers = pageInitScriptIdentifiers.get(record.page) ?? new Set<string>();
+  pageIdentifiers.add(identifier);
+  pageInitScriptIdentifiers.set(record.page, pageIdentifiers);
+  const sessionIdentifiers = sessionInitScriptIdentifiers.get(record.sessionId) ?? new Set<string>();
+  sessionIdentifiers.add(identifier);
+  sessionInitScriptIdentifiers.set(record.sessionId, sessionIdentifiers);
+}
+
+function forgetInitScript(identifier: string, record: InitScriptRecord): void {
+  initScriptRecords.delete(identifier);
+  const pageIdentifiers = pageInitScriptIdentifiers.get(record.page);
+  if (pageIdentifiers) {
+    pageIdentifiers.delete(identifier);
+    if (pageIdentifiers.size === 0) pageInitScriptIdentifiers.delete(record.page);
+  }
+  const sessionIdentifiers = sessionInitScriptIdentifiers.get(record.sessionId);
+  if (sessionIdentifiers) {
+    sessionIdentifiers.delete(identifier);
+    if (sessionIdentifiers.size === 0) sessionInitScriptIdentifiers.delete(record.sessionId);
+  }
+}
+
+function cleanupPageInitScripts(page: Page): void {
+  const identifiers = pageInitScriptIdentifiers.get(page);
+  if (!identifiers) return;
+  for (const identifier of [...identifiers]) {
+    const record = initScriptRecords.get(identifier);
+    if (!record) continue;
+    forgetInitScript(identifier, record);
+    void record.disposable.dispose().catch(() => {});
+  }
+}
+
+function cleanupSessionInitScripts(sessionId: string): void {
+  const identifiers = sessionInitScriptIdentifiers.get(sessionId);
+  if (!identifiers) return;
+  for (const identifier of [...identifiers]) {
+    const record = initScriptRecords.get(identifier);
+    if (!record) continue;
+    forgetInitScript(identifier, record);
+    void record.disposable.dispose().catch(() => {});
+  }
+}
+
+function observeInitScriptLifecycle(page: Page): void {
+  if (initScriptLifecyclePages.has(page)) return;
+  initScriptLifecyclePages.add(page);
+  page.on("close", () => cleanupPageInitScripts(page));
+}
 
 const REMOTE_DOWNLOAD_PATH = "/data/profile/.moat-downloads";
 
@@ -497,6 +564,8 @@ type SessionRuntimeState = {
   traceActive: boolean;
   profilerSession?: CDPSession;
   harActive: boolean;
+  harContentMode: HarContentMode;
+  readonly harBodyReads: Map<string, Promise<Buffer | undefined>>;
   nextRequestId: number;
 };
 const MODIFIER_KEYS: Record<string, true> = {
@@ -626,6 +695,8 @@ function getSessionRuntimeState(sessionId: string): SessionRuntimeState {
     nextFrameId: 1,
     traceActive: false,
     harActive: false,
+    harContentMode: "text",
+    harBodyReads: new Map<string, Promise<Buffer | undefined>>(),
     nextRequestId: 1,
   };
   sessionRuntimeState.set(sessionId, created);
@@ -866,6 +937,20 @@ function contentLength(headers: Readonly<Record<string, string>>): number | null
   if (value === undefined) return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function harMimeIsText(mimeType: string): boolean {
+  const mime = mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return mime.startsWith("text/")
+    || mime.endsWith("+json")
+    || mime.endsWith("+xml")
+    || mime === "application/json"
+    || mime === "application/xml"
+    || mime === "application/javascript"
+    || mime === "application/x-javascript"
+    || mime === "application/ecmascript"
+    || mime === "application/x-www-form-urlencoded"
+    || mime === "application/graphql";
 }
 function networkCaptureFailure(error: unknown, totalBytes: number | null): CapturedNetworkBody {
   const detail = error instanceof Error ? error.message.toLowerCase() : "";
@@ -1227,16 +1312,39 @@ function artifactIncomplete(
   };
 }
 
-function harEntryForRequest(request: NetworkRequestRecord): Record<string, unknown> {
+function harEntryForRequest(
+  request: NetworkRequestRecord,
+  harBody: Buffer | undefined,
+  contentMode: HarContentMode,
+): Record<string, unknown> {
   const requestBodyBytes = request.postData === undefined
     ? 0
     : Buffer.byteLength(request.postData, "utf8");
   const responseBody = request.responseBody;
-  const responseBodyBytes = responseBody._tag === "Complete"
+  const fallbackBytes = responseBody._tag === "Complete"
     ? responseBody.bytes
-    : responseBody._tag === "Absent"
-      ? 0
-      : 0;
+    : 0;
+  const mimeType = request.responseHeaders?.["content-type"] ?? "";
+  const responseBodyBytes = harBody?.byteLength ?? fallbackBytes;
+  const content: Record<string, unknown> = { size: responseBodyBytes, mimeType };
+  const isTextMime = harMimeIsText(mimeType);
+  if (contentMode !== "none") {
+    if (isTextMime) {
+      // Text MIME embeds decoded text. Prefer the byte-exact raw read; fall
+      // back to #237's captured response text so a raced raw read never drops
+      // an otherwise-available text body.
+      if (harBody !== undefined) {
+        content.text = harBody.toString("utf8");
+      } else if (responseBody._tag === "Complete") {
+        content.text = responseBody.text;
+      }
+    } else if (contentMode === "all" && harBody !== undefined) {
+      // Binary in `all` mode is byte-exact base64 straight from response.body().
+      // A missing raw body is rejected upstream, never re-encoded from text.
+      content.text = harBody.toString("base64");
+      content.encoding = "base64";
+    }
+  }
   const requestEntry: Record<string, unknown> = {
     method: request.method,
     url: request.url,
@@ -1250,11 +1358,6 @@ function harEntryForRequest(request: NetworkRequestRecord): Record<string, unkno
       ? {}
       : { postData: { mimeType: "", text: request.postData } }),
   };
-  const content: Record<string, unknown> = {
-    size: responseBodyBytes,
-    mimeType: request.responseHeaders?.["content-type"] ?? "",
-  };
-  if (responseBody._tag === "Complete") content.text = responseBody.text;
   return {
     startedDateTime: new Date().toISOString(),
     time: 0,
@@ -1348,12 +1451,80 @@ async function stopNetworkHar(
       "retry HAR stop after request bodies settle; no HAR path was created",
     ));
   }
+  const contentMode = state.harContentMode;
+  const harBodies = new Map<string, Buffer>();
+  if (contentMode !== "none") {
+    for (const request of requests) {
+      const bodyRead = state.harBodyReads.get(request.requestId);
+      const mimeType = request.responseHeaders?.["content-type"] ?? "";
+      // `all` mode requires byte-exact bytes for binary responses that carry a
+      // body. If the raw read is missing/failed/over-budget we fail the whole
+      // artifact rather than emit a lossy or size-only binary entry.
+      const requiresRawBinary = contentMode === "all"
+        && request.responseBody._tag === "Complete"
+        && !harMimeIsText(mimeType);
+      if (bodyRead === undefined) {
+        if (requiresRawBinary) {
+          state.harBodyReads.clear();
+          return ok(artifactIncomplete(
+            "failed",
+            requests.length,
+            `HAR 'all' response body for request ${request.requestId} is unavailable for byte-exact capture`,
+            "restart HAR recording so binary response bodies can be captured",
+          ));
+        }
+        continue;
+      }
+      if (stopOptions !== undefined && stopOptions.deadline <= Date.now()) {
+        state.harBodyReads.clear();
+        return ok(artifactIncomplete(
+          "restricted",
+          requests.length,
+          "HAR stop reached its bounded assembly budget while gathering response bodies",
+          "retry HAR stop after request bodies settle; no HAR path was created",
+        ));
+      }
+      let body: Buffer | undefined;
+      try {
+        body = stopOptions === undefined
+          ? await bodyRead
+          : await withOperationTimeout(() => bodyRead, stopOptions);
+      } catch (error) {
+        if (error instanceof OperationTimeoutError && requiresRawBinary) {
+          state.harBodyReads.clear();
+          return ok(artifactIncomplete(
+            "restricted",
+            requests.length,
+            `HAR 'all' response body for request ${request.requestId} exceeded the bounded stop budget`,
+            "retry HAR stop after request bodies settle; no HAR path was created",
+          ));
+        }
+        body = undefined;
+      }
+      if (body === undefined) {
+        if (requiresRawBinary) {
+          state.harBodyReads.clear();
+          return ok(artifactIncomplete(
+            "failed",
+            requests.length,
+            `HAR 'all' response body for request ${request.requestId} could not be read for byte-exact capture`,
+            "restart HAR recording so binary response bodies can be captured",
+          ));
+        }
+        continue;
+      }
+      harBodies.set(request.requestId, body);
+    }
+  }
+  state.harBodyReads.clear();
+
 
   const harValue = {
     log: {
       version: "1.2",
       creator: { name: "moat-browser", version: "0.1.0" },
-      entries: requests.map((request) => harEntryForRequest(request)),
+      entries: requests.map((request) =>
+        harEntryForRequest(request, harBodies.get(request.requestId), contentMode)),
     },
   };
   let bytes: Buffer;
@@ -1976,6 +2147,7 @@ function dialogGuardTarget(
     }
 
     case "navigate":
+    case "pushstate":
     case "back":
     case "forward":
     case "reload":
@@ -2083,6 +2255,8 @@ function dialogGuardTarget(
     case "har_stop":
     case "console":
     case "errors":
+    case "addinitscript":
+    case "removeinitscript":
       return ok({ _tag: "Exempt", exemption: { _tag: "NoExistingPageTarget" } });
 
     default:
@@ -2194,6 +2368,7 @@ function operationCompletion(
 function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState {
   const state = getSessionRuntimeState(sessionId);
   pageIdentity(state, page);
+  observeInitScriptLifecycle(page);
   if (state.observedPages.has(page)) return state;
   state.observedPages.add(page);
   state.pageNavigationGenerations.set(page, 0);
@@ -2300,6 +2475,16 @@ function observePageRuntime(sessionId: string, page: Page): SessionRuntimeState 
       capture = Promise.resolve(networkCaptureFailure(error, contentLength(responseHeaders)));
     }
     current.responsePromise = capture;
+    if (state.harActive && state.harContentMode !== "none") {
+      const harContentType = responseHeaders["content-type"] ?? "";
+      if (state.harContentMode === "all" || harMimeIsText(harContentType)) {
+        try {
+          state.harBodyReads.set(requestId, response.body().then((bytes) => bytes).catch(() => undefined));
+        } catch {
+          state.harBodyReads.set(requestId, Promise.resolve(undefined));
+        }
+      }
+    }
     void capture.then((result) => {
       const latest = state.requests.get(requestId);
       if (latest === current) current.responseBody = result;
@@ -2621,6 +2806,7 @@ async function ensureCdpRuntimeObserver(
 }
 
 export function clearSessionRuntimeState(sessionId: string): void {
+  cleanupSessionInitScripts(sessionId);
   const state = sessionRuntimeState.get(sessionId);
   if (state) {
     for (const cdp of state.observerSessions) void cdp.detach().catch(() => {});
@@ -2675,7 +2861,7 @@ async function readCdpStream(cdp: CDPSession, handle: string): Promise<Buffer> {
 
 // ─── Locator subaction type ───
 
-type LocatorSubaction = NthSubaction;
+type LocatorSubaction = NthSubaction | "text";
 
 // ─── executeLocatorAction ───
 
@@ -2686,7 +2872,7 @@ async function executeLocatorAction(
   value?: string,
   options?: CommandExecutionOptions,
 ): Promise<Result<CommandResultData, ControllerError>> {
-  if (subaction !== undefined) {
+  if (subaction !== undefined && subaction !== "text") {
     const conflict = inputConflict(state);
     if (conflict) return err(conflict);
   }
@@ -2704,11 +2890,17 @@ async function executeLocatorAction(
       return ok({ _tag: "VoidResult" } as const);
 
     case "fill":
-      await locator.fill(value!, { timeout });
+      if (value === undefined) {
+        return err({ _tag: "ValidationFailed", message: "Missing 'value' for fill subaction" } as const);
+      }
+      await locator.fill(value, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!, { timeout });
+      if (value === undefined) {
+        return err({ _tag: "ValidationFailed", message: "Missing 'value' for type subaction" } as const);
+      }
+      await locator.pressSequentially(value, { timeout });
       return ok({ _tag: "VoidResult" } as const);
 
     case "check":
@@ -2737,6 +2929,16 @@ async function executeLocatorAction(
       }
       await locator.selectOption([value], { timeout });
       return ok({ _tag: "VoidResult" } as const);
+
+    case "text": {
+      const innerText = await locator.innerText({ timeout });
+      const textContent = innerText === "" ? await locator.textContent({ timeout }) : null;
+      const result: GetTextResult = {
+        _tag: "GetTextResult",
+        text: innerText !== "" ? innerText : (textContent ?? ""),
+      };
+      return ok(result);
+    }
 
     default:
       return exhaustive(subaction);
@@ -2770,6 +2972,8 @@ async function executeElementAction(
   state: SessionRuntimeState,
   value?: string,
   options?: CommandExecutionOptions,
+  clear?: boolean,
+  delay?: number,
 ): Promise<Result<CommandResultData, ControllerError>> {
   const conflict = inputConflict(state);
   if (conflict) return err(conflict);
@@ -2788,7 +2992,8 @@ async function executeElementAction(
       return ok({ _tag: "VoidResult" } as const);
 
     case "type":
-      await locator.pressSequentially(value!, { timeout });
+      if (clear) await locator.fill("", { timeout });
+      await locator.pressSequentially(value!, delay === undefined ? { timeout } : { timeout, delay });
       return ok({ _tag: "VoidResult" } as const);
 
     case "hover":
@@ -2874,6 +3079,7 @@ const INTERACTIVE_ROLES = new Set([
 
 // Matches lines like "- button "Submit"" or "  - textbox "Name" [attr=val]"
 const ARIA_LINE_RE = /^(\s*- )(\w+)(?: "([^"]*)")?(.*)$/;
+const ARIA_URL_LINE_RE = /^\s*- \/url:\s*.*$/;
 
 async function buildAriaSnapshot(
   scope: Page | Frame,
@@ -2886,6 +3092,7 @@ async function buildAriaSnapshot(
     readonly interactive?: boolean;
     readonly compact?: boolean;
     readonly maxDepth?: number;
+    readonly urls?: boolean;
   } = {},
 ): Promise<Result<string, ControllerError>> {
   let root: Locator;
@@ -2897,25 +3104,33 @@ async function buildAriaSnapshot(
     root = scope.locator(options.selector ?? "body");
   }
   const snapshot = await root.ariaSnapshot();
-  const refs = new Map<string, Locator>();
+  const rawLines = snapshot.split("\n");
+  const indentations = rawLines.map((line) => line.length - line.trimStart().length);
   const state = getSessionRuntimeState(sessionId);
+  const refs = new Map<string, Locator>();
   const roleOccurrences = new Map<string, number>();
 
-  const annotated = snapshot.split("\n").filter((line) => {
-    if (options.maxDepth !== undefined) {
-      const indentation = line.length - line.trimStart().length;
-      if (Math.floor(indentation / 2) > options.maxDepth) return false;
+  type RenderedSnapshotLine = {
+    readonly sourceIndex: number;
+    readonly line: string;
+    readonly role?: string;
+    readonly locator?: Locator;
+  };
+
+  const rendered: Array<RenderedSnapshotLine> = [];
+  for (let sourceIndex = 0; sourceIndex < rawLines.length; sourceIndex++) {
+    const line = rawLines[sourceIndex];
+    if (options.maxDepth !== undefined && Math.floor(indentations[sourceIndex] / 2) > options.maxDepth) {
+      continue;
     }
-    if (!options.interactive) return true;
     const match = ARIA_LINE_RE.exec(line);
-    return match !== null && INTERACTIVE_ROLES.has(match[2]);
-  }).map((line) => {
-    const m = ARIA_LINE_RE.exec(line);
-    if (!m) return line;
-
-    const [, indent, role, name, rest] = m;
-    if (!INTERACTIVE_ROLES.has(role)) return line;
-
+    const isInteractive = match !== null && INTERACTIVE_ROLES.has(match[2]);
+    if (options.interactive && !isInteractive) continue;
+    if (!match || !isInteractive) {
+      rendered.push({ sourceIndex, line });
+      continue;
+    }
+    const [, indent, role, name, rest] = match;
     const roleIndex = roleOccurrences.get(role) ?? 0;
     roleOccurrences.set(role, roleIndex + 1);
     const key = `@e${state.nextRefNumber++}`;
@@ -2923,11 +3138,97 @@ async function buildAriaSnapshot(
       .getByRole(role as Parameters<Page["getByRole"]>[0])
       .nth(roleIndex);
     refs.set(key, locator);
+    rendered.push({
+      sourceIndex,
+      line: name
+        ? `${indent}${key} ${role} "${name}"${rest}`
+        : `${indent}${key} ${role}${rest}`,
+      role,
+      locator,
+    });
+  }
 
-    return name
-      ? `${indent}${key} ${role} "${name}"${rest}`
-      : `${indent}${key} ${role}${rest}`;
-  }).filter((line) => !options.compact || line.trim().length > 0).join("\n");
+  if (!options.urls) {
+    refStore.update(sessionId, refs, refScope);
+    return ok(
+      rendered
+        .filter((entry) => !options.compact || entry.line.trim().length > 0)
+        .map((entry) => entry.line)
+        .join("\n"),
+    );
+  }
+
+  const urlChildrenByLink = new Map<number, Array<number>>();
+  {
+    const stack: Array<{ readonly indentation: number; readonly sourceIndex: number }> = [];
+    for (let sourceIndex = 0; sourceIndex < rawLines.length; sourceIndex++) {
+      const indentation = indentations[sourceIndex];
+      while (stack.length > 0 && stack[stack.length - 1].indentation >= indentation) stack.pop();
+      const parent = stack.at(-1);
+      if (parent !== undefined && ARIA_URL_LINE_RE.test(rawLines[sourceIndex])) {
+        const parentMatch = ARIA_LINE_RE.exec(rawLines[parent.sourceIndex]);
+        if (parentMatch?.[2] === "link") {
+          const children = urlChildrenByLink.get(parent.sourceIndex) ?? [];
+          children.push(sourceIndex);
+          urlChildrenByLink.set(parent.sourceIndex, children);
+        }
+      }
+      stack.push({ indentation, sourceIndex });
+    }
+  }
+
+  const visibleParentBySource = new Map<number, number>();
+  {
+    const stack: Array<{ readonly indentation: number; readonly sourceIndex: number }> = [];
+    for (const entry of rendered) {
+      const indentation = indentations[entry.sourceIndex];
+      while (stack.length > 0 && stack[stack.length - 1].indentation >= indentation) stack.pop();
+      const parent = stack.at(-1);
+      if (parent !== undefined) visibleParentBySource.set(entry.sourceIndex, parent.sourceIndex);
+      stack.push({ indentation, sourceIndex: entry.sourceIndex });
+    }
+  }
+
+  const linkUrls = new Map<number, string>();
+  await Promise.all(
+    rendered.map(async (entry) => {
+      if (entry.role !== "link" || !entry.locator) return;
+      const url = await entry.locator
+        .evaluate((element) => (element instanceof HTMLAnchorElement ? element.href : ""))
+        .catch(() => "");
+      if (url) linkUrls.set(entry.sourceIndex, url);
+    }),
+  );
+
+  const removedUrlSources = new Set<number>();
+  for (const sourceIndex of linkUrls.keys()) {
+    for (const childSourceIndex of urlChildrenByLink.get(sourceIndex) ?? []) {
+      removedUrlSources.add(childSourceIndex);
+    }
+  }
+
+  const renderedChildParents = new Set<number>();
+  for (const [childSourceIndex, parentSourceIndex] of visibleParentBySource) {
+    if (!removedUrlSources.has(childSourceIndex)) renderedChildParents.add(parentSourceIndex);
+  }
+
+  const withUrl = (line: string, url: string, hasChildren: boolean): string => {
+    if (line.includes("[url=")) return line;
+    const colon = /:\s*$/.exec(line);
+    const base = colon ? line.slice(0, colon.index) : line;
+    const suffix = colon && hasChildren ? colon[0] : "";
+    return `${base} [url=${url}]${suffix}`;
+  };
+
+  const annotated = rendered
+    .filter((entry) => !removedUrlSources.has(entry.sourceIndex))
+    .map((entry) => {
+      const url = linkUrls.get(entry.sourceIndex);
+      if (!url) return entry.line;
+      return withUrl(entry.line, url, renderedChildParents.has(entry.sourceIndex));
+    })
+    .filter((line) => !options.compact || line.trim().length > 0)
+    .join("\n");
 
   refStore.update(sessionId, refs, refScope);
   return ok(annotated);
@@ -3820,6 +4121,58 @@ export async function executeCommand(
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
+      case "pushstate": {
+        runtimeState.activeFrame = undefined;
+        runtimeState.activeFrameSelector = undefined;
+        // Patchright defaults evaluate() to its isolated utility world. The
+        // page-owned router (e.g. Next.js) only lives in the main world, so
+        // isolatedContext=false is required here without touching the global
+        // eval path.
+        const expression = `(async (url) => {
+          const before = location.href;
+          const absolute = new URL(url, before).href;
+          if (absolute === before) return before;
+          const router = typeof window.next === "object" && window.next && window.next.router;
+          if (router && typeof router.push === "function") {
+            await router.push(url);
+            return location.href;
+          }
+          history.pushState(null, "", absolute);
+          try { dispatchEvent(new PopStateEvent("popstate", { state: null })); } catch {}
+          try { dispatchEvent(new Event("navigate")); } catch {}
+          return location.href;
+        })(${JSON.stringify(command.url)})`;
+        const resultingUrl = await page.evaluate<string>(expression, undefined, false);
+        const result: PushStateResult = { _tag: "PushStateResult", url: resultingUrl };
+        return ok(result);
+      }
+
+      case "addinitscript": {
+        const disposable = await page.addInitScript(command.script);
+        let identifier = `init-${randomUUID()}`;
+        while (initScriptRecords.has(identifier)) identifier = `init-${randomUUID()}`;
+        rememberInitScript({ sessionId, page, disposable }, identifier);
+        const result: AddInitScriptResult = { _tag: "AddInitScriptResult", added: true, identifier };
+        return ok(result);
+      }
+
+      case "removeinitscript": {
+        const record = initScriptRecords.get(command.identifier);
+        if (!record || record.sessionId !== sessionId || record.page !== page) {
+          return err({
+            _tag: "CommandFailed",
+            message: `Init script is not owned by the active tab/session: ${command.identifier}`,
+          });
+        }
+        await record.disposable.dispose();
+        forgetInitScript(command.identifier, record);
+        const result: RemoveInitScriptResult = {
+          _tag: "RemoveInitScriptResult",
+          removed: true,
+          identifier: command.identifier,
+        };
+        return ok(result);
+      }
 
       case "back": {
         invalidateRefs(refStore, sessionId, "navigation");
@@ -3893,19 +4246,19 @@ export async function executeCommand(
       case "getbytext":
         return executeLocatorAction(
           scope.getByText(command.text, { exact: command.exact }),
-          command.subaction, runtimeState, undefined, options,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "getbyalttext":
         return executeLocatorAction(
           scope.getByAltText(command.text, { exact: command.exact }),
-          command.subaction, runtimeState, undefined, options,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "getbytitle":
         return executeLocatorAction(
           scope.getByTitle(command.text, { exact: command.exact }),
-          command.subaction, runtimeState, undefined, options,
+          command.subaction, runtimeState, command.value, options,
         );
 
       case "getbytestid":
@@ -3969,6 +4322,8 @@ export async function executeCommand(
           runtimeState,
           command.text,
           options,
+          command.clear,
+          command.delay,
         );
 
       case "hover":
@@ -4248,7 +4603,9 @@ export async function executeCommand(
           });
         }
         const closingActivePage = closeIndex === activeTabIndex;
-        await pages[closeIndex].close();
+        const closingPage = pages[closeIndex];
+        await closingPage.close();
+        cleanupPageInitScripts(closingPage);
         if (closingActivePage) {
           invalidateRefs(refStore, sessionId, "page");
           const remainingPages = context.pages();
@@ -4733,8 +5090,17 @@ export async function executeCommand(
         return ok({ _tag: "VoidResult" } as const);
       }
 
-      case "route":
+      case "route": {
+        const routeResourceTypes = (command.resourceType ?? "")
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter((value) => value.length > 0);
         await page.route(command.url, async (route) => {
+          const requestResourceType = route.request().resourceType().toLowerCase();
+          if (routeResourceTypes.length > 0 && !routeResourceTypes.includes(requestResourceType)) {
+            await route.continue();
+            return;
+          }
           if (command.abort) {
             await route.abort();
           } else if (command.body !== undefined) {
@@ -4744,6 +5110,7 @@ export async function executeCommand(
           }
         });
         return ok({ _tag: "VoidResult" } as const);
+      }
 
       case "unroute":
         if (command.url !== undefined) {
@@ -5221,6 +5588,8 @@ export async function executeCommand(
         runtimeState.requests.clear();
         runtimeState.continuations.clear();
         runtimeState.bodyContinuationTokens.clear();
+        runtimeState.harContentMode = command.content ?? "text";
+        runtimeState.harBodyReads.clear();
         runtimeState.harActive = true;
         const r: StartedResult = { _tag: "StartedResult", started: true };
         return ok(r);

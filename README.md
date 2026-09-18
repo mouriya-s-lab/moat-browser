@@ -475,47 +475,99 @@ moat find role button --name "Edit" --nth 3
 
 ### 9.3 命令参考
 
-CLI 命令词汇完整继承自 agent-browser fork，详见上游文档：`github.com/vercel-labs/agent-browser`。本文档不重复列表，只列出 moat-browser **新增**或**行为有差异**的命令。
+CLI 的命令词汇以当前 `moat --help` 和 `cli/src/commands.rs` 为准。moat
+保留 agent-browser 的语义定位器和 JSON 响应形状，但远程 session、退出码和
+下列 fork 行为属于 moat 的公开契约。
 
-**新增命令**（session 生命周期，因为远程容器需要显式管理）：
+**Session 与 profile**：
 
 | 命令 | 说明 |
 |------|------|
-| `moat connect [--profile <registered-name>]` | 建立 session：Controller 按受信任注册名称解析 profile，拷贝 profile、创建带 owner/session 标签的 agent-chrome 容器、等待 CDP 就绪。`default` 始终指向 `PROFILE_SOURCE`；其他名称必须由 Controller 的 `PROFILE_REGISTRY` 显式注册。绝对路径、相对路径、路径分隔符和未注册名称在创建 session 前返回 `invalid_value`，不会产生容器或 profile 副本。session ID 写入 `~/.moat/session`；已有本地 session 时在远端注册前拒绝，保留原 handle。 |
-| `moat disconnect` / `moat destroy` / `moat close-session` / `moat close` | 共享同一清理终态：只有 Controller 确认当前 owner 的容器与 profile 已清理才返回成功并删除 `~/.moat/session`。传输、删除或终态未知时返回非零失败，保留本地 session handle 供重试。 |
-| `moat status` | 显示本地 session ID、按本次调用解析的 Controller 配置与 `local_session_config` 视图；不探测远端健康状态 |
+| `moat init [--profile <registered-name>]` / `moat connect [--profile <registered-name>]` | 建立 session；profile 只在 `init` 或 `connect` 时选择，值必须是 Controller 已注册的名称。`default` 使用 `PROFILE_SOURCE`，其他名称必须由 `PROFILE_REGISTRY` 显式注册。 |
+| `moat disconnect` / `moat destroy` / `moat close-session` / `moat close` | 共享 owner-scoped 清理终态；只有 Controller 确认清理完成才删除 `~/.moat/session`。 |
+| `moat status` | 查看本地 session/configuration 状态，不探测远端健康状态。 |
 
-`--profile` 只接受 profile 名称，不接受客户端或 Controller 路径。Controller
-操作员可通过 JSON 环境变量注册额外名称；来源必须是已挂载的目录并位于
-`PROFILE_STORE`（默认 `PROFILES_WORK`）之内：
+`--profile` 只接受名称，不接受本地或 Controller 路径。profile **不是**
+`MOAT_PROFILE` 环境变量，也不是 `~/.moat/config.json` 字段；它不会被后续
+命令隐式继承。Controller 注册表的来源必须是 `PROFILE_STORE`（默认
+`PROFILES_WORK`）内已挂载的目录：
 
 ```bash
 PROFILE_STORE=/data/profiles
 PROFILE_REGISTRY='{"named-fixture":"/data/profiles/named-fixture"}'
+moat init --profile named-fixture
 ```
 
-`default` 是保留名称，始终使用 `PROFILE_SOURCE`，不能由
-`PROFILE_REGISTRY` 覆盖。注册来源不存在或越出受控目录时，该名称会以
-`invalid_value` 拒绝；不会按名称推导 `/data/<name>`，也不会自动创建目录。
+**交互与页面命令**：
 
-`PROFILE_REGISTRY` 若不是合法 JSON 对象或包含非法条目，Controller 会在启动时
-失败，而不会静默退化为空注册表。
+- `moat get url` 和 `moat get title` 可用；`moat get cdp-url` 明确返回
+  `unsupported_in_moat`，CDP 端点仅供 Controller 的 Docker 网络使用。
+- `moat pushstate <url>` 在页面主世界调用站点 router 的 `push`（若存在），
+  否则使用 `history.pushState`；当前 URL 相同时是 no-op，不触发额外导航。
+- `moat addinitscript <script>` 为当前 tab 的后续 document 和 reload 注册初始化
+  脚本，返回 opaque identifier；它不会回溯修改当前 document，也不会注入其他
+  tab。`moat removeinitscript <identifier>` 只删除当前 tab/session 所有者的
+  脚本；跨 tab/session 或错误 identifier 会被拒绝，已有 document 不会回滚，
+  page/tab/session 清理时注册也会移除。
+- `moat type <selector|@ref> <text> [--clear] [--delay <ms>]` 支持先清空目标
+  再按每字符延迟输入。`find`/`getby*` 的动作支持 `fill`、`check`、`hover`
+  和 `text`（需要值的动作使用 value 参数）。
+- `moat snapshot [--urls]` 可在 ARIA 输出中包含链接绝对 URL；`--urls` 只影响
+  输出，不改变页面。
+- `moat tab` 只接受数字 tab index；`--label` 不受支持。
+
+**Network 与 batch**：
+
+- `moat network route <glob> [--abort] [--body <json>] [--resource-type <csv>]`
+  支持按逗号分隔、大小写不敏感的 resource type 过滤。`--status`、`--delay`
+  和 `--headers` 被明确拒绝，不会安装 route。
+- `moat network har start --content text|all|none` 选择 HAR 响应正文策略：
+  省略时默认为 `text`，`text` 只嵌入 text MIME，`all` 以 base64 保留二进制，
+  `none` 只保留 metadata；`har stop [path]` 生成对应产物。
+- `moat batch [--bail] ["command ..." ...]` 接收内联 shell-split 命令字符串；不带
+  内联命令时从 stdin 读取 JSON argv 数组（例如 `[["get","title"],["get","url"]]`）。
+  `--bail` 在第一条失败后停止，未提供时继续执行并逐条返回结果；任一 item 失败
+  时 batch 最终以 exit 1 返回，失败 item 仍保留在 `data.results` 中。
+- wait-family 命令在未显式提供 `--timeout` 时使用
+  `AGENT_BROWSER_DEFAULT_TIMEOUT`（毫秒，默认 25000；无效值回退默认值）。
+  `--init-script`、`--enable`、`AGENT_BROWSER_INIT_SCRIPTS` 和
+  `AGENT_BROWSER_ENABLE` 属于 upstream 本地 launcher/plugin 配置，返回
+  `unsupported_in_moat`，不是 runtime `addinitscript` 的替代品。
+
+`a11y`、`auth`、`confirm`/`deny`、`inspect`、`launch`、`read`、`react`、
+`record`、`stream`、`vitals`、`web-vitals`、`webmcp`、`install`、`upgrade`、
+`dashboard`、`profiles`、`session`、`device`、`mcp`、`doctor`、`skills`、
+`plugin`、`plugins` 和 `chat` 及其子命令属于稳定的 `unsupported_in_moat`
+拒绝面，不应当按 upstream CLI 的同名实现调用。tab reference 只接受数字
+index；`tab --label` 和字符串 tab reference 同样被拒绝。
 
 **与 agent-browser 的行为差异**：
 
 | 命令 | agent-browser 行为 | moat 行为 |
 |------|---------|----------|
-| （所有命令） | 隐式自动启动本地 daemon + 本地 Chrome | 需要先 `moat connect`，返回 exit 77 如未连接 |
+| （所有命令） | 隐式自动启动本地 daemon + 本地 Chrome | 需要先 `moat init` 或 `moat connect`，无 session 返回 exit 77 |
+| `moat get cdp-url` | 返回本地 CDP 地址 | 固定返回 `unsupported_in_moat` |
+
+**退出码**：
+
+| Code | Meaning |
+|------|---------|
+| 0 | 成功 |
+| 1 | 用法错误、unsupported 命令、目标错误、Controller/命令失败或超时 |
+| 69 | session 创建失败 |
+| 77 | 没有 active session |
+| 78 | Controller 配置缺失或无效 |
+
+moat 不发出 upstream agent-browser 的 `2`、`66`、`75` 退出码；机器调用
+应读取 JSON 响应中的 `errorType`，而不是根据旧退出码或展示文案猜测。
 
 **C14 公开契约**：
 
 - `moat window new` 保留同一 BrowserContext 的能力，但创建的是当前共享会话中的新 tab，不是隔离 browser context 或操作系统窗口。
-- `moat get cdp-url` 在 moat 架构中不可用，返回 `unsupported_in_moat`；agent-chrome 的 CDP 端口仅供 Controller 在 Docker 内部网络访问，CLI 不返回容器地址。
 - `moat click <selector> --new-tab` 会把带非空 HTTP(S) `href` 的链接打开到新的活动 tab，并保留原 tab；没有可打开链接时在导航前返回错误。
-- `moat tab close [index]` 在关闭前校验至少保留一个 tab；关闭最后一个 tab 会在页面关闭前返回 `errorType: "invalid_value"` 与稳定文案 `Validation failed: Cannot close the last tab; at least one tab must remain open`，原 tab 与 session 保持可用。需要结束整个 session 时使用 `moat disconnect`（或 `moat close`）。若浏览器侧事件使 context 变成零页面，后续命令返回 `errorType: "target_not_found"`（目标 `page`），不会泄漏引擎错误或让 session 过期。
-- `moat network route` 目前只接受 `--abort` 与 `--body <json>`；`--status`、`--delay`、`--headers` 等不支持选项会在安装 route 前返回 `unsupported_in_moat`。
+- `moat tab close [index]` 在关闭前校验至少保留一个 tab；关闭最后一个 tab 会在页面关闭前返回 `errorType: "invalid_value"` 与稳定文案 `Validation failed: Cannot close the last tab; at least one tab must remain open`，原 tab 与 session 保持可用。需要结束整个 session 时使用 `moat disconnect`（或 `moat close`）。
 - `find first`、`find last`、`find nth` 只接受已登记的动作名；未知动作、缺少动作值和越界 occurrence 会在页面副作用前失败，`fill ""` 仍表示清空输入。`keydown`/`keyup` 是显式配对的低层操作；未释放 modifier 时，高层输入会在副作用前拒绝并返回当前 held modifiers。
-- `moat mouse down [button]` 与 `moat mouse up [button]` 是显式配对的低层操作；返回值用 `MouseStateResult.heldMouseButtons` 展示当前按住的 `left`、`right`、`middle` 按键。按住期间的高层输入（如 `click`、`fill`、`type`、`drag`）会在页面副作用前返回 `command_failed`，指导先执行 `mouse up`；`mouse move`、`mouse wheel` 与显式 `mouse up` 仍可用于拖拽和释放。
+- `moat mouse down [button]` 与 `moat mouse up [button]` 是显式配对的低层操作；返回值用 `MouseStateResult.heldMouseButtons` 展示当前按住的 `left`、`right`、`middle` 按键。按住期间的高层输入会在页面副作用前返回 `command_failed`，指导先执行 `mouse up`。
 
 **JavaScript dialog 归属与结算（M23）**：
 
@@ -637,6 +689,14 @@ CLI 和 Controller 之间的协议是 **agent-browser daemon JSON 命令格式 +
 
 `command` 字段的结构就是 agent-browser daemon 的 JSON 格式（见 fork 中 `cli/src/commands.rs` 的 `parse_command`）。两个 SDK（TS + Rust）负责编码这个结构，Controller 实现服务端解码。
 
+当前 wire action 还包括 `pushstate {url}`、`addinitscript {script}` 和
+`removeinitscript {identifier}`。现有 action 的新增字段为：
+`type.clear`/`type.delay`、`snapshot.urls`、`route.resourceType`（CSV、
+大小写不敏感）和 `har_start.content`（`all|text|none`）；semantic
+`getby*` subaction 统一支持 `click`、`fill`、`type`、`check`、`uncheck`、
+`hover`、`text` 及可选 `value`。CLI parser 会在发送前拒绝 moat 不支持的
+route flags 和上游 launcher/plugin flags。
+
 响应也同样：
 
 ```json
@@ -709,13 +769,14 @@ moat --controller "ws://browser.mouriya.lan:3000" init --profile default
 
 # 默认 Controller
 export MOAT_CONTROLLER="ws://browser.mouriya.lan:3000"
-export MOAT_PROFILE="default"
 
-# 或 ~/.moat/config.json
-{ "controller": "ws://browser.mouriya.lan:3000", "profile": "default" }
-
-# 优先级：本次 --controller > 非空 MOAT_CONTROLLER > 配置文件 controller
+# ~/.moat/config.json 只保存 controller
+{ "controller": "ws://browser.mouriya.lan:3000" }
 ```
+
+profile 只在 `init`/`connect` 上选择，不是环境变量，也不是配置字段。Controller
+解析优先级为：本次 `--controller` > 非空 `MOAT_CONTROLLER` > 配置文件
+`controller`。
 
 ### 9.8 增强（来自 opencli / CLI-Anything）
 
@@ -744,7 +805,8 @@ locators that map directly to Playwright's getByRole/getByLabel/getByText/etc.
 
 ## Rules
 
-1. **Start any session with `moat connect`**. Without it, all commands fail with exit 77.
+1. **Start any session with `moat init` or `moat connect`**. `--profile` is
+   selected on that command only; without a session all commands fail with exit 77.
 2. **Prefer semantic locators over snapshot**. Use `find role button --name "Submit"`,
    `find label "Email" fill "..."`, `find text "Login"` for 90% of interactions.
    These are cheap (~40 tokens) and map to Playwright's semantic API.
@@ -757,13 +819,16 @@ locators that map directly to Playwright's getByRole/getByLabel/getByText/etc.
 
 ## Primary commands (semantic locators)
 
-moat find role <role> [--name <name>] [action]
+moat find role <role> [--name <name>] [action] [text]
+moat find text <text> [action] [text]
 moat find label <label> [action] [text]
 moat find placeholder <text> [action] [text]
-moat find text <text> [action]
+moat find alt <text> [action] [text]
+moat find title <text> [action] [text]
 moat find testid <id> [action] [text]
 
-Actions: click (default), fill <text>, type <text>, hover, dblclick, focus, select <value>, check, uncheck
+Actions run only when supplied; omitting the action queries the locator without
+clicking: click, fill <text>, type <text>, check, uncheck, hover, text.
 
 For repeated reads, use the getter-level selector options instead of relying
 on a strict multi-match locator:
@@ -820,9 +885,31 @@ objects (for example `code=42, detail=bad`); circular values, symbols,
 functions, and DOM nodes are shown as present but not serializable. Unknown
 detail tags remain visible as raw JSON.
 
-Network routing accepts only `--abort` and `--body <json>`. Unsupported options
-
+Network routing accepts `--abort`, `--body <json>`, and
+`--resource-type <csv>` (case-insensitive resource types). Unsupported options
 such as `--status`, `--delay`, and `--headers` are rejected before installation.
+
+`moat pushstate <url>` uses the page's main-world router when available and
+falls back to `history.pushState`; pushing the current URL is a no-op.
+`moat addinitscript <script>` applies only to future documents and reloads in the
+current tab; it returns an opaque identifier and does not alter the current
+document or other tabs. `moat removeinitscript <identifier>` removes that
+tab/session-owned script without rolling back an existing document.
+`moat get url` and `moat get title` are supported; only `get cdp-url` is
+intentionally unavailable.
+
+`moat snapshot --urls` includes absolute link URLs. `moat network har start
+--content text|all|none` selects HAR body capture (`text` is the default,
+`all` embeds binary as base64, and `none` records metadata only). `moat batch
+[--bail] ["command ..." ...]` accepts inline shell-split commands; without
+inline arguments it reads a JSON argv array from stdin. `--bail` stops at the
+first failure, and any failed item makes batch exit 1.
+
+Wait-family commands use `AGENT_BROWSER_DEFAULT_TIMEOUT` in milliseconds when
+no explicit `--timeout` is supplied (default 25000; malformed values fall back
+to the default). `--init-script`, `--enable`, `AGENT_BROWSER_INIT_SCRIPTS`, and
+`AGENT_BROWSER_ENABLE` are upstream launcher/plugin settings and return
+`unsupported_in_moat`.
 
 `keydown` and `keyup` are explicit paired low-level operations. High-level
 `type`, `fill`, and `click` actions reject while a modifier is held; use `keyup`
@@ -873,17 +960,25 @@ moat fill @eN "text"             — fill by ref
 
 ## Other
 
-moat connect / disconnect / status
-moat open <url> / back / forward / reload
-moat press <key>
-moat screenshot [--output file]
-moat eval "<js>"
-moat batch                       — stdin: [[cmd, args...], ...]
+`moat init|connect [--profile <registered-name>]` / `moat disconnect|destroy|close-session|close`
+`moat open <url> / back / forward / reload`
+`moat get url` / `moat get title`
+`moat press <key>` / `moat screenshot [--output file]`
+`moat eval "<js>"`
+`moat batch [--bail] ["command ..." ...]` — inline shell-split command strings;
+without inline arguments, stdin JSON argv array: `[["get","title"],["get","url"]]`.
+
+Unsupported families (`a11y`, `auth`, `confirm`, `deny`, `inspect`, `launch`,
+`read`, `react`, `record`, `stream`, `vitals`, `web-vitals`, `webmcp`, `install`,
+`upgrade`, `dashboard`, `profiles`, `session`, `device`, `mcp`, `doctor`,
+`skills`, `plugin`, `plugins`, `chat`) return `unsupported_in_moat`;
+`tab --label` and string tab references are not supported.
 
 ## Exit codes
 
-0=ok, 2=usage, 66=element not found, 69=controller down, 75=timeout,
-77=no session, 78=config error
+0=success, 1=usage/unsupported/target/command failure or timeout,
+69=session creation failed, 77=no active session, 78=configuration error.
+moat does not emit upstream `2`, `66`, or `75`.
 ```
 
 ---

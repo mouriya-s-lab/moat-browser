@@ -122,6 +122,28 @@ fn first_wait_argument<'a>(rest: &[&'a str]) -> Option<&'a str> {
 }
 
 pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError> {
+    let mut result = parse_command_inner(args, flags)?;
+    inject_default_wait_timeout(&mut result, flags);
+    Ok(result)
+}
+
+/// Wait-family commands without an explicit `--timeout` inherit the configured
+/// default. The fixed-duration form (`wait <ms>`, which carries `time`) is a
+/// sleep rather than a condition budget, so it is deliberately left untouched.
+fn inject_default_wait_timeout(command: &mut Value, flags: &Flags) {
+    let Some(default) = flags.default_timeout else {
+        return;
+    };
+    let is_wait = command
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|action| action.starts_with("wait"));
+    if is_wait && command.get("timeout").is_none() && command.get("time").is_none() {
+        command["timeout"] = json!(default);
+    }
+}
+
+fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseError> {
     if args.is_empty() {
         return Err(ParseError::MissingArguments {
             context: "".to_string(),
@@ -220,9 +242,41 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         "type" => {
             let sel = rest.first().ok_or_else(|| ParseError::MissingArguments {
                 context: "type".to_string(),
-                usage: "type <selector> <text>",
+                usage: "type <selector> <text> [--clear] [--delay <ms>]",
             })?;
-            Ok(json!({ "id": id, "action": "type", "selector": sel, "text": rest[1..].join(" ") }))
+            // Keep command-local flags out of the text payload. Sending them
+            // as text would report success while typing the literal option.
+            let mut clear = false;
+            let mut delay: Option<u64> = None;
+            let mut text_parts: Vec<&str> = Vec::new();
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i] {
+                    "--clear" => clear = true,
+                    "--delay" => {
+                        let raw = rest.get(i + 1).ok_or_else(|| ParseError::MissingArguments {
+                            context: "type --delay".to_string(),
+                            usage: "type <selector> <text> [--clear] [--delay <ms>]",
+                        })?;
+                        delay = Some(raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("--delay expects a number in ms, got '{}'", raw),
+                            usage: "type <selector> <text> [--clear] [--delay <ms>]",
+                        })?);
+                        i += 1;
+                    }
+                    other => text_parts.push(other),
+                }
+                i += 1;
+            }
+            let mut cmd =
+                json!({ "id": id, "action": "type", "selector": sel, "text": text_parts.join(" ") });
+            if clear {
+                cmd["clear"] = json!(true);
+            }
+            if let Some(ms) = delay {
+                cmd["delay"] = json!(ms);
+            }
+            Ok(cmd)
         }
         "hover" => {
             let sel = rest.first().ok_or_else(|| ParseError::MissingArguments {
@@ -603,6 +657,9 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 match rest[i] {
                     "-i" | "--interactive" => {
                         obj.insert("interactive".to_string(), json!(true));
+                    }
+                    "-u" | "--urls" => {
+                        obj.insert("urls".to_string(), json!(true));
                     }
                     "-c" | "--compact" => {
                         obj.insert("compact".to_string(), json!(true));
@@ -1073,8 +1130,22 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         // === Tabs ===
         "tab" => match rest.first().copied() {
             Some("new") => {
+                if rest.iter().skip(1).any(|arg| *arg == "--label") {
+                    return Err(ParseError::Unsupported {
+                        message: "unsupported_in_moat: tab labels are unavailable; moat uses numeric tab indexes"
+                            .to_string(),
+                    });
+                }
                 let mut cmd = json!({ "id": id, "action": "tab_new" });
                 if let Some(url) = rest.get(1) {
+                    if url.starts_with("--") {
+                        return Err(ParseError::Unsupported {
+                            message: format!(
+                                "unsupported_in_moat: unknown tab new option '{}'; moat uses numeric tab indexes",
+                                url
+                            ),
+                        });
+                    }
                     cmd["url"] = json!(url);
                 }
                 Ok(cmd)
@@ -1082,26 +1153,35 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
             Some("list") => Ok(json!({ "id": id, "action": "tab_list" })),
             Some("close") => {
                 let mut cmd = json!({ "id": id, "action": "tab_close" });
-                if let Some(index) = rest.get(1).and_then(|s| s.parse::<i32>().ok()) {
+                if let Some(value) = rest.get(1) {
+                    let index = value.parse::<i32>().map_err(|_| ParseError::Unsupported {
+                        message: "unsupported_in_moat: tab labels are unavailable; moat uses numeric tab indexes"
+                            .to_string(),
+                    })?;
                     cmd["index"] = json!(index);
                 }
                 Ok(cmd)
             }
             Some("switch") => {
-                let index = rest
-                    .get(1)
-                    .and_then(|s| s.parse::<i32>().ok())
-                    .ok_or_else(|| ParseError::MissingArguments {
-                        context: "tab switch".to_string(),
-                        usage: "tab switch <index>",
-                    })?;
+                let value = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
+                    context: "tab switch".to_string(),
+                    usage: "tab switch <index>",
+                })?;
+                let index = value.parse::<i32>().map_err(|_| ParseError::Unsupported {
+                    message: "unsupported_in_moat: tab labels are unavailable; moat uses numeric tab indexes"
+                        .to_string(),
+                })?;
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
             }
             Some(n) if n.parse::<i32>().is_ok() => {
                 let index = n.parse::<i32>().expect("already checked parse succeeds");
                 Ok(json!({ "id": id, "action": "tab_switch", "index": index }))
             }
-            _ => Ok(json!({ "id": id, "action": "tab_list" })),
+            Some(_) => Err(ParseError::Unsupported {
+                message: "unsupported_in_moat: tab labels are unavailable; moat uses numeric tab indexes"
+                    .to_string(),
+            }),
+            None => Ok(json!({ "id": id, "action": "tab_list" })),
         },
 
         // === Window ===
@@ -1504,10 +1584,42 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
 
         "diff" => parse_diff(&rest, &id),
 
+        // === SPA navigation and runtime init scripts (issue 227) ===
+        "pushstate" => {
+            let url = rest.first().ok_or_else(|| ParseError::MissingArguments {
+                context: "pushstate".to_string(),
+                usage: "pushstate <url>",
+            })?;
+            Ok(json!({ "id": id, "action": "pushstate", "url": url }))
+        }
+        "addinitscript" => {
+            rest.first().ok_or_else(|| ParseError::MissingArguments {
+                context: "addinitscript".to_string(),
+                usage: "addinitscript <script>",
+            })?;
+            Ok(json!({ "id": id, "action": "addinitscript", "script": rest.join(" ") }))
+        }
+        "removeinitscript" => {
+            let identifier = rest.first().ok_or_else(|| ParseError::MissingArguments {
+                context: "removeinitscript".to_string(),
+                usage: "removeinitscript <identifier>",
+            })?;
+            Ok(json!({ "id": id, "action": "removeinitscript", "identifier": identifier }))
+        }
+
         // === Batch ===
         "batch" => {
             let bail = rest.contains(&"--bail");
-            Ok(json!({ "id": id, "action": "batch", "bail": bail }))
+            let commands: Vec<&str> = rest
+                .iter()
+                .filter(|arg| **arg != "--bail")
+                .copied()
+                .collect();
+            let mut cmd = json!({ "id": id, "action": "batch", "bail": bail });
+            if !commands.is_empty() {
+                cmd["commands"] = json!(commands);
+            }
+            Ok(cmd)
         }
 
         _ => Err(ParseError::UnknownCommand {
@@ -1944,6 +2056,25 @@ fn parse_is(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     }
 }
 
+/// Per-locator allowed subactions for semantic `find` locators, matching the
+/// wire contract. The shared LocatorSubaction type is a superset; each locator
+/// only accepts the subset it can execute.
+fn getby_subaction_allowed(locator: &str, action: &str) -> bool {
+    match locator {
+        "role" | "label" => matches!(
+            action,
+            "click" | "fill" | "type" | "check" | "uncheck" | "hover" | "text"
+        ),
+        "placeholder" | "testid" => {
+            matches!(action, "click" | "fill" | "type" | "check" | "hover" | "text")
+        }
+        "text" | "alt" | "title" => {
+            matches!(action, "click" | "fill" | "check" | "hover" | "text")
+        }
+        _ => false,
+    }
+}
+
 fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     const VALID: &[&str] = &[
         "role",
@@ -2013,15 +2144,13 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                             i += 1;
                         }
                         token => {
-                            if matches!(*locator, "first" | "last")
-                                && subaction.is_none()
-                                && NTH_ACTIONS.contains(&token)
-                            {
-                                subaction = Some(token);
-                                i += 1;
-                                continue;
-                            }
+                            // first/last keep the numeric-locator (nth) grammar.
                             if matches!(*locator, "first" | "last") {
+                                if subaction.is_none() && NTH_ACTIONS.contains(&token) {
+                                    subaction = Some(token);
+                                    i += 1;
+                                    continue;
+                                }
                                 if subaction.is_none() {
                                     return Err(ParseError::InvalidValue {
                                         message: format!(
@@ -2048,8 +2177,32 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                                         },
                                     });
                                 }
+                                fill_parts.push(token);
+                                i += 1;
+                                continue;
                             }
-                            fill_parts.push(token);
+                            // Semantic locators: the first recognized action
+                            // token becomes the subaction; the rest is the value.
+                            if subaction.is_none()
+                                && matches!(
+                                    token,
+                                    "click" | "fill" | "type" | "check" | "uncheck" | "hover"
+                                        | "text"
+                                )
+                            {
+                                if !getby_subaction_allowed(*locator, token) {
+                                    return Err(ParseError::InvalidValue {
+                                        message: format!(
+                                            "Unsupported action '{}' for find {}",
+                                            token, locator
+                                        ),
+                                        usage: "find <locator> <value> [action] [text]",
+                                    });
+                                }
+                                subaction = Some(token);
+                            } else {
+                                fill_parts.push(token);
+                            }
                             i += 1;
                         }
                     }
@@ -2075,6 +2228,18 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                 Some(fill_parts.join(" "))
             };
 
+            // Semantic locators reject fill/type without a value before any
+            // send; first/last are validated by the nth grammar above.
+            if !matches!(*locator, "first" | "last")
+                && matches!(subaction, Some("fill") | Some("type"))
+                && fill_value.is_none()
+            {
+                return Err(ParseError::MissingArguments {
+                    context: format!("find {} {}", locator, subaction.unwrap_or_default()),
+                    usage: "find <locator> <value> <action> [text]",
+                });
+            }
+
             match *locator {
                 "role" => {
                     let mut cmd =
@@ -2095,6 +2260,9 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                         json!({ "id": id, "action": "getbytext", "text": value, "exact": exact });
                     if let Some(s) = subaction {
                         cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
                     }
                     Ok(cmd)
                 }
@@ -2124,6 +2292,9 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                     if let Some(s) = subaction {
                         cmd["subaction"] = json!(s);
                     }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
+                    }
                     Ok(cmd)
                 }
                 "title" => {
@@ -2131,6 +2302,9 @@ fn parse_find(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                         json!({ "id": id, "action": "getbytitle", "text": value, "exact": exact });
                     if let Some(s) = subaction {
                         cmd["subaction"] = json!(s);
+                    }
+                    if let Some(v) = fill_value {
+                        cmd["value"] = json!(v);
                     }
                     Ok(cmd)
                 }
@@ -2451,10 +2625,11 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("route") => {
             let url = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
                 context: "network route".to_string(),
-                usage: "network route <url> [--abort|--body <json>]",
+                usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
             })?;
             let mut abort = false;
             let mut body: Option<&str> = None;
+            let mut resource_type: Option<&str> = None;
             let mut i = 2;
             while i < rest.len() {
                 match rest[i] {
@@ -2469,9 +2644,21 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                                     .get(i + 1)
                                     .ok_or_else(|| ParseError::MissingArguments {
                                         context: "network route".to_string(),
-                                        usage: "network route <url> [--abort|--body <json>]",
+                                        usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
                                     })?,
                             );
+                        i += 2;
+                    }
+                    "--resource-type" | "--resource-types" => {
+                        let value = rest
+                            .get(i + 1)
+                            .copied()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| ParseError::MissingArguments {
+                                context: "network route".to_string(),
+                                usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
+                            })?;
+                        resource_type = Some(value);
                         i += 2;
                     }
                     "--headers" => {
@@ -2488,20 +2675,20 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                     {
                         return Err(ParseError::Unsupported {
                             message: format!(
-                                "unsupported_in_moat: network route {option} is unavailable; use only --abort or --body"
+                                "unsupported_in_moat: network route {option} is unavailable; use only --abort, --body, or --resource-type"
                             ),
                         });
                     }
                     option if option.starts_with("--") => {
                         return Err(ParseError::InvalidValue {
                             message: format!("Unknown network route option: {option}"),
-                            usage: "network route <url> [--abort|--body <json>]",
+                            usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
                         });
                     }
                     argument => {
                         return Err(ParseError::InvalidValue {
                             message: format!("Unexpected network route argument: {argument}"),
-                            usage: "network route <url> [--abort|--body <json>]",
+                            usage: "network route <url> [--abort|--body <json>] [--resource-type <csv>]",
                         });
                     }
                 }
@@ -2509,6 +2696,9 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             let mut cmd = json!({ "id": id, "action": "route", "url": url, "abort": abort });
             if let Some(body) = body {
                 cmd["body"] = json!(body);
+            }
+            if let Some(resource_type) = resource_type {
+                cmd["resourceType"] = json!(resource_type);
             }
             Ok(cmd)
         }
@@ -2646,7 +2836,25 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("har") => {
             const HAR_VALID: &[&str] = &["start", "stop"];
             match rest.get(1).copied() {
-                Some("start") => Ok(json!({ "id": id, "action": "har_start" })),
+                Some("start") => {
+                    let mut cmd = json!({ "id": id, "action": "har_start" });
+                    if let Some(content_idx) = rest.iter().position(|&s| s == "--content") {
+                        let mode = rest.get(content_idx + 1).ok_or_else(|| {
+                            ParseError::MissingArguments {
+                                context: "network har start --content".to_string(),
+                                usage: "network har start [--content <all|text|none>]",
+                            }
+                        })?;
+                        if !["all", "text", "none"].contains(mode) {
+                            return Err(ParseError::InvalidValue {
+                                message: format!("Invalid --content mode '{}'", mode),
+                                usage: "network har start [--content <all|text|none>]",
+                            });
+                        }
+                        cmd["content"] = json!(mode);
+                    }
+                    Ok(cmd)
+                }
                 Some("stop") => {
                     let mut cmd = json!({ "id": id, "action": "har_stop" });
                     if let Some(path) = rest.get(2) {
@@ -2726,6 +2934,40 @@ fn parse_storage(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     }
 }
 
+/// Split an inline batch command into argv while honoring shell quotes and
+/// backslash escapes. Batch never passes the raw string to the Controller.
+pub fn shell_words_split(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !in_single => {
+                if let Some(&next) = chars.peek() {
+                    chars.next();
+                    current.push(next);
+                }
+            }
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            c if c.is_whitespace() && !in_double && !in_single => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2779,6 +3021,7 @@ mod tests {
             screenshot_quality: None,
             screenshot_format: None,
             idle_timeout: None,
+            default_timeout: None,
             no_auto_dialog: false,
         }
     }
@@ -3481,9 +3724,12 @@ mod tests {
 
     #[test]
     fn test_wait_timeout() {
+        // Post-#237, a bare millisecond argument is a fixed-duration sleep
+        // (`time`), distinct from the `--timeout` condition budget.
         let cmd = parse_command(&args("wait 5000"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "wait");
-        assert_eq!(cmd["timeout"], 5000);
+        assert_eq!(cmd["time"], 5000);
+        assert!(cmd.get("timeout").is_none());
     }
 
     #[test]
@@ -4805,5 +5051,308 @@ mod tests {
         let cmd = parse_command(&args("batch --bail"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "batch");
         assert_eq!(cmd["bail"], true);
+    }
+
+    // === Issue #224 re-integration: parser wire-JSON coverage ===
+
+    #[test]
+    fn test_type_clear_and_delay_are_command_options() {
+        let cmd = parse_command(
+            &args("type #input some text --clear --delay 300"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "type");
+        assert_eq!(cmd["selector"], "#input");
+        assert_eq!(cmd["text"], "some text");
+        assert_eq!(cmd["clear"], true);
+        assert_eq!(cmd["delay"], 300);
+    }
+
+    #[test]
+    fn test_type_delay_missing_value_is_an_error() {
+        let result = parse_command(&args("type #input text --delay"), &default_flags());
+        assert!(matches!(
+            result,
+            Err(ParseError::MissingArguments { context, .. }) if context == "type --delay"
+        ));
+    }
+
+    #[test]
+    fn test_type_delay_rejects_negative_value() {
+        let result = parse_command(&args("type #input text --delay -1"), &default_flags());
+        assert!(matches!(result, Err(ParseError::InvalidValue { .. })));
+    }
+
+    #[test]
+    fn test_type_keeps_unknown_options_in_text() {
+        let cmd = parse_command(&args("type #input text --literal"), &default_flags()).unwrap();
+        assert_eq!(cmd["text"], "text --literal");
+        assert!(cmd.get("clear").is_none());
+        assert!(cmd.get("delay").is_none());
+    }
+
+    #[test]
+    fn test_snapshot_urls_long_and_short() {
+        let long = parse_command(&args("snapshot -i --urls"), &default_flags()).unwrap();
+        assert_eq!(long["action"], "snapshot");
+        assert_eq!(long["interactive"], true);
+        assert_eq!(long["urls"], true);
+
+        let short = parse_command(&args("snapshot -u"), &default_flags()).unwrap();
+        assert_eq!(short["urls"], true);
+    }
+
+    #[test]
+    fn test_network_route_body_and_resource_type() {
+        let input = vec![
+            "network".to_string(),
+            "route".to_string(),
+            "**/json".to_string(),
+            "--body".to_string(),
+            r#"{"mock":true}"#.to_string(),
+            "--resource-type".to_string(),
+            "XHR, Fetch".to_string(),
+        ];
+        let cmd = parse_command(&input, &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "route");
+        assert_eq!(cmd["url"], "**/json");
+        assert_eq!(cmd["abort"], false);
+        assert_eq!(cmd["body"], r#"{"mock":true}"#);
+        assert_eq!(cmd["resourceType"], "XHR, Fetch");
+        assert!(cmd.get("response").is_none());
+    }
+
+    #[test]
+    fn test_network_route_resource_type_alias() {
+        let cmd = parse_command(
+            &args("network route **/json --resource-types xhr,fetch"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["resourceType"], "xhr,fetch");
+    }
+
+    #[test]
+    fn test_network_route_requires_body_and_resource_type_values() {
+        assert!(matches!(
+            parse_command(&args("network route **/json --body"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+        assert!(matches!(
+            parse_command(&args("network route **/json --resource-type"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+    }
+
+    #[test]
+    fn test_network_route_still_rejects_237_disallowed_options() {
+        for option in ["--status", "--delay", "--headers"] {
+            let result = parse_command(
+                &args(&format!("network route **/json {option} x")),
+                &default_flags(),
+            );
+            assert!(matches!(result, Err(ParseError::Unsupported { .. })), "{option}");
+        }
+    }
+
+    #[test]
+    fn test_network_har_start_content_modes() {
+        for mode in ["text", "all", "none"] {
+            let cmd = parse_command(
+                &args(&format!("network har start --content {mode}")),
+                &default_flags(),
+            )
+            .unwrap();
+            assert_eq!(cmd["action"], "har_start");
+            assert_eq!(cmd["content"], mode);
+        }
+    }
+
+    #[test]
+    fn test_network_har_start_defaults_to_controller_mode() {
+        let cmd = parse_command(&args("network har start"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "har_start");
+        assert!(cmd.get("content").is_none());
+    }
+
+    #[test]
+    fn test_network_har_start_rejects_invalid_and_missing_content() {
+        assert!(matches!(
+            parse_command(&args("network har start --content binary"), &default_flags()),
+            Err(ParseError::InvalidValue { .. })
+        ));
+        assert!(matches!(
+            parse_command(&args("network har start --content"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+    }
+
+    #[test]
+    fn test_find_text_subaction_forwards_value() {
+        let cmd =
+            parse_command(&args("find text Probe fill hello --exact"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "getbytext");
+        assert_eq!(cmd["text"], "Probe");
+        assert_eq!(cmd["subaction"], "fill");
+        assert_eq!(cmd["value"], "hello");
+        assert_eq!(cmd["exact"], true);
+    }
+
+    #[test]
+    fn test_find_alt_and_title_subactions_forward_values() {
+        let alt = parse_command(&args("find alt Alt fill alternate"), &default_flags()).unwrap();
+        assert_eq!(alt["action"], "getbyalttext");
+        assert_eq!(alt["subaction"], "fill");
+        assert_eq!(alt["value"], "alternate");
+
+        let title = parse_command(&args("find title Title fill titled"), &default_flags()).unwrap();
+        assert_eq!(title["action"], "getbytitle");
+        assert_eq!(title["subaction"], "fill");
+        assert_eq!(title["value"], "titled");
+    }
+
+    #[test]
+    fn test_find_check_and_hover_subactions() {
+        let check = parse_command(&args("find role checkbox check"), &default_flags()).unwrap();
+        assert_eq!(check["action"], "getbyrole");
+        assert_eq!(check["subaction"], "check");
+
+        let hover = parse_command(&args("find text Menu hover"), &default_flags()).unwrap();
+        assert_eq!(hover["action"], "getbytext");
+        assert_eq!(hover["subaction"], "hover");
+
+        let read = parse_command(&args("find label Email text"), &default_flags()).unwrap();
+        assert_eq!(read["action"], "getbylabel");
+        assert_eq!(read["subaction"], "text");
+    }
+
+    #[test]
+    fn test_find_fill_and_type_require_value() {
+        assert!(matches!(
+            parse_command(&args("find role textbox fill"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+        assert!(matches!(
+            parse_command(&args("find placeholder Email type"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+    }
+
+    #[test]
+    fn test_find_rejects_unsupported_action_for_locator() {
+        // getbytext does not support `type` or `uncheck`.
+        assert!(matches!(
+            parse_command(&args("find text Probe type value"), &default_flags()),
+            Err(ParseError::InvalidValue { .. })
+        ));
+        assert!(matches!(
+            parse_command(&args("find placeholder Email uncheck"), &default_flags()),
+            Err(ParseError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn test_pushstate_addinitscript_removeinitscript_wire() {
+        let pushstate = parse_command(&args("pushstate /dashboard"), &default_flags()).unwrap();
+        assert_eq!(pushstate["action"], "pushstate");
+        assert_eq!(pushstate["url"], "/dashboard");
+
+        let add = parse_command(
+            &args("addinitscript window.__moat_init = 42"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(add["action"], "addinitscript");
+        assert_eq!(add["script"], "window.__moat_init = 42");
+
+        let remove = parse_command(&args("removeinitscript abc-123"), &default_flags()).unwrap();
+        assert_eq!(remove["action"], "removeinitscript");
+        assert_eq!(remove["identifier"], "abc-123");
+    }
+
+    #[test]
+    fn test_pushstate_and_addinitscript_require_argument() {
+        assert!(matches!(
+            parse_command(&args("pushstate"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+        assert!(matches!(
+            parse_command(&args("addinitscript"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+        assert!(matches!(
+            parse_command(&args("removeinitscript"), &default_flags()),
+            Err(ParseError::MissingArguments { .. })
+        ));
+    }
+
+    #[test]
+    fn test_tab_label_is_unsupported_without_creating_a_tab() {
+        let error = parse_command(&args("tab new --label docs"), &default_flags()).unwrap_err();
+        assert!(matches!(error, ParseError::Unsupported { .. }));
+        assert!(error.format().contains("unsupported_in_moat"));
+
+        let switch_label =
+            parse_command(&args("tab switch docs"), &default_flags()).unwrap_err();
+        assert!(matches!(switch_label, ParseError::Unsupported { .. }));
+
+        let bare_label = parse_command(&args("tab docs"), &default_flags()).unwrap_err();
+        assert!(matches!(bare_label, ParseError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn test_batch_inline_commands_are_collected() {
+        let cmd_args = vec![
+            "batch".to_string(),
+            "get title".to_string(),
+            "eval 'document.title = \"continued\"'".to_string(),
+        ];
+        let cmd = parse_command(&cmd_args, &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "batch");
+        assert_eq!(
+            cmd["commands"],
+            json!(["get title", "eval 'document.title = \"continued\"'"])
+        );
+    }
+
+    #[test]
+    fn test_batch_without_inline_uses_stdin_path() {
+        // No inline args -> no `commands` array, so run_batch reads stdin JSON.
+        let cmd = parse_command(&args("batch --bail"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "batch");
+        assert_eq!(cmd["bail"], true);
+        assert!(cmd.get("commands").is_none());
+    }
+
+    #[test]
+    fn test_shell_words_split_preserves_quoted_script() {
+        assert_eq!(
+            shell_words_split("eval 'document.title = \"continued\"'"),
+            vec!["eval", "document.title = \"continued\""]
+        );
+    }
+
+    #[test]
+    fn test_default_timeout_injects_only_without_explicit_or_fixed_duration() {
+        let mut flags = default_flags();
+        flags.default_timeout = Some(100);
+
+        // Condition waits inherit the default.
+        let cond = parse_command(&args("wait --fn false"), &flags).unwrap();
+        assert_eq!(cond["action"], "waitforfunction");
+        assert_eq!(cond["timeout"], 100);
+
+        let selector = parse_command(&args("wait #ready"), &flags).unwrap();
+        assert_eq!(selector["timeout"], 100);
+
+        // Explicit --timeout wins.
+        let explicit = parse_command(&args("wait --fn false --timeout 2000"), &flags).unwrap();
+        assert_eq!(explicit["timeout"], 2000);
+
+        // Fixed-duration sleep is not a condition budget: no timeout injected.
+        let fixed = parse_command(&args("wait 5000"), &flags).unwrap();
+        assert_eq!(fixed["time"], 5000);
+        assert!(fixed.get("timeout").is_none());
     }
 }

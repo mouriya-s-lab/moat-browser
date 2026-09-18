@@ -43,6 +43,23 @@ export type NavigateResult = {
   readonly title: string;
 };
 
+export type PushStateResult = {
+  readonly _tag: "PushStateResult";
+  readonly url: string;
+};
+
+export type AddInitScriptResult = {
+  readonly _tag: "AddInitScriptResult";
+  readonly added: true;
+  readonly identifier: string;
+};
+
+export type RemoveInitScriptResult = {
+  readonly _tag: "RemoveInitScriptResult";
+  readonly removed: true;
+  readonly identifier: string;
+};
+
 export type VoidResult = {
   readonly _tag: "VoidResult";
 };
@@ -420,6 +437,8 @@ export type NetworkRequestDetailResult = {
   readonly request: NetworkRequestEntry;
 };
 
+export type HarContentMode = "all" | "text" | "none";
+
 export type NetworkArtifactResult =
   | {
       readonly _tag: "NetworkArtifactResult";
@@ -749,6 +768,9 @@ export type BatchResult = {
 };
 export type CommandResultData =
   | NavigateResult
+  | PushStateResult
+  | AddInitScriptResult
+  | RemoveInitScriptResult
   | VoidResult
   | ScrollResult
   | LocatorResult
@@ -934,6 +956,17 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
 
 // ─── BrowserCommand ───
 
+// ─── LocatorSubaction ───
+
+export type LocatorSubaction =
+  | "click"
+  | "fill"
+  | "type"
+  | "check"
+  | "uncheck"
+  | "hover"
+  | "text";
+
 export type NthSubaction =
   | "click"
   | "fill"
@@ -948,6 +981,7 @@ export type NthSubaction =
 export type BrowserCommand =
   // 导航
   | { readonly action: "navigate"; readonly url: string; readonly waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" | "none"; readonly headers?: Readonly<Record<string, string>> }
+  | { readonly action: "pushstate"; readonly url: string }
   | { readonly action: "back" }
   | { readonly action: "forward" }
   | { readonly action: "reload" }
@@ -956,13 +990,17 @@ export type BrowserCommand =
   | { readonly action: "waitforloadstate"; readonly state: string; readonly timeout?: number }
   | { readonly action: "waitforfunction"; readonly expression: string; readonly timeout?: number }
 
+  // Page initialization scripts (current tab, future documents only)
+  | { readonly action: "addinitscript"; readonly script: string }
+  | { readonly action: "removeinitscript"; readonly identifier: string }
+
   // 语义定位器
   | {
       readonly action: "getbyrole";
       readonly role: string;
       readonly name?: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+      readonly subaction?: LocatorSubaction;
       readonly value?: string;
       readonly nth?: number;
     }
@@ -970,49 +1008,52 @@ export type BrowserCommand =
       readonly action: "getbylabel";
       readonly label: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "fill" | "type" | "check" | "uncheck" | "hover";
+      readonly subaction?: LocatorSubaction;
       readonly value?: string;
     }
   | {
       readonly action: "getbyplaceholder";
       readonly placeholder: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "fill" | "type";
+      readonly subaction?: "click" | "fill" | "type" | "check" | "hover" | "text";
       readonly value?: string;
     }
   | {
       readonly action: "getbytext";
       readonly text: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "hover";
+      readonly subaction?: "click" | "fill" | "check" | "hover" | "text";
+      readonly value?: string;
     }
   | {
       readonly action: "getbyalttext";
       readonly text: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "hover";
+      readonly subaction?: "click" | "fill" | "check" | "hover" | "text";
+      readonly value?: string;
     }
   | {
       readonly action: "getbytitle";
       readonly text: string;
       readonly exact?: boolean;
-      readonly subaction?: "click" | "hover";
+      readonly subaction?: "click" | "fill" | "check" | "hover" | "text";
+      readonly value?: string;
     }
   | {
       readonly action: "getbytestid";
       readonly testId: string;
-      readonly subaction?: "click" | "fill" | "type";
+      readonly subaction?: "click" | "fill" | "type" | "check" | "hover" | "text";
       readonly value?: string;
     }
 
   // @eN 引用 / CSS selector 操作
   | { readonly action: "click"; readonly ref?: string; readonly selector?: string; readonly newTab?: boolean }
   | { readonly action: "fill"; readonly ref?: string; readonly selector?: string; readonly value: string }
-  | { readonly action: "type"; readonly ref?: string; readonly selector?: string; readonly text: string }
+  | { readonly action: "type"; readonly ref?: string; readonly selector?: string; readonly text: string; readonly clear?: boolean; readonly delay?: number }
   | { readonly action: "hover"; readonly ref?: string; readonly selector?: string }
 
   // 页面信息
-  | { readonly action: "snapshot"; readonly selector?: string; readonly ref?: string; readonly interactive?: boolean; readonly compact?: boolean; readonly maxDepth?: number }
+  | { readonly action: "snapshot"; readonly selector?: string; readonly ref?: string; readonly interactive?: boolean; readonly compact?: boolean; readonly maxDepth?: number; readonly urls?: boolean }
   | { readonly action: "screenshot"; readonly format?: "png" | "jpeg"; readonly quality?: number; readonly selector?: string; readonly ref?: string; readonly fullPage?: boolean; readonly annotate?: boolean }
   | { readonly action: "eval"; readonly code: string }
 
@@ -1078,7 +1119,7 @@ export type BrowserCommand =
   | { readonly action: "storage_get"; readonly type: "local" | "session"; readonly key?: string }
   | { readonly action: "storage_set"; readonly type: "local" | "session"; readonly key: string; readonly value: string }
   | { readonly action: "storage_clear"; readonly type: "local" | "session" }
-  | { readonly action: "route"; readonly url: string; readonly abort: boolean; readonly body?: string }
+  | { readonly action: "route"; readonly url: string; readonly abort: boolean; readonly body?: string; readonly resourceType?: string }
   | { readonly action: "unroute"; readonly url?: string }
   | {
       readonly action: "requests";
@@ -1120,7 +1161,7 @@ export type BrowserCommand =
   | { readonly action: "trace_stop" }
   | { readonly action: "profiler_start"; readonly categories?: ReadonlyArray<string> }
   | { readonly action: "profiler_stop" }
-  | { readonly action: "har_start" }
+  | { readonly action: "har_start"; readonly content?: HarContentMode }
   | { readonly action: "har_stop" }
   | {
       readonly action: "network_artifact_read";
@@ -1335,6 +1376,7 @@ const browserCommandSchema = type({
   "waitUntil?": "'load' | 'domcontentloaded' | 'networkidle' | 'commit' | 'none'",
   "headers?": type("Record<string, string>"),
 })
+  .or({ action: "'pushstate'", url: "string" })
   .or({ action: "'back'" })
   .or({ action: "'forward'" })
   .or({ action: "'reload'" })
@@ -1342,12 +1384,14 @@ const browserCommandSchema = type({
   .or({ action: "'waitforurl'", url: "string", "timeout?": "number" })
   .or({ action: "'waitforloadstate'", state: "string", "timeout?": "number" })
   .or({ action: "'waitforfunction'", expression: "string", "timeout?": "number" })
+  .or({ action: "'addinitscript'", script: "string" })
+  .or({ action: "'removeinitscript'", identifier: "string" })
   .or({
     action: "'getbyrole'",
     role: "string",
     "name?": "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover' | 'text'",
     "value?": "string",
     "nth?": "number",
   })
@@ -1355,7 +1399,7 @@ const browserCommandSchema = type({
   .or({ action: "'trace_stop'" })
   .or({ action: "'profiler_start'", "categories?": "string[]" })
   .or({ action: "'profiler_stop'" })
-  .or({ action: "'har_start'" })
+  .or({ action: "'har_start'", "content?": "'all' | 'text' | 'none'" })
   .or({ action: "'har_stop'" })
   .or({
     action: "'network_artifact_read'",
@@ -1367,45 +1411,48 @@ const browserCommandSchema = type({
     action: "'getbylabel'",
     label: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'uncheck' | 'hover' | 'text'",
     "value?": "string",
   })
   .or({
     action: "'getbyplaceholder'",
     placeholder: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'fill' | 'type'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'hover' | 'text'",
     "value?": "string",
   })
   .or({
     action: "'getbytext'",
     text: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'check' | 'hover' | 'text'",
+    "value?": "string",
   })
   .or({
     action: "'getbyalttext'",
     text: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'check' | 'hover' | 'text'",
+    "value?": "string",
   })
   .or({
     action: "'getbytitle'",
     text: "string",
     "exact?": "boolean",
-    "subaction?": "'click' | 'hover'",
+    "subaction?": "'click' | 'fill' | 'check' | 'hover' | 'text'",
+    "value?": "string",
   })
   .or({
     action: "'getbytestid'",
     testId: "string",
-    "subaction?": "'click' | 'fill' | 'type'",
+    "subaction?": "'click' | 'fill' | 'type' | 'check' | 'hover' | 'text'",
     "value?": "string",
   })
   .or({ action: "'click'", "ref?": "string", "selector?": "string", "newTab?": "boolean" })
   .or({ action: "'fill'", "ref?": "string", "selector?": "string", value: "string" })
-  .or({ action: "'type'", "ref?": "string", "selector?": "string", text: "string" })
+  .or({ action: "'type'", "ref?": "string", "selector?": "string", text: "string", "clear?": "boolean", "delay?": "number.integer >= 0" })
   .or({ action: "'hover'", "ref?": "string", "selector?": "string" })
-  .or({ action: "'snapshot'", "selector?": "string", "ref?": "string", "interactive?": "boolean", "compact?": "boolean", "maxDepth?": "number.integer >= 0" })
+  .or({ action: "'snapshot'", "selector?": "string", "ref?": "string", "interactive?": "boolean", "compact?": "boolean", "maxDepth?": "number.integer >= 0", "urls?": "boolean" })
   .or({
     action: "'screenshot'",
     "format?": "'png' | 'jpeg'",
@@ -1469,7 +1516,7 @@ const browserCommandSchema = type({
   .or({ action: "'storage_get'", type: "'local' | 'session'", "key?": "string" })
   .or({ action: "'storage_set'", type: "'local' | 'session'", key: "string", value: "string" })
   .or({ action: "'storage_clear'", type: "'local' | 'session'" })
-  .or({ action: "'route'", url: "string", abort: "boolean", "body?": "string" })
+  .or({ action: "'route'", url: "string", abort: "boolean", "body?": "string", "resourceType?": "string" })
   .or({ action: "'unroute'", "url?": "string" })
   .or({
     action: "'requests'",
