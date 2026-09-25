@@ -105,7 +105,7 @@ chown -R 1000:1000 /data/profile
 | `NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD` | `<admin-pw>` | 管理员密码（可控制键鼠） |
 | `NEKO_WEBRTC_EPR` | `52000-52100` | WebRTC 端口范围 |
 | `NEKO_WEBRTC_ICELITE` | `1` | 轻量 ICE agent（同 LAN 无需 STUN/TURN） |
-| `NEKO_WEBRTC_NAT1TO1` | 宿主 LAN IP（VM 104：`192.168.1.221`） | WebRTC 客户端可达的宿主地址（用于 ICE candidate） |
+| `NEKO_WEBRTC_NAT1TO1` | WebRTC 客户端可达的宿主地址（生产取值见 `stacks/moat-browser/compose.yaml`） | 写入 ICE candidate 的地址 |
 
 ### 1.9 关键约束
 
