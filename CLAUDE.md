@@ -12,7 +12,7 @@
 
 | Repo | Role | Relationship |
 |---|---|---|
-| homelab-tf (`~/work/homelab-tf`) | IaC (OpenTofu + Ansible + Komodo) | Browser VM 104 (192.168.1.211) 的 Komodo Stack 与 CI/CD 部署入口 |
+| homelab-tf (`~/work/homelab-tf`) | IaC (OpenTofu + Ansible + Komodo) | Browser VM 104 (`browser.hb.lan`, 192.168.1.221) 的 Komodo Stack 与 CI/CD 部署入口 |
 
 ## Issues
 
@@ -84,14 +84,12 @@ moat-browser/
 - Rust 构建: `cd cli && cargo build --release`
 - Rust 测试: `cd cli && cargo test`
 - 与 upstream agent-browser 同步: `cd cli && git fetch upstream && git merge upstream/main`（仅 `connection.rs` 和新增 session 命令会产生冲突）
-- Docker: 已迁移到 Komodo (km)，不再手动 docker build/compose
-  - 构建: `km x run-build moat-user-chrome` / `moat-agent-chrome` / `moat-controller`
-  - 部署: `km x deploy-stack moat-browser`
-  - 一键: `km x run-procedure moat-build-deploy`
+- Docker: 构建与部署由 `v*` tag 触发 `.github/workflows/deploy.yml`（self-hosted runner 构建并推送 controller / user-chrome / agent-chrome 镜像，再经 Komodo API 执行 `moat-browser` stack 的 UpdateStack + DeployStack），不手动 docker build/compose 上线
+  - agent-chrome 必须以仓库根目录为 context 构建：`docker build --platform linux/amd64 -f images/agent-chrome/Dockerfile .`（Chrome 版本从 Patchright 锚派生，见 README §11.4）
 
 ## Target Environment
 
-- VM 104 at 192.168.1.211 (Browser server, Komodo managed)
+- VM 104 at `browser.hb.lan` (192.168.1.221; Browser server, Komodo managed)
 - Docker ready, Bun installed
 - CPU: host (Bun hangs on qemu64)
 

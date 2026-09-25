@@ -104,7 +104,7 @@ chown -R 1000:1000 /data/profile
 | `NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD` | `<admin-pw>` | 管理员密码（可控制键鼠） |
 | `NEKO_WEBRTC_EPR` | `52000-52100` | WebRTC 端口范围 |
 | `NEKO_WEBRTC_ICELITE` | `1` | 轻量 ICE agent（同 LAN 无需 STUN/TURN） |
-| `NEKO_WEBRTC_NAT1TO1` | `192.168.1.211` | VM 外部 IP（用于 ICE candidate） |
+| `NEKO_WEBRTC_NAT1TO1` | 宿主 LAN IP（VM 104：`192.168.1.221`） | WebRTC 客户端可达的宿主地址（用于 ICE candidate） |
 
 ### 1.9 关键约束
 
@@ -143,7 +143,7 @@ debian:bookworm-slim
 |------|------|------|
 | Xorg + xserver-xorg-video-dummy | Debian 包，xorg.conf 参考 neko | 无头 X11 显示（Chrome for Testing 需要） |
 | openbox | Debian 包 | 轻量窗口管理 |
-| Chrome for Testing | Playwright CDN | 替代 Debian Chromium，CDP 实现正确 |
+| Chrome for Testing | Google CfT 存储（chrome-for-testing-public） | 替代 Debian Chromium，CDP 实现正确；版本由 Patchright 锚派生（§2.5） |
 | supervisord | Debian 包 | 进程编排 |
 | fonts-liberation + fonts-noto-cjk | Debian 包 | 西文 + 中日韩字体 |
 
@@ -151,36 +151,16 @@ debian:bookworm-slim
 
 ### 2.5 Chrome for Testing 安装
 
-从 Playwright CDN 下载，与 Patchright 版本匹配（见 README §11.4）：
+版本不在任何地方手写，而是在镜像构建内从 Patchright 派生（README §11.4）：
 
-```dockerfile
-# Patchright 1.57.0 = Chrome 143.0.7499
-ARG CHROME_VERSION=143.0.7499.0
+1. `chrome-anchor` 阶段运行 `images/chrome-anchor.mjs`：读取 `packages/controller/package.json` 中 `patchright` 的精确版本 → 该版本对 `patchright-core` 的精确依赖 → `patchright-core` 包内 `browsers.json` 的 chromium `browserVersion`。任一环节不是精确版本，或读取失败，构建即失败。
+2. `chrome-for-testing` 阶段按该版本下载 `chrome-for-testing-public/<version>/linux64/chrome-linux64.zip`，解压到 `/opt/chrome`；下载失败构建即失败，不回退到其他版本。
+3. 最终镜像只拷贝 `/opt/chrome`，并链接 `/usr/local/bin/chrome`。
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates unzip \
-    # X11 依赖
-    xserver-xorg-video-dummy xserver-xorg-core xinit \
-    # 窗口管理
-    openbox \
-    # Chrome 依赖库
-    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
-    libxss1 libxtst6 libnss3 libnspr4 libatk1.0-0 \
-    libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 \
-    libpango-1.0-0 libcairo2 libasound2 libdbus-1-3 \
-    # 字体
-    fonts-liberation fonts-noto-cjk \
-    # 进程管理
-    supervisor \
-    && rm -rf /var/lib/apt/lists/*
+镜像没有版本构建参数；升级 Chrome 的唯一方式是改 Patchright 的 pin 并更新 `bun.lock`。构建必须以仓库根目录为 context：
 
-# 下载 Chrome for Testing
-RUN curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" \
-    -o /tmp/chrome.zip \
-    && unzip /tmp/chrome.zip -d /opt/ \
-    && mv /opt/chrome-linux64 /opt/chrome \
-    && rm /tmp/chrome.zip \
-    && ln -s /opt/chrome/chrome /usr/local/bin/chrome
+```bash
+docker build --platform linux/amd64 -f images/agent-chrome/Dockerfile .
 ```
 
 ### 2.6 非 root 用户
@@ -225,85 +205,21 @@ Section "Monitor"
 EndSection
 ```
 
-### 2.8 Chrome 启动参数
+### 2.8 Chrome 启动参数与 supervisord
 
-```bash
-chrome \
-  --no-sandbox \
-  --disable-gpu \
-  --disable-dev-shm-usage \
-  --remote-debugging-address=0.0.0.0 \
-  --remote-debugging-port=9222 \
-  --user-data-dir=/data/profile \
-  --window-size=1920,1080 \
-  --no-first-run \
-  --no-default-browser-check \
-  --disable-translate \
-  --disable-blink-features=AutomationControlled \
-  --disable-infobars
-```
+唯一实现是 `images/agent-chrome/supervisord.conf`，本文不再保存副本，只说明设计要点：
 
-参数说明：
-
-| 参数 | 原因 |
+| 要点 | 原因 |
 |------|------|
 | `--no-sandbox` | Docker 容器内 zygote 沙箱需要特权（见 README §11.2） |
-| `--disable-gpu` | 容器内无 GPU |
-| `--disable-dev-shm-usage` | 使用 /tmp 替代 /dev/shm，避免 64MB 限制 |
-| `--remote-debugging-address=0.0.0.0` | 允许 Controller 从容器外连接 CDP |
-| `--remote-debugging-port=9222` | CDP 端口 |
+| `--disable-gpu`、`--disable-dev-shm-usage` | 容器内无 GPU；避开 64MB `/dev/shm` 限制 |
 | `--user-data-dir=/data/profile` | 从 user-chrome 拷贝来的 profile |
-| `--no-first-run` | 跳过首次运行向导 |
-| `--disable-blink-features=AutomationControlled` | 隐藏 `navigator.webdriver=true`（Patchright 额外加固） |
-| `--disable-infobars` | 移除 "Chrome is being controlled" 提示条 |
+| `--disable-blink-features=AutomationControlled`、`--disable-infobars` | 隐藏自动化痕迹（Patchright 额外加固） |
+| Chrome 监听 `127.0.0.1:9223`，socat（`cdp-proxy`）把 `0.0.0.0:9222` 转发过去 | Chrome 111+ 无视 `--remote-debugging-address=0.0.0.0`，只在 loopback 监听（CVE-2023-2459 的 DNS rebinding 缓解）；Controller 需要从 `moat` 网络访问 `<container-ip>:9222` |
 
-### 2.9 supervisord 配置
+启动顺序：Xorg (100) → openbox (200) → Chrome (300) → cdp-proxy (350)。
 
-`supervisord.conf`:
-
-```ini
-[supervisord]
-nodaemon=true
-logfile=/var/log/supervisord.log
-pidfile=/var/run/supervisord.pid
-user=root
-
-[program:xorg]
-command=/usr/bin/Xorg :0 -config /etc/X11/xorg.conf
-autorestart=true
-priority=100
-user=root
-
-[program:openbox]
-command=/usr/bin/openbox
-environment=DISPLAY=":0"
-autorestart=true
-priority=200
-user=chrome
-
-[program:chrome]
-command=/usr/local/bin/chrome
-    --no-sandbox
-    --disable-gpu
-    --disable-dev-shm-usage
-    --remote-debugging-address=0.0.0.0
-    --remote-debugging-port=9222
-    --user-data-dir=/data/profile
-    --window-size=1920,1080
-    --no-first-run
-    --no-default-browser-check
-    --disable-translate
-    --disable-blink-features=AutomationControlled
-    --disable-infobars
-environment=DISPLAY=":0",HOME="/home/chrome"
-autorestart=true
-priority=300
-user=chrome
-```
-
-启动顺序：Xorg (100) → openbox (200) → Chrome (300)。
-
-### 2.10 端口
+### 2.9 端口
 
 | 端口 | 协议 | 用途 |
 |------|------|------|
@@ -311,7 +227,7 @@ user=chrome
 
 agent-chrome 的 9222 端口不对宿主暴露。Controller 通过 Docker 内部网络直接访问容器 IP:9222；`moat` CLI 不提供该私有地址，`moat get cdp-url` 以 `unsupported_in_moat` 明确拒绝。
 
-### 2.11 卷挂载
+### 2.10 卷挂载
 
 | 容器路径 | 宿主路径 | 用途 |
 |---------|---------|------|
@@ -324,7 +240,7 @@ cp -a /data/profile /data/profiles/agent-<session-id>
 chown -R 1000:1000 /data/profiles/agent-<session-id>
 ```
 
-### 2.12 CDP 就绪检测
+### 2.11 CDP 就绪检测
 
 Controller 创建容器后，需要轮询 CDP 端口直到就绪：
 
@@ -332,55 +248,15 @@ Controller 创建容器后，需要轮询 CDP 端口直到就绪：
 GET http://<container-ip>:9222/json/version
 ```
 
-返回 200 + JSON（含 `webSocketDebuggerUrl`）即表示 Chrome 已启动并可通过 CDP 操控。Controller 随后调用：
+返回 200 + JSON 表示 Chrome 已启动。Controller 随即解析其中的 `Browser` 字段（如 `Chrome/<version>`），与自身安装的 `patchright-core` 的 `browsers.json` 版本比对（controller 启动时读取，读取失败即以 78 退出）。版本不符或无法解析时，本次 session 以 `BrowserVersionMismatch` 失败（错误文本带期望版本与实际观测值），容器、profile 副本和配额按注册失败路径回收。版本相符才调用：
 
 ```typescript
 patchright.chromium.connectOverCDP(`http://<container-ip>:9222`)
 ```
 
-### 2.13 完整 Dockerfile
+### 2.12 Dockerfile
 
-```dockerfile
-FROM debian:bookworm-slim
-
-ARG CHROME_VERSION=143.0.7499.0
-
-# 系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates unzip \
-    xserver-xorg-video-dummy xserver-xorg-core xinit \
-    openbox \
-    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
-    libxss1 libxtst6 libnss3 libnspr4 libatk1.0-0 \
-    libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 \
-    libpango-1.0-0 libcairo2 libasound2 libdbus-1-3 \
-    fonts-liberation fonts-noto-cjk \
-    supervisor \
-    && rm -rf /var/lib/apt/lists/*
-
-# Chrome for Testing
-RUN curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" \
-    -o /tmp/chrome.zip \
-    && unzip /tmp/chrome.zip -d /opt/ \
-    && mv /opt/chrome-linux64 /opt/chrome \
-    && rm /tmp/chrome.zip \
-    && ln -s /opt/chrome/chrome /usr/local/bin/chrome
-
-# 非 root 用户 (UID 1000，与 neko 一致)
-RUN groupadd -g 1000 chrome \
-    && useradd -m -u 1000 -g chrome chrome
-
-# Profile 挂载点
-RUN mkdir -p /data/profile && chown chrome:chrome /data/profile
-
-# 配置文件
-COPY xorg.conf /etc/X11/xorg.conf
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-
-EXPOSE 9222
-
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
-```
+唯一实现是 `images/agent-chrome/Dockerfile`（配合 `images/chrome-anchor.mjs`、`images/agent-chrome/xorg.conf`、`images/agent-chrome/supervisord.conf`），本文不再保存副本。组件与构建阶段见 §2.4、§2.5。
 
 ---
 
@@ -478,60 +354,11 @@ DELETE /containers/<id>
 
 ### 3.5 docker-compose（开发/E2E 环境）
 
-```yaml
-services:
-  user-chrome:
-    build: ./images/user-chrome
-    shm_size: "2gb"
-    cap_add:
-      - SYS_ADMIN
-    ports:
-      - "8080:8080"
-      - "52000-52100:52000-52100/udp"
-    volumes:
-      - profile-data:/home/neko/.config/chromium
-    environment:
-      NEKO_DESKTOP_SCREEN: "1920x1080@30"
-      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: neko
-      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: admin
-      NEKO_WEBRTC_EPR: "52000-52100"
-      NEKO_WEBRTC_ICELITE: "1"
-      NEKO_WEBRTC_NAT1TO1: "192.168.1.211"
-    networks:
-      - moat
+唯一实现是 `packages/e2e/docker-compose.test.yml`，本文不再保存副本。设计要点：
 
-  controller:
-    build: ./packages/controller
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - profile-data:/data/profile:ro
-      - profiles-work:/data/profiles
-    ports:
-      - "3000:3000"
-    environment:
-      PROFILE_SOURCE: /data/profile
-      PROFILES_WORK: /data/profiles
-      DOCKER_NETWORK: moat
-      AGENT_CHROME_IMAGE: agent-chrome:latest
-    depends_on:
-      - user-chrome
-    networks:
-      - moat
-
-networks:
-  moat:
-    driver: bridge
-
-volumes:
-  profile-data:
-  profiles-work:
-```
-
-注意：
-- agent-chrome **不在 compose 中定义**。它由 Controller 通过 Docker Engine API 动态创建/销毁
-- Controller 需要挂载 Docker socket 来管理容器
-- `profile-data` 卷同时挂载到 user-chrome（读写）和 Controller（只读，用于 `cp -a` 源）
-- `profiles-work` 是 Controller 创建 agent-chrome profile 拷贝的工作目录
+- user-chrome、controller 常驻；controller 挂载 Docker socket 来管理 agent-chrome，`profile-data` 卷同时挂载到 user-chrome（读写）和 controller（只读，作为 `cp -a` 源），`profiles-work` 是 profile 拷贝的工作目录。
+- compose 中的 agent-chrome 服务只负责按 `images/agent-chrome/Dockerfile`（仓库根 context）构建镜像，供 controller 的 `AGENT_CHROME_IMAGE` 使用；每个 session 的 agent-chrome 容器仍由 controller 通过 Docker Engine API 动态创建和销毁。
+- 所有容器在 `moat` bridge 网络中，controller 通过容器 IP 访问 9222。
 
 ### 3.6 生命周期总览
 
@@ -568,6 +395,6 @@ volumes:
 | Debian Chromium CDP bug | agent-chrome | 必须用 Chrome for Testing（README §11.1） |
 | `--no-sandbox` | 两者 | 容器内 zygote 沙箱不可用（README §11.2） |
 | UID 1000 | 两者 | profile 目录 `chown -R 1000:1000`（README §11.3） |
-| Patchright 版本匹配 | agent-chrome | Chrome for Testing 版本必须与 Patchright 匹配（README §11.4） |
+| Patchright 版本匹配 | agent-chrome | CfT 版本在构建内从 Patchright 锚派生，controller 拒绝版本不符的浏览器（README §11.4） |
 | shm_size | 两者 | Chromium 需要 ≥ 2GB /dev/shm（或 `--disable-dev-shm-usage`） |
 | WebRTC 端口 1:1 映射 | user-chrome | UDP 端口不能 remap |

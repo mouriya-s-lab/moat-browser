@@ -10,19 +10,22 @@
 
 ## 2. 测试环境
 
-```
-本机 (Arch)                     Browser VM (192.168.1.211)
-┌──────────────┐               ┌─────────────────────────────┐
-│ moat CLI     │──WebSocket──→ │ Controller (:3000)           │
-│ (Rust binary)│               │   ├─ user-chrome (:8080)     │
-│              │               │   └─ agent-chrome (per-session)│
-└──────────────┘               └─────────────────────────────┘
+```mermaid
+flowchart LR
+  CLI["本机 moat CLI（Rust binary）"] -- WebSocket --> Controller
+  subgraph VM["Browser VM 104（browser.hb.lan）"]
+    Controller["Controller :3000"]
+    User["user-chrome :8080"]
+    Agent["agent-chrome（每 session 一个）"]
+    Controller --- User
+    Controller -- 创建/销毁 --> Agent
+  end
 ```
 
 前置条件：
-- `km x deploy-stack moat-browser` 已运行，Controller + user-chrome 在 Browser VM 上
+- 目标版本已由 `v*` tag 触发的 `.github/workflows/deploy.yml` 部署，Controller + user-chrome 在 Browser VM 上
 - 本机有编译好的 `moat` 二进制：`cli/target/release/moat`
-- 环境变量：`export MOAT_CONTROLLER="ws://192.168.1.211:3000"`
+- 环境变量：`export MOAT_CONTROLLER="ws://browser.hb.lan:3000"`
 
 ## 3. 测试工具
 
@@ -243,7 +246,7 @@ packages/e2e/
 set -euo pipefail
 
 MOAT="${MOAT:-./cli/target/release/moat}"
-export MOAT_CONTROLLER="${MOAT_CONTROLLER:-ws://192.168.1.211:3000}"
+export MOAT_CONTROLLER="${MOAT_CONTROLLER:-ws://browser.hb.lan:3000}"
 
 PASS=0
 FAIL=0
