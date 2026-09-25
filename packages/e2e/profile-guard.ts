@@ -14,6 +14,22 @@ type Entry = { readonly path: string; readonly kind: "directory" | "file" | "sym
 const ok = <T>(value: T): Result<T> => ({ _tag: "Ok", value });
 const fail = (stage: Stage, reason: string): Result<never> => ({ _tag: "Fail", stage, reason });
 function exhaustive(value: never): never { throw new Error(`unhandled result: ${String(value)}`); }
+type TerminationSignal = "SIGINT" | "SIGTERM";
+let interrupted: TerminationSignal | undefined;
+let cleaning = false;
+const interruption = Promise.withResolvers<void>();
+const interruptSignal = new AbortController();
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    if (interrupted) return;
+    interrupted = signal;
+    interruption.resolve();
+    interruptSignal.abort();
+  });
+}
+function ensureRunning(): void {
+  if (interrupted && !cleaning) throw new Error(`received ${interrupted}`);
+}
 function report(result: Result<string>): void {
   switch (result._tag) {
     case "Ok": console.log(`PASS profile-guard ${result.value}`); break;
@@ -37,23 +53,35 @@ function parseOptions(argv: string[]): Result<Options> {
   return ok({ controller, user, agent, emulationMemory });
 }
 async function command(argv: string[], env?: Record<string, string>, timeout = 90_000, probe?: () => Promise<void>, cwd?: string): Promise<Command> {
+  ensureRunning();
   const child = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env: env ? { ...process.env, ...env } : undefined });
   const stdout = new Response(child.stdout).text(), stderr = new Response(child.stderr).text();
   let finished = false;
   const exit = child.exited.then(code => { finished = true; return code; });
   const deadline = Date.now() + timeout;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  if (probe) {
-    while (!finished && Date.now() < deadline) { await probe(); if (!finished) await Bun.sleep(120); }
-  } else {
-    const timeout = Promise.withResolvers<void>();
-    timer = setTimeout(timeout.resolve, Math.max(0, deadline - Date.now()));
-    await Promise.race([exit, timeout.promise]);
-    clearTimeout(timer);
+  try {
+    if (probe) {
+      while (!finished && Date.now() < deadline) {
+        ensureRunning();
+        await probe();
+        if (!finished) await Bun.sleep(120);
+      }
+    } else {
+      const timeoutReached = Promise.withResolvers<void>();
+      const timer = setTimeout(timeoutReached.resolve, timeout);
+      try {
+        await Promise.race(cleaning ? [exit, timeoutReached.promise] : [exit, timeoutReached.promise, interruption.promise]);
+      } finally { clearTimeout(timer); }
+    }
+    ensureRunning();
+    if (!finished) child.kill(9);
+    const code = await exit;
+    return { exit: Date.now() <= deadline ? code : 124, stdout: await stdout, stderr: await stderr };
+  } catch (error) {
+    if (!finished) child.kill(9);
+    await exit;
+    throw error;
   }
-  if (!finished) child.kill(9);
-  const code = await exit;
-  return { exit: finished && Date.now() <= deadline ? code : 124, stdout: await stdout, stderr: await stderr };
 }
 const diagnostic = (result: Command): string => `exit=${result.exit} stdout=${JSON.stringify(result.stdout.trim().slice(-1000))} stderr=${JSON.stringify(result.stderr.trim().slice(-1000))}`;
 async function checked(stage: Stage, argv: string[], timeout?: number): Promise<Result<Command>> {
@@ -61,17 +89,27 @@ async function checked(stage: Stage, argv: string[], timeout?: number): Promise<
   return result.exit === 0 ? ok(result) : fail(stage, `${argv[0]} ${argv[1] ?? ""}: ${diagnostic(result)}`);
 }
 async function cdpCommand(socket: WebSocket, method: "Target.createTarget" | "Target.closeTarget" | "Storage.getCookies" | "Browser.close", params?: { readonly url: string } | { readonly targetId: string }): Promise<unknown> {
+  ensureRunning();
   const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-  const timer = setTimeout(() => { socket.removeEventListener("message", onMessage); reject(new Error(`CDP ${method} timed out`)); }, 15_000);
+  const timer = setTimeout(() => { cleanup(); reject(new Error(`CDP ${method} timed out`)); }, 15_000);
+  function cleanup(): void {
+    clearTimeout(timer);
+    socket.removeEventListener("message", onMessage);
+    interruptSignal.signal.removeEventListener("abort", onAbort);
+  }
+  function onAbort(): void {
+    cleanup();
+    reject(new Error(`received ${interrupted}`));
+  }
   function onMessage(event: MessageEvent): void {
     let message: unknown;
     try { message = JSON.parse(String(event.data)); } catch { return; }
     if (typeof message !== "object" || message === null || !("id" in message) || message.id !== 1) return;
-    socket.removeEventListener("message", onMessage);
-    clearTimeout(timer);
+    cleanup();
     if ("error" in message) reject(new Error(`CDP ${method}: ${JSON.stringify(message.error)}`));
     else resolve("result" in message ? message.result : undefined);
   }
+  interruptSignal.signal.addEventListener("abort", onAbort, { once: true });
   socket.addEventListener("message", onMessage);
   socket.send(JSON.stringify({ id: 1, method, params }));
   return promise;
@@ -143,6 +181,7 @@ async function main(options: Options): Promise<Result<string>> {
   let networkCreated = false;
   let sessionActive = false;
   let currentStage: Stage = "fixture";
+  const paused = new Set<string>();
   const browserUrl = `http://${fixture}:8000`;
   const moat = resolve(process.env.MOAT!);
   async function cli(argv: string[]): Promise<Command> {
@@ -312,9 +351,6 @@ async function main(options: Options): Promise<Result<string>> {
     if (running._tag === "Fail") return running;
     const connected = await connect();
     if (connected._tag === "Fail") return connected;
-    const copy = await compare(entries, join(profiles, `agent-${Buffer.from(owner).toString("base64url")}-${connected.value.sessionId}`));
-    if (copy._tag === "Fail") return copy;
-    console.log(`OBSERVE [profile-copy] entries=${entries.length} unchanged-hashes=${copy.value.unchanged} sentinels=2 missing=${copy.value.missing.length}`);
     currentStage = "copy-control";
     const copied = await checked(currentStage, ["cp", "-a", source, reference]);
     if (copied._tag === "Fail") return copied;
@@ -345,6 +381,17 @@ async function main(options: Options): Promise<Result<string>> {
       await Bun.sleep(250);
     }
     if (!controlReady) return fail(currentStage, `reference agent Chrome CDP unavailable: ${diagnostic(await command(["docker", "logs", control]))}`);
+    for (const id of [connected.value.agent, control]) {
+      paused.add(id);
+      const frozen = await checked("profile-copy", ["docker", "pause", id]);
+      if (frozen._tag === "Fail") { paused.delete(id); return frozen; }
+    }
+    console.log("OBSERVE [profile-copy] candidate and reference paused after CDP readiness for stable manifest reads");
+    currentStage = "profile-copy";
+    const copy = await compare(entries, join(profiles, `agent-${Buffer.from(owner).toString("base64url")}-${connected.value.sessionId}`));
+    if (copy._tag === "Fail") return copy;
+    console.log(`OBSERVE [profile-copy] entries=${entries.length} unchanged-hashes=${copy.value.unchanged} sentinels=2 missing=${copy.value.missing.length}`);
+    currentStage = "copy-control";
     const referenceCopy = await compare(entries, reference);
     if (referenceCopy._tag === "Fail") return fail(currentStage, referenceCopy.reason);
     const actualMissing = [...copy.value.missing].sort(), controlMissing = [...referenceCopy.value.missing].sort();
@@ -352,6 +399,11 @@ async function main(options: Options): Promise<Result<string>> {
     if (JSON.stringify(actualMissing) !== JSON.stringify(controlMissing))
       return fail(currentStage, `controller missing=${JSON.stringify(actualMissing)} reference missing=${JSON.stringify(controlMissing)}`);
     console.log(`OBSERVE [copy-control] entries=${entries.length} unchanged-hashes=${referenceCopy.value.unchanged} same-browser-removals=${controlMissing.length}`);
+    for (const id of [control, connected.value.agent]) {
+      const resumed = await checked(currentStage, ["docker", "unpause", id]);
+      if (resumed._tag === "Fail") return resumed;
+      paused.delete(id);
+    }
     const controlLogs = await checked(currentStage, ["docker", "logs", control]);
     if (controlLogs._tag === "Fail") return controlLogs;
     if (controlLogs.value.stdout.concat(controlLogs.value.stderr).includes("SIGTRAP")) return fail(currentStage, "reference agent SIGTRAP");
@@ -370,7 +422,7 @@ async function main(options: Options): Promise<Result<string>> {
       line.includes("/usr/local/bin/chrome") && line.includes("--password-store=basic")).length;
     if (browserProcessCount < 1) return fail(currentStage, "agent Chrome main process lacks --password-store=basic");
     console.log(`OBSERVE [agent-password-store] Chrome process --password-store=basic count=${browserProcessCount}`);
-    const cookies = await cliStep("cookies", ["cookies", "get"]);
+    const cookies = await cliStep("cookies", ["cookies"]);
     if (cookies._tag === "Fail") return cookies;
     const cookieData = cliData(cookies.value);
     const receivedCookies = typeof cookieData === "object" && cookieData !== null && "cookies" in cookieData ? cookieData.cookies : undefined;
@@ -412,8 +464,20 @@ async function main(options: Options): Promise<Result<string>> {
   } catch (error) {
     return fail(currentStage, error instanceof Error ? error.message : String(error));
   } finally {
+    cleaning = true;
     const cleanupErrors: string[] = [];
-    if (sessionActive && controllerUrl) {
+    for (const id of paused) {
+      const state = await command(["docker", "inspect", "-f", "{{.State.Paused}}", id]);
+      if (state.exit === 0 && state.stdout.trim() === "true") {
+        const resumed = await command(["docker", "unpause", id]);
+        if (resumed.exit !== 0) cleanupErrors.push(`unpause ${id}: ${diagnostic(resumed)}`);
+      }
+    }
+    if (interrupted) {
+      // Stop the only process able to create more owned agents before inventory.
+      const stopped = await command(["docker", "rm", "-f", controller]);
+      if (stopped.exit !== 0 && !stopped.stderr.includes("No such container")) cleanupErrors.push(`stop controller: ${diagnostic(stopped)}`);
+    } else if (sessionActive && controllerUrl) {
       const result = await cli(["disconnect"]);
       if (result.exit !== 0) cleanupErrors.push(`disconnect: ${diagnostic(result)}`);
     }
@@ -437,6 +501,9 @@ async function main(options: Options): Promise<Result<string>> {
 const parsed = parseOptions(process.argv.slice(2));
 if (parsed._tag === "Fail") report(parsed);
 else {
-  try { report(await main(parsed.value)); }
+  try {
+    const result = await main(parsed.value);
+    report(interrupted && result._tag === "Ok" ? fail("cleanup", `received ${interrupted}`) : result);
+  }
   catch (error) { report(fail("cleanup", error instanceof Error ? error.message : String(error))); }
 }
