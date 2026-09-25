@@ -267,10 +267,10 @@ patchright.chromium.connectOverCDP(`http://<container-ip>:9222`)
 
 ### 3.1 Profile 流转
 
-```
-user-chrome                       Controller                    agent-chrome
-/home/neko/.config/chromium/   →  cp -a → /data/profiles/       → /data/profile/
-(宿主: /data/profile)             agent-<id>/                    (容器挂载)
+```mermaid
+flowchart LR
+  U["user-chrome<br/>/home/neko/.config/chromium<br/>(宿主 /data/profile)"] -- "cp -a（整份）" --> C["Controller<br/>/data/profiles/agent-&lt;id&gt;"]
+  C -- "容器挂载" --> A["agent-chrome<br/>/data/profile"]
 ```
 
 详细流程：
@@ -280,6 +280,7 @@ user-chrome                       Controller                    agent-chrome
 3. Agent 请求 `connect` → Controller 执行：
    ```bash
    cp -a /data/profile /data/profiles/agent-<session-id>
+   rm -f /data/profiles/agent-<session-id>/Singleton*
    chown -R 1000:1000 /data/profiles/agent-<session-id>
    ```
 4. Controller 通过 Docker Engine API 创建 agent-chrome 容器，挂载拷贝
