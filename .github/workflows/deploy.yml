@@ -106,7 +106,9 @@ jobs:
       - name: Build + push user-chrome
         uses: docker/build-push-action@v5
         with:
-          context: images/user-chrome
+          context: .
+          file: images/user-chrome/Dockerfile
+          platforms: linux/amd64
           push: true
           tags: registry.237575.xyz/moat-browser/user-chrome:${{ steps.version.outputs.value }}
 
@@ -128,9 +130,18 @@ jobs:
             docker image inspect "$ref" >/dev/null
           done
 
+      - name: Verify candidate Chrome versions before deploy
+        run: |
+          .github/scripts/verify-chrome-versions.sh \
+            "registry.237575.xyz/moat-browser/controller:${{ steps.version.outputs.value }}" \
+            "registry.237575.xyz/moat-browser/user-chrome:${{ steps.version.outputs.value }}" \
+            "registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}"
+
   deploy:
     name: Deploy to browser VM via Komodo
+    # The build job cannot succeed unless the three candidate images pass the gate.
     needs: build
+    if: ${{ needs.build.result == 'success' }}
     runs-on: [self-hosted, linux, vctcn, netbird]
     env:
       KOMODO_API_URL: http://moat-app1.mouriya.lan:9120

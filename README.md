@@ -76,7 +76,7 @@
 │ user-chrome  │  │ agent-chr  │  │ agent-chr  │
 │              │  │ #1         │  │ #2         │
 │ neko WebRTC  │  │ CDP :9222  │  │ CDP :9222  │
-│ + Chromium   │  │ Chromium   │  │ Chromium   │
+│ + CfT        │  │ CfT        │  │ CfT        │
 │              │  │            │  │            │
 │ /data/profile│  │ /profile-1 │  │ /profile-2 │
 │ (源 profile) │  │ (cp -a)   │  │ (cp -a)   │
@@ -87,7 +87,7 @@
 
 | 容器 | 功能 | 生命周期 | 关键进程 |
 |------|------|---------|---------|
-| **user-chrome** | 人类通过 neko WebRTC 远程登录 SaaS | 常驻运行 | neko server + Xorg + GStreamer + Chromium |
+| **user-chrome** | 人类通过 neko WebRTC 远程登录 SaaS | 常驻运行 | neko server + Xorg + GStreamer + openbox + Chrome for Testing |
 | **agent-chrome** | 纯浏览器环境，供 Controller 通过 CDP 操控 | 按需创建/销毁 | Xorg + openbox + Chrome for Testing |
 | **controller** | 唯一服务端进程，所有逻辑集中于此 | 常驻运行 | Node.js + Socket.IO + Patchright |
 
@@ -194,33 +194,39 @@ user-chrome 容器的 neko HTTP 端口直接暴露。用户浏览器直接访问
 
 ### 6.1 user-chrome
 
-基于 neko 官方 Chromium 镜像。neko 提供完整的远程桌面功能栈：
+基于固定版本的 neko base 镜像（`ghcr.io/m1k1o/neko/base`，版本 tag + digest），浏览器是与 agent-chrome 同版本的 Chrome for Testing（由 Patchright 锚派生，见 §11.4），安装在 `/opt/chrome`。neko 提供完整的远程桌面功能栈：
 
 | 组件 | 技术 | 说明 |
 |------|------|------|
 | 显示服务器 | Xorg + `xserver-xorg-video-dummy` | 无头 X11 |
 | 屏幕捕获 | GStreamer `ximagesrc` | X11 画面 → 视频帧 |
-| 视频编码 | GStreamer VP8 / H264 | WebRTC 媒体流 |
+| 视频编码 | GStreamer VP8 / H264 | WebRTC 媒体流（CPU 编码） |
 | 传输 | WebRTC (pion, Go) | P2P 低延迟流 |
 | 输入注入 | X11 C 绑定 (libXtst) | 鼠标 / 键盘 |
-| 窗口管理 | openbox | 轻量 WM |
-| 进程管理 | supervisord | 启动顺序编排 |
+| 窗口管理 | openbox | 轻量 WM（base 不带，镜像自行安装） |
+| 进程管理 | supervisord | 启动顺序编排；浏览器是 `chromium` program，日志 `/var/log/neko/chromium.log` |
 | 服务端 | neko (Go 单二进制) | HTTP + WebSocket + WebRTC |
 | 客户端 | Vue.js | 浏览器内 WebRTC 播放器 |
 
-neko 官方镜像的 Chromium 足以支撑人类登录场景。如果验证不可用，备选方案是参考 neko 源码从零组装。
+浏览器启动约束（`images/user-chrome/chromium.conf`、`start-chromium.sh`）：
+
+- profile 固定在 `/home/neko/.config/chromium`（宿主挂载点），不使用 `--bwsi` 访客模式，否则登录态不会写入 profile。
+- `--password-store=basic`，与 agent-chrome 一致，拷贝到 agent 的 cookie 可以直接解密。
+- 不启用任何 remote debugging；user-chrome 只做人类交互。
+- 启动前删除 profile 顶层的 `SingletonLock`/`SingletonSocket`/`SingletonCookie`：容器被替换后 profile 仍在，但主机名变了，上一个容器留下的锁会让新浏览器认为 profile 正被别的机器使用。同一时刻只有一个 user-chrome 容器、容器内只有一个浏览器进程，所以此刻的锁一定是过期的。
+- managed policy 放在 CfT 的策略目录 `/etc/opt/chrome_for_testing/policies/managed/`（`images/user-chrome/policies.json`）。
 
 ### 6.2 agent-chrome
 
-**不使用 neko 官方镜像。** Debian 打包的 Chromium 143 有 CDP session bug（`Target.setAutoAttach` 创建的 session 立即失效），导致 Playwright/Patchright `connectOverCDP` 完全不工作。
+**不使用 neko 镜像。** agent 侧只需要一个可被 CDP 操控的浏览器；Debian 打包的 Chromium 还有 CDP session bug（§11.1），因此从干净 Debian base 组装并使用 Chrome for Testing。
 
-agent-chrome 需要参考 neko 和 agent-browser-session 的源码，从干净 Debian base 组装：
+组装参考 neko 和 agent-browser-session 的源码：
 
 | 组件 | 来源 | 说明 |
 |------|------|------|
 | Xorg dummy | 参考 neko 的 xorg.conf | 无头显示 |
 | openbox | 参考 neko | 窗口管理 |
-| Chrome for Testing | Playwright CDN | **替代 Debian Chromium**，CDP 实现正确 |
+| Chrome for Testing | chrome-for-testing-public | 版本由 Patchright 锚派生（§11.4），CDP 实现正确 |
 | supervisord | 参考 neko | 进程编排（只需 Xorg + openbox + Chrome） |
 
 不需要：neko server、GStreamer、WebRTC、输入注入、PulseAudio。
@@ -1056,11 +1062,9 @@ ControllerError 在序列化到 wire 时，映射到 agent-browser 响应的 `er
 
 ### 11.1 Debian Chromium CDP Session Bug
 
-neko 官方镜像自带的 Debian Chromium 143 有 CDP `Target.setAutoAttach` 缺陷——session 创建后立即失效，所有 Playwright/Patchright/Puppeteer 均复现。Chrome for Testing 同版本号无此问题。
+Debian 打包的 Chromium（neko 官方 `neko/chromium` 镜像所用）有 CDP `Target.setAutoAttach` 缺陷——session 创建后立即失效，所有 Playwright/Patchright/Puppeteer 均复现。同版本号的 Chrome for Testing 无此问题。
 
-**影响**：agent-chrome 不能使用 neko 官方镜像的 Chromium，必须使用 Chrome for Testing。
-
-**不影响**：user-chrome 的人类登录场景（不依赖 CDP session 的高级功能）。
+**影响**：agent-chrome 必须使用 Chrome for Testing。user-chrome 的人类登录场景本不依赖 CDP，但两侧浏览器必须同版本，profile 才能整份拷贝，因此 user-chrome 也改用同一锚派生的 Chrome for Testing（§6.1、§11.4），不再使用 Debian Chromium。
 
 ### 11.2 容器内 Chromium 必须 --no-sandbox
 
@@ -1068,13 +1072,14 @@ Docker 容器内 zygote 沙箱需要特权，必须加 `--no-sandbox`，否则 `
 
 ### 11.3 Profile 目录权限
 
-Chromium 以 neko 用户 (uid 1000) 运行。profile 目录必须 `chown -R 1000:1000`，否则 `Permission denied`。
+两侧浏览器都以 uid 1000 运行（user-chrome 的 `neko` 用户、agent-chrome 的 `chrome` 用户）。profile 目录必须 `chown -R 1000:1000`，否则 `Permission denied`。
 
 ### 11.4 Patchright 版本锚
 
 Patchright 与 Chrome 版本强绑定，版本不匹配会导致 CDP 协议不兼容。仓库里 Chrome 版本只有一个来源：`packages/controller/package.json` 精确锁定的 `patchright`（及 `bun.lock`）所对应 `patchright-core` 包内 `browsers.json` 的 chromium `browserVersion`。
 
-- 镜像：agent-chrome 在构建内由 `images/chrome-anchor.mjs` 派生版本并下载对应的 Chrome for Testing，没有版本构建参数；推导或下载失败即构建失败。
+- 镜像：user-chrome 与 agent-chrome 在构建内都由 `images/chrome-anchor.mjs` 派生版本并下载对应的 Chrome for Testing 到 `/opt/chrome`，没有版本构建参数；推导或下载失败即构建失败。
+- 部署前：`.github/workflows/deploy.yml` 用 `.github/scripts/verify-chrome-versions.sh <controller 镜像> <user 镜像> <agent 镜像>` 比对候选 controller 镜像内的锚与两个浏览器镜像的版本，三者不同则 deploy job 不运行。本地可用同一条命令检查任意一组镜像。
 - 运行时：controller 启动时读取自身安装的 `patchright-core` 的版本；每次创建 session，都把 agent-chrome 的 `/json/version` 与之比对，不符或无法解析就拒绝该 session（`BrowserVersionMismatch`，错误中带期望版本与实际观测值）。
 - 升级：只改 `patchright` 的精确 pin 并更新 `bun.lock`，重新构建镜像即可，仓库其他地方不写版本号。
 
@@ -1149,7 +1154,7 @@ moat-browser/
 │   ├── controller/     # Node.js — wire 协议服务端
 │   └── e2e/            # E2E 测试
 ├── images/
-│   ├── user-chrome/    # User Chrome 镜像 (neko + Chromium)
+│   ├── user-chrome/    # User Chrome 镜像 (neko base + Chrome for Testing)
 │   └── agent-chrome/   # Agent Chrome 镜像 (Chrome for Testing + CDP)
 ├── skills/
 │   └── moat/
@@ -1170,7 +1175,7 @@ moat-browser/
 | Phase | 内容 | 状态 |
 |-------|------|------|
 | 1 | Browser VM IaC (Terraform + Ansible) | ✅ 完成 |
-| 2 | User Chrome Docker 镜像 (neko + Chromium) | ✅ 完成 |
+| 2 | User Chrome Docker 镜像 (neko base + Chrome for Testing) | ✅ 完成 |
 | 3 | Agent Chrome Docker 镜像 (从零组装，Chrome for Testing + CDP) | ✅ 完成 |
 | 4 | Wire 协议定义（`packages/types`：agent-browser daemon JSON + session envelope） | ✅ 完成 |
 | 5 | TS SDK（`packages/sdk`：RPC 客户端库，实现 wire 协议） | Open |
@@ -1186,8 +1191,8 @@ moat-browser/
 
 | 容器 | 组件 | 内存 |
 |------|------|------|
-| user-chrome (人类登录态) | Xorg + openbox + Chromium + neko + GStreamer | ~550-750MB |
-| user-chrome (空闲) | Xorg + openbox + Chromium + neko | ~450-550MB |
+| user-chrome (人类登录态) | Xorg + openbox + Chrome for Testing + neko + GStreamer | ~550-750MB |
+| user-chrome (空闲) | Xorg + openbox + Chrome for Testing + neko | ~450-550MB |
 | agent-chrome | Xorg + openbox + Chrome for Testing | ~350-550MB |
 | controller | Node.js + Patchright runtime | ~100-200MB |
 
