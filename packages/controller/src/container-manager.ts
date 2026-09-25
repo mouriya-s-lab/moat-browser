@@ -7,6 +7,7 @@ import type {
   ControllerError,
   ProfileUnavailableReason,
 } from "@moat-browser/types";
+import { parseObservedBrowserVersion } from "./browser-anchor.js";
 import type { ExternalAllocation } from "./session-admission.js";
 
 const execFile = promisify(execFileCb);
@@ -46,6 +47,8 @@ export type ContainerManagerConfig = {
   readonly dockerNetwork: string;
   readonly agentChromeImage: string;
   readonly cdpReadyTimeout: number;
+  /** Chrome version derived from the installed patchright-core (#280 K1/K6). */
+  readonly expectedBrowserVersion: string;
   readonly owner: string;
   readonly dockerFetch?: DockerFetch;
 };
@@ -456,13 +459,17 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       });
     }
 
-    // Step 6: Poll CDP ready (http://<ip>:9222/json/version)
+    // Step 6: Poll CDP ready (http://<ip>:9222/json/version), then refuse a
+    // browser whose version is not the controller's Patchright anchor (#280 K6).
+    // The container is not tracked yet; the caller's rollback removes it by label.
     const deadline = Date.now() + config.cdpReadyTimeout;
+    let versionBody: unknown = undefined;
     let cdpReady = false;
     while (Date.now() < deadline) {
       try {
         const res = await fetch(`http://${ip}:9222/json/version`);
         if (res.ok) {
+          versionBody = await res.json().catch(() => undefined);
           cdpReady = true;
           break;
         }
@@ -473,6 +480,15 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     }
     if (!cdpReady) {
       return Err({ _tag: "CdpUnreachable", containerId });
+    }
+    const observed = parseObservedBrowserVersion(versionBody);
+    if (observed._tag !== "Parsed" || observed.version !== config.expectedBrowserVersion) {
+      return Err({
+        _tag: "BrowserVersionMismatch",
+        containerId,
+        expected: config.expectedBrowserVersion,
+        observed,
+      });
     }
 
     // Step 7: Track and return

@@ -151,6 +151,17 @@ function formatError(error: ControllerError): string {
       return `CDP disconnected for container ${error.containerId}`;
     case "ProfileCopyFailed":
       return `Profile copy failed: ${error.message}`;
+    case "BrowserVersionMismatch": {
+      const observed = error.observed;
+      switch (observed._tag) {
+        case "Parsed":
+          return `Browser version mismatch in container ${error.containerId}: expected Chrome ${error.expected} (Patchright anchor), agent-chrome reports ${observed.version}`;
+        case "Unparseable":
+          return `Browser version mismatch in container ${error.containerId}: expected Chrome ${error.expected} (Patchright anchor), agent-chrome /json/version is unparseable: ${observed.raw}`;
+        default:
+          return exhaustive(observed);
+      }
+    }
     case "ProfileUnavailable": {
       const reason = error.reason;
       switch (reason) {
@@ -203,6 +214,7 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
       return { errorType: "command_failed", cause: "container_creation" };
     case "ContainerCreateFailed":
     case "ProfileCopyFailed":
+    case "BrowserVersionMismatch":
       return {
         errorType: "command_failed",
         cause: stage === "cleanup" ? "cleanup" : "container_creation",

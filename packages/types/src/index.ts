@@ -818,6 +818,13 @@ export type ProfileUnavailableReason = "invalid_name" | "not_registered" | "sour
 
 export type RefStaleReason = "snapshot" | "frame" | "page" | "navigation" | "artifact";
 
+// ─── Browser version anchor ───
+
+/** What agent-chrome reported on CDP `/json/version`, parsed at the controller boundary. */
+export type ObservedBrowserVersion =
+  | { readonly _tag: "Parsed"; readonly version: string }
+  | { readonly _tag: "Unparseable"; readonly raw: string };
+
 // ─── ControllerError ───
 export type ControllerError =
   | { readonly _tag: "SessionNotFound"; readonly sessionId: string }
@@ -827,6 +834,12 @@ export type ControllerError =
   | { readonly _tag: "CdpUnreachable"; readonly containerId: string }
   | { readonly _tag: "CdpDisconnected"; readonly containerId: string }
   | { readonly _tag: "ProfileCopyFailed"; readonly message: string }
+  | {
+      readonly _tag: "BrowserVersionMismatch";
+      readonly containerId: string;
+      readonly expected: string;
+      readonly observed: ObservedBrowserVersion;
+    }
   | {
       readonly _tag: "ProfileUnavailable";
       readonly profile: string;
@@ -942,6 +955,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   CdpUnreachable: 81,
   CdpDisconnected: 81,
   ProfileCopyFailed: 82,
+  BrowserVersionMismatch: 80,
   ProfileUnavailable: 2,
   ElementNotFound: 66,
   StaleReference: 67,

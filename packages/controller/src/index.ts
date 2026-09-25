@@ -5,6 +5,7 @@ import {
   resolveControllerOwner,
   type ProfileRegistry,
 } from "./container-manager.js";
+import { loadExpectedBrowserVersion } from "./browser-anchor.js";
 import { createSessionAdmission } from "./session-admission.js";
 import { createSessionRegistry } from "./session-registry.js";
 import { createRefStore } from "./ref-store.js";
@@ -94,6 +95,13 @@ async function loadConfig(): Promise<ControllerConfig> {
 
 const config = await loadConfig();
 
+const expectedBrowserVersion = await loadExpectedBrowserVersion();
+if (expectedBrowserVersion._tag === "Err") {
+  console.error(`[browser-anchor] ${expectedBrowserVersion.error}`);
+  process.exit(78);
+}
+console.log(`[browser-anchor] expected agent-chrome version ${expectedBrowserVersion.value}`);
+
 const containerManager = createContainerManager({
   profileSource: config.profileSource,
   profileRegistry: config.profileRegistry,
@@ -103,6 +111,7 @@ const containerManager = createContainerManager({
   dockerNetwork: config.dockerNetwork,
   agentChromeImage: config.agentChromeImage,
   cdpReadyTimeout: config.cdpReadyTimeout,
+  expectedBrowserVersion: expectedBrowserVersion.value,
   owner: config.controllerOwner,
 });
 

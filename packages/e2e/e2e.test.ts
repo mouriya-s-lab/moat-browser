@@ -48,6 +48,15 @@ function waitForWs(url: string, timeout: number): Promise<WebSocket> {
   });
 }
 
+function sessionContainerId(sessionId: string): string {
+  const controllerId = execSync(`docker compose -f ${COMPOSE_FILE} ps -q controller`).toString().trim();
+  const owner = execSync(`docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' ${controllerId}`)
+    .toString().trim();
+  return execSync(
+    `docker ps --filter label=moat-browser.role=agent-chrome --filter label=moat-browser.owner=${owner} --filter label=moat-browser.session-id=${sessionId} --format '{{.ID}}'`,
+  ).toString().trim();
+}
+
 // ─── Tests ───
 
 describe("E2E: register → navigate → snapshot → deregister", () => {
@@ -74,13 +83,13 @@ describe("E2E: register → navigate → snapshot → deregister", () => {
   }, MSG_TIMEOUT + 5_000);
 
   test("agent-chrome container exists after register", () => {
-    const out = execSync("docker ps --filter ancestor=agent-chrome --format '{{.ID}}'").toString().trim();
+    const out = sessionContainerId(sessionId);
     expect(out.length).toBeGreaterThan(0);
   });
 
   test("agent-chrome CDP is reachable", async () => {
     // Find agent-chrome container IP on moat network
-    const containerId = execSync("docker ps --filter ancestor=agent-chrome --format '{{.ID}}'").toString().trim().split("\n")[0];
+    const containerId = sessionContainerId(sessionId);
     const ip = execSync(
       `docker inspect ${containerId} --format '{{(index .NetworkSettings.Networks "moat").IPAddress}}'`,
     ).toString().trim();
@@ -131,7 +140,7 @@ describe("E2E: register → navigate → snapshot → deregister", () => {
   test("agent-chrome container cleaned up after deregister", async () => {
     // Give a moment for cleanup
     await new Promise((r) => setTimeout(r, 2000));
-    const out = execSync("docker ps --filter ancestor=agent-chrome --format '{{.ID}}'").toString().trim();
+    const out = sessionContainerId(sessionId);
     expect(out).toBe("");
   });
 

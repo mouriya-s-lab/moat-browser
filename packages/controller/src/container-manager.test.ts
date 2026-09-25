@@ -49,6 +49,7 @@ const baseConfig: Omit<ContainerManagerConfig, "dockerFetch"> = {
   dockerNetwork: "moat",
   agentChromeImage: "agent-chrome:test",
   cdpReadyTimeout: 100,
+  expectedBrowserVersion: "147.0.7727.15",
   owner: "test-owner",
 };
 

@@ -1070,9 +1070,13 @@ Docker 容器内 zygote 沙箱需要特权，必须加 `--no-sandbox`，否则 `
 
 Chromium 以 neko 用户 (uid 1000) 运行。profile 目录必须 `chown -R 1000:1000`，否则 `Permission denied`。
 
-### 11.4 Patchright 版本匹配
+### 11.4 Patchright 版本锚
 
-Patchright 版本必须与 Chrome for Testing 版本匹配。Patchright 1.57.0 = Chrome 143.0.7499。版本不匹配会导致 CDP 协议不兼容。
+Patchright 与 Chrome 版本强绑定，版本不匹配会导致 CDP 协议不兼容。仓库里 Chrome 版本只有一个来源：`packages/controller/package.json` 精确锁定的 `patchright`（及 `bun.lock`）所对应 `patchright-core` 包内 `browsers.json` 的 chromium `browserVersion`。
+
+- 镜像：agent-chrome 在构建内由 `images/chrome-anchor.mjs` 派生版本并下载对应的 Chrome for Testing，没有版本构建参数；推导或下载失败即构建失败。
+- 运行时：controller 启动时读取自身安装的 `patchright-core` 的版本；每次创建 session，都把 agent-chrome 的 `/json/version` 与之比对，不符或无法解析就拒绝该 session（`BrowserVersionMismatch`，错误中带期望版本与实际观测值）。
+- 升级：只改 `patchright` 的精确 pin 并更新 `bun.lock`，重新构建镜像即可，仓库其他地方不写版本号。
 
 ### 11.5 Bun 需要 host CPU
 
