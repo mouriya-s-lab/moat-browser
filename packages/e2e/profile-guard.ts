@@ -164,7 +164,14 @@ async function main(options: Options): Promise<Result<string>> {
     controllerUrl = `ws://127.0.0.1:${match[1]}`;
     for (let attempt = 0; attempt < 60; attempt++) {
       const result = await command(["docker", "logs", controller]);
-      if (result.stdout.includes("[startup-reap]") && result.stdout.includes("expected agent-chrome version")) return ok(controllerUrl);
+      if (result.stdout.includes("[startup-reap]") && result.stdout.includes("expected agent-chrome version") &&
+          result.stdout.includes("Controller listening")) {
+        const startup = result.stdout.split("\n").filter(line =>
+          line.startsWith("[browser-anchor]") || line.startsWith("[startup-reap]") ||
+          line.startsWith("[admission-reconcile]") || line.startsWith("Controller listening"));
+        console.log(`OBSERVE [controller-start] ${startup.join(" | ")}`);
+        return ok(controllerUrl);
+      }
       await Bun.sleep(250);
     }
     return fail(currentStage, `controller did not start: ${diagnostic(await command(["docker", "logs", controller]))}`);
