@@ -11,7 +11,7 @@
       "dependencies": {
         "@moat-browser/types": "workspace:*",
         "arktype": "^2.1.0",
-        "patchright": "1.59.2",
+        "patchright": "1.63.0",
         "ws": "^8.18.0",
       },
       "devDependencies": {
@@ -61,11 +61,9 @@
 
     "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
-    "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
+    "patchright": ["patchright@1.63.0", "", { "dependencies": { "patchright-core": "1.63.0" }, "bin": { "patchright": "cli.js" } }, "sha512-WVXhmNhAJ5I+CmcHEu/I3KMKhOlQaKS1XJsk+5nRIypKJ3Dq9IaQP29p4vB3I1FWCTarUXVRj02Na30wGcuztQ=="],
 
-    "patchright": ["patchright@1.59.2", "", { "dependencies": { "patchright-core": "v1.59.2" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "patchright": "cli.js" } }, "sha512-WTdGT4yaf0eyDHJ+OR2bM5gHxGYiLtS5K8ymZulolyTyEel/bXtCPj6hC454+lDhwXP6ASVQinA9l1lcN9XlMA=="],
-
-    "patchright-core": ["patchright-core@1.59.2", "", { "bin": { "patchright-core": "cli.js" } }, "sha512-EW6C15AOd+EPNmkOx2UcrPFzPFY+RZeJ2XL+V2tdSCNQJi/lpeEdHUgK+FXhlbaB48Hie7GvYA0+3wH1DWRlNA=="],
+    "patchright-core": ["patchright-core@1.63.0", "", { "bin": { "patchright-core": "cli.js" } }, "sha512-nuRJVTMVKoOFzY8vmwFqJZR3F0trUCKiPzDSgCOPq/yHHTefm9czILV23dXJsi5mvS7sCy7U1CqG7edA/21DtQ=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

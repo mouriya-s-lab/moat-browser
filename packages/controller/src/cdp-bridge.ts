@@ -4125,9 +4125,8 @@ export async function executeCommand(
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         // Patchright defaults evaluate() to its isolated utility world. The
-        // page-owned router (e.g. Next.js) only lives in the main world, so
-        // isolatedContext=false is required here without touching the global
-        // eval path.
+        // page-owned router only lives in the main world, so the fourth
+        // argument selects main-world evaluation without changing global eval.
         const expression = `(async (url) => {
           const before = location.href;
           const absolute = new URL(url, before).href;
@@ -4142,7 +4141,7 @@ export async function executeCommand(
           try { dispatchEvent(new Event("navigate")); } catch {}
           return location.href;
         })(${JSON.stringify(command.url)})`;
-        const resultingUrl = await page.evaluate<string>(expression, undefined, false);
+        const resultingUrl = await page.evaluate<string>(expression, undefined, undefined, false);
         const result: PushStateResult = { _tag: "PushStateResult", url: resultingUrl };
         return ok(result);
       }
