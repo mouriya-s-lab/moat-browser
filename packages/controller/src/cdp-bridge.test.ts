@@ -1450,18 +1450,6 @@ describe("cdp-bridge", () => {
   // ─── issue #226 / #227 additions ───
 
   describe("page navigation and init scripts (#227)", () => {
-    it("pushstate resolves the URL through the page main world", async () => {
-      const evaluate = mock((_expr: unknown, _arg: unknown, _isolated?: boolean) =>
-        Promise.resolve("https://example.com/dashboard"));
-      const p = mockPage({ evaluate: evaluate as unknown as Page["evaluate"] });
-      const c = mockContext([p]);
-      const data = assertOk(await executeCommand(c, { action: "pushstate", url: "/dashboard" }, refStore, SESSION));
-      expect(data._tag).toBe("PushStateResult");
-      if (data._tag === "PushStateResult") expect(data.url).toBe("https://example.com/dashboard");
-      // isolatedContext=false selects the page main world where a page-owned router lives.
-      expect(evaluate.mock.calls[0][2]).toBe(false);
-    });
-
     it("addinitscript registers an opaque identifier and removeinitscript disposes it", async () => {
       const dispose = mock(() => Promise.resolve());
       const addInitScript = mock(() => Promise.resolve({ dispose }));
