@@ -105,7 +105,7 @@ chown -R 1000:1000 /data/profile
 | `NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD` | `<admin-pw>` | 管理员密码（可控制键鼠） |
 | `NEKO_WEBRTC_EPR` | `52000-52100` | WebRTC 端口范围 |
 | `NEKO_WEBRTC_ICELITE` | `1` | 轻量 ICE agent（同 LAN 无需 STUN/TURN） |
-| `NEKO_WEBRTC_NAT1TO1` | 宿主 LAN IP（VM 104：`192.168.1.221`） | WebRTC 客户端可达的宿主地址（用于 ICE candidate） |
+| `NEKO_WEBRTC_NAT1TO1` | WebRTC 客户端可达的宿主地址（生产取值见 `stacks/moat-browser/compose.yaml`） | 写入 ICE candidate 的地址 |
 
 ### 1.9 关键约束
 
@@ -214,7 +214,8 @@ EndSection
 |------|------|
 | `--no-sandbox` | Docker 容器内 zygote 沙箱需要特权（见 README §11.2） |
 | `--disable-gpu`、`--disable-dev-shm-usage` | 容器内无 GPU；避开 64MB `/dev/shm` 限制 |
-| `--user-data-dir=/data/profile` | 从 user-chrome 拷贝来的 profile |
+| `--user-data-dir=/data/profile` | 从 user-chrome 拷贝来的整份 profile |
+| `--password-store=basic` | 与 user-chrome 相同的 cookie 加密方式，不依赖容器里是否恰好没有 keyring；副本中的 cookie 可直接解密 |
 | `--disable-blink-features=AutomationControlled`、`--disable-infobars` | 隐藏自动化痕迹（Patchright 额外加固） |
 | Chrome 监听 `127.0.0.1:9223`，socat（`cdp-proxy`）把 `0.0.0.0:9222` 转发过去 | Chrome 111+ 无视 `--remote-debugging-address=0.0.0.0`，只在 loopback 监听（CVE-2023-2459 的 DNS rebinding 缓解）；Controller 需要从 `moat` 网络访问 `<container-ip>:9222` |
 
@@ -238,6 +239,7 @@ agent-chrome 的 9222 端口不对宿主暴露。Controller 通过 Docker 内部
 
 ```bash
 cp -a /data/profile /data/profiles/agent-<session-id>
+rm -f /data/profiles/agent-<session-id>/Singleton*
 chown -R 1000:1000 /data/profiles/agent-<session-id>
 ```
 
@@ -265,10 +267,10 @@ patchright.chromium.connectOverCDP(`http://<container-ip>:9222`)
 
 ### 3.1 Profile 流转
 
-```
-user-chrome                       Controller                    agent-chrome
-/home/neko/.config/chromium/   →  cp -a → /data/profiles/       → /data/profile/
-(宿主: /data/profile)             agent-<id>/                    (容器挂载)
+```mermaid
+flowchart LR
+  U["user-chrome<br/>/home/neko/.config/chromium<br/>(宿主 /data/profile)"] -- "cp -a（整份）" --> C["Controller<br/>/data/profiles/agent-&lt;id&gt;"]
+  C -- "容器挂载" --> A["agent-chrome<br/>/data/profile"]
 ```
 
 详细流程：
@@ -278,6 +280,7 @@ user-chrome                       Controller                    agent-chrome
 3. Agent 请求 `connect` → Controller 执行：
    ```bash
    cp -a /data/profile /data/profiles/agent-<session-id>
+   rm -f /data/profiles/agent-<session-id>/Singleton*
    chown -R 1000:1000 /data/profiles/agent-<session-id>
    ```
 4. Controller 通过 Docker Engine API 创建 agent-chrome 容器，挂载拷贝
