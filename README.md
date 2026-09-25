@@ -1081,7 +1081,16 @@ Patchright 与 Chrome 版本强绑定，版本不匹配会导致 CDP 协议不�
 - 镜像：user-chrome 与 agent-chrome 在构建内都由 `images/chrome-anchor.mjs` 派生版本并下载对应的 Chrome for Testing 到 `/opt/chrome`，没有版本构建参数；推导或下载失败即构建失败。
 - 部署前：`.github/workflows/deploy.yml` 用 `.github/scripts/verify-chrome-versions.sh <controller 镜像> <user 镜像> <agent 镜像>` 比对候选 controller 镜像内的锚与两个浏览器镜像的版本，三者不同则 deploy job 不运行。本地可用同一条命令检查任意一组镜像。
 - 运行时：controller 启动时读取自身安装的 `patchright-core` 的版本；每次创建 session，都把 agent-chrome 的 `/json/version` 与之比对，不符或无法解析就拒绝该 session（`BrowserVersionMismatch`，错误中带期望版本与实际观测值）。
-- 升级：只改 `patchright` 的精确 pin 并更新 `bun.lock`，重新构建镜像即可，仓库其他地方不写版本号。
+- 升级：只改 `patchright` 的精确 pin 并更新 `bun.lock`，重新构建镜像，仓库其他地方不写版本号；合入与发布前必须通过下面的 profile 护栏。
+
+**profile 护栏（必跑）**：两侧浏览器同版本，controller 才能把 user profile 整份拷给 agent，并让 user 侧的登录态在 agent 侧直接有效。浏览器升级可能迁移 profile 格式或改变 cookie 加密，版本号一致并不能证明这一点。推进锚的 PR 合入前、以及每次发布前，都要对候选的三个镜像运行：
+
+```bash
+MOAT=cli/target/release/moat bun run packages/e2e/profile-guard.ts \
+  --controller-image <controller 镜像> --user-image <user 镜像> --agent-image <agent 镜像>
+```
+
+它用 user 镜像的浏览器在临时容器里登录本地 fixture、产出源 profile，再由候选 controller 真实拷贝并启动 agent，检查 profile 完整性、SIGTRAP、`basic` password store 与登录凭据在 agent 侧直接有效（含空 profile 负对照）。只有末行为 `PASS profile-guard …`（exit 0）才算通过；任何阶段失败都输出一行 `FAIL [stage] 原因` 并以非 0 退出。在 Apple Silicon 上经 OrbStack 转译运行 amd64 Chrome 时，384MiB 的 session 内存上限会触发 OOM，可加 `--emulation-memory-1g`（只放宽本次护栏自建的容器，产品上限不变）；原生 amd64 主机上不加该参数。
 
 ### 11.5 Bun 需要 host CPU
 
