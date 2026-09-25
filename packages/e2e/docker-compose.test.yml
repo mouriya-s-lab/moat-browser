@@ -1,6 +1,9 @@
 services:
   user-chrome:
-    build: ../../images/user-chrome
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: images/user-chrome/Dockerfile
     shm_size: "2gb"
     cap_add:
       - SYS_ADMIN
@@ -15,7 +18,7 @@ services:
       NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: admin
       NEKO_WEBRTC_EPR: "52000-52100"
       NEKO_WEBRTC_ICELITE: "1"
-      NEKO_WEBRTC_NAT1TO1: "192.168.1.211"
+      NEKO_WEBRTC_NAT1TO1: "${NEKO_WEBRTC_NAT1TO1:?Set the client-reachable host address for WebRTC}"
     networks:
       - moat
 
@@ -54,7 +57,7 @@ services:
 
 networks:
   moat:
-    driver: bridge
+    external: true
     name: moat
 
 volumes:
