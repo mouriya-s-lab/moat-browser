@@ -113,7 +113,9 @@ jobs:
       - name: Build + push agent-chrome
         uses: docker/build-push-action@v5
         with:
-          context: images/agent-chrome
+          context: .
+          file: images/agent-chrome/Dockerfile
+          platforms: linux/amd64
           push: true
           tags: registry.237575.xyz/moat-browser/agent-chrome:${{ steps.version.outputs.value }}
 

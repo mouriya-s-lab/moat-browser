@@ -34,9 +34,21 @@ services:
       PROFILES_WORK: /data/profiles
       PROFILES_HOST_PATH: /tmp/moat-profiles
       DOCKER_NETWORK: moat
-      AGENT_CHROME_IMAGE: agent-chrome:latest
+      AGENT_CHROME_IMAGE: agent-chrome:e2e
     depends_on:
       - user-chrome
+      - agent-chrome-image
+    networks:
+      - moat
+
+  agent-chrome-image:
+    image: agent-chrome:e2e
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: images/agent-chrome/Dockerfile
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["sleep infinity"]
     networks:
       - moat
 
