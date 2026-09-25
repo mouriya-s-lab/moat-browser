@@ -214,7 +214,8 @@ EndSection
 |------|------|
 | `--no-sandbox` | Docker 容器内 zygote 沙箱需要特权（见 README §11.2） |
 | `--disable-gpu`、`--disable-dev-shm-usage` | 容器内无 GPU；避开 64MB `/dev/shm` 限制 |
-| `--user-data-dir=/data/profile` | 从 user-chrome 拷贝来的 profile |
+| `--user-data-dir=/data/profile` | 从 user-chrome 拷贝来的整份 profile |
+| `--password-store=basic` | 与 user-chrome 相同的 cookie 加密方式，不依赖容器里是否恰好没有 keyring；副本中的 cookie 可直接解密 |
 | `--disable-blink-features=AutomationControlled`、`--disable-infobars` | 隐藏自动化痕迹（Patchright 额外加固） |
 | Chrome 监听 `127.0.0.1:9223`，socat（`cdp-proxy`）把 `0.0.0.0:9222` 转发过去 | Chrome 111+ 无视 `--remote-debugging-address=0.0.0.0`，只在 loopback 监听（CVE-2023-2459 的 DNS rebinding 缓解）；Controller 需要从 `moat` 网络访问 `<container-ip>:9222` |
 
@@ -238,6 +239,7 @@ agent-chrome 的 9222 端口不对宿主暴露。Controller 通过 Docker 内部
 
 ```bash
 cp -a /data/profile /data/profiles/agent-<session-id>
+rm -f /data/profiles/agent-<session-id>/Singleton*
 chown -R 1000:1000 /data/profiles/agent-<session-id>
 ```
 

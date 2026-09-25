@@ -506,24 +506,25 @@ type ContainerInfo = {
 
 ```
 create(sessionId, profilePath):
-  1. cp -a <PROFILE_SOURCE> → <PROFILES_WORK>/agent-<sessionId>
-  2. chown -R 1000:1000 <PROFILES_WORK>/agent-<sessionId>
-  3. POST /containers/create
+  1. cp -a <PROFILE_SOURCE> → <PROFILES_WORK>/agent-<sessionId>（整份拷贝，不按文件名筛选）
+  2. 删除副本顶层 Singleton*（属于运行中的 user-chrome 进程）
+  3. chown -R 1000:1000 <PROFILES_WORK>/agent-<sessionId>
+  4. POST /containers/create
      {
-       Image: "agent-chrome:latest",
+       Image: <AGENT_CHROME_IMAGE>,
        HostConfig: {
          Binds: ["<PROFILES_WORK>/agent-<sessionId>:/data/profile"],
          NetworkMode: "moat",
          ShmSize: 2147483648
        }
      }
-  4. POST /containers/<id>/start
-  5. GET /containers/<id>/json → 提取 IP
-  6. 轮询 http://<ip>:9222/json/version（最多 30s，间隔 500ms）
-  7. 返回 { containerId, ip, cdpPort: 9222 }
+  5. POST /containers/<id>/start
+  6. GET /containers/<id>/json → 提取 IP
+  7. 轮询 http://<ip>:9222/json/version（最多 30s，间隔 500ms），解析 Browser 版本并与 Patchright 锚比对；不符或无法解析 → BrowserVersionMismatch（README §11.4）
+  8. 返回 { containerId, ip, cdpPort: 9222 }
 ```
 
-步骤 1-2 通过 `child_process.execFile` 执行（cp -a 和 chown 是文件系统操作）。步骤 3-6 通过 fetch + Unix socket。
+两侧浏览器是同一个锚版本的 CfT，且都用 `basic` password store，所以整份副本可以直接打开，cookie 可以直接解密。步骤 1-3 通过 `child_process.execFile` 执行（文件系统操作）。步骤 4-7 通过 fetch + Unix socket。
 
 ### 7.4 销毁流程
 
