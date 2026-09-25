@@ -1,10 +1,30 @@
-FROM debian:bookworm-slim
+# Build from the repository root:
+#   docker build --platform linux/amd64 -f images/agent-chrome/Dockerfile .
+# The Chrome for Testing version is derived inside this build from the
+# patchright-core pinned by packages/controller (#280 K1/K2); there is no
+# version build argument, and a failed derivation or download fails the build.
 
-ARG CHROME_VERSION=143.0.7499.0
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS chrome-anchor
+WORKDIR /anchor
+COPY images/chrome-anchor.mjs ./
+COPY packages/controller/package.json ./controller-package.json
+RUN node chrome-anchor.mjs controller-package.json > chrome-version
+
+FROM --platform=linux/amd64 debian:bookworm-slim AS chrome-for-testing
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=chrome-anchor /anchor/chrome-version /tmp/chrome-version
+RUN version="$(cat /tmp/chrome-version)" \
+    && curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${version}/linux64/chrome-linux64.zip" -o /tmp/chrome.zip \
+    && unzip -q /tmp/chrome.zip -d /opt/ \
+    && mv /opt/chrome-linux64 /opt/chrome \
+    && rm /tmp/chrome.zip
+
+FROM --platform=linux/amd64 debian:bookworm-slim
 
 # 系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates unzip \
+    ca-certificates \
     xserver-xorg-video-dummy xserver-xorg-core xinit \
     openbox \
     libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
@@ -15,13 +35,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor socat \
     && rm -rf /var/lib/apt/lists/*
 
-# Chrome for Testing
-RUN curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" \
-    -o /tmp/chrome.zip \
-    && unzip /tmp/chrome.zip -d /opt/ \
-    && mv /opt/chrome-linux64 /opt/chrome \
-    && rm /tmp/chrome.zip \
-    && ln -s /opt/chrome/chrome /usr/local/bin/chrome
+# Chrome for Testing（版本由 chrome-anchor 阶段派生）
+COPY --from=chrome-for-testing /opt/chrome /opt/chrome
+RUN ln -s /opt/chrome/chrome /usr/local/bin/chrome
 
 # 非 root 用户 (UID 1000，与 neko 一致)
 RUN groupadd -g 1000 chrome \
@@ -31,8 +47,8 @@ RUN groupadd -g 1000 chrome \
 RUN mkdir -p /data/profile && chown chrome:chrome /data/profile
 
 # 配置文件
-COPY xorg.conf /etc/X11/xorg.conf
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY images/agent-chrome/xorg.conf /etc/X11/xorg.conf
+COPY images/agent-chrome/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 EXPOSE 9222
 
