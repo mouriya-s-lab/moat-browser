@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /** Run the real user-profile -> controller copy -> agent Chrome path, never the live user container. */
-import type { Stats } from "node:fs";
+import { createReadStream, type Stats } from "node:fs";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -36,8 +36,8 @@ function parseOptions(argv: string[]): Result<Options> {
   if (!controller || !user || !agent || !process.env.MOAT) return fail("arguments", "require MOAT and --controller-image, --user-image, --agent-image");
   return ok({ controller, user, agent, emulationMemory });
 }
-async function command(argv: string[], env?: Record<string, string>, timeout = 90_000, probe?: () => Promise<void>): Promise<Command> {
-  const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", env: env ? { ...process.env, ...env } : undefined });
+async function command(argv: string[], env?: Record<string, string>, timeout = 90_000, probe?: () => Promise<void>, cwd?: string): Promise<Command> {
+  const child = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env: env ? { ...process.env, ...env } : undefined });
   const stdout = new Response(child.stdout).text(), stderr = new Response(child.stderr).text();
   let finished = false;
   const exit = child.exited.then(code => { finished = true; return code; });
@@ -87,20 +87,22 @@ function cliSnapshot(response: Command): string | undefined {
   const data = cliData(response);
   return typeof data === "object" && data !== null && "snapshot" in data && typeof data.snapshot === "string" ? data.snapshot : undefined;
 }
+async function hashFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
 async function manifest(root: string): Promise<Entry[]> {
+  const found = await command(["find", ".", "-path", "./Singleton*", "-prune", "-o", "-print0"], undefined, 90_000, undefined, root);
+  if (found.exit !== 0) throw new Error(`source find manifest failed: ${diagnostic(found)}`);
   const entries: Entry[] = [];
-  async function visit(relative: string): Promise<void> {
-    const names = await readdir(join(root, relative));
-    for (const name of names.sort()) {
-      if (!relative && name.startsWith("Singleton")) continue;
-      const path = join(relative, name), absolute = join(root, path), info = await lstat(absolute);
-      if (info.isDirectory()) { entries.push({ path, kind: "directory", mtime: info.mtimeMs }); await visit(path); }
-      else if (info.isFile()) entries.push({ path, kind: "file", mtime: info.mtimeMs, hash: createHash("sha256").update(await readFile(absolute)).digest("hex") });
-      else if (info.isSymbolicLink()) entries.push({ path, kind: "symlink", mtime: info.mtimeMs });
-      else throw new Error(`unsupported profile entry ${path}`);
-    }
+  for (const relative of found.stdout.split("\0").filter(path => path.startsWith("./")).sort()) {
+    const path = relative.slice(2), absolute = join(root, path), info = await lstat(absolute);
+    if (info.isDirectory()) entries.push({ path, kind: "directory", mtime: info.mtimeMs });
+    else if (info.isFile()) entries.push({ path, kind: "file", mtime: info.mtimeMs, hash: await hashFile(absolute) });
+    else if (info.isSymbolicLink()) entries.push({ path, kind: "symlink", mtime: info.mtimeMs });
+    else throw new Error(`unsupported profile entry ${path}`);
   }
-  await visit("");
   return entries;
 }
 type CopyComparison = { readonly missing: readonly string[]; readonly unchanged: number };
@@ -120,7 +122,7 @@ async function compare(source: Entry[], dest: string): Promise<Result<CopyCompar
     const kind = info.isFile() ? "file" : info.isDirectory() ? "directory" : info.isSymbolicLink() ? "symlink" : "other";
     if (kind !== entry.kind) return fail("profile-copy", `entry type changed: ${entry.path} ${entry.kind} -> ${kind}`);
     if (entry.kind === "file" && entry.mtime === info.mtimeMs) {
-      const hash = createHash("sha256").update(await readFile(join(dest, entry.path))).digest("hex");
+      const hash = await hashFile(join(dest, entry.path));
       if (hash !== entry.hash) return fail("profile-copy", `sha256 differs despite preserved mtime: ${entry.path}`);
       unchanged++;
       sentinel.delete(entry.path);
@@ -357,8 +359,10 @@ async function main(options: Options): Promise<Result<string>> {
     currentStage = "agent-password-store";
     const ps = await checked(currentStage, ["docker", "exec", connected.value.agent, "sh", "-c", "for p in /proc/[0-9]*; do tr '\\0' ' ' <$p/cmdline 2>/dev/null; echo; done"]);
     if (ps._tag === "Fail") return ps;
-    if (!ps.value.stdout.split("\n").some(line => line.includes("/usr/local/bin/chrome") && line.includes("--password-store=basic"))) return fail(currentStage, "agent Chrome main process lacks --password-store=basic");
-    console.log("OBSERVE [agent-password-store] Chrome process --password-store=basic");
+    const browserProcessCount = ps.value.stdout.split("\n").filter(line =>
+      line.includes("/usr/local/bin/chrome") && line.includes("--password-store=basic")).length;
+    if (browserProcessCount < 1) return fail(currentStage, "agent Chrome main process lacks --password-store=basic");
+    console.log(`OBSERVE [agent-password-store] Chrome process --password-store=basic count=${browserProcessCount}`);
     const cookies = await cliStep("cookies", ["cookies", "get"]);
     if (cookies._tag === "Fail") return cookies;
     const cookieData = cliData(cookies.value);
