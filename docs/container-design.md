@@ -357,7 +357,7 @@ DELETE /containers/<id>
 唯一实现是 `packages/e2e/docker-compose.test.yml`，本文不再保存副本。设计要点：
 
 - user-chrome、controller 常驻；controller 挂载 Docker socket 来管理 agent-chrome，`profile-data` 卷同时挂载到 user-chrome（读写）和 controller（只读，作为 `cp -a` 源），`profiles-work` 是 profile 拷贝的工作目录。
-- compose 中的 agent-chrome 服务只负责按 `images/agent-chrome/Dockerfile`（仓库根 context）构建镜像，供 controller 的 `AGENT_CHROME_IMAGE` 使用；每个 session 的 agent-chrome 容器仍由 controller 通过 Docker Engine API 动态创建和销毁。
+- compose 中的 `agent-chrome-image` 是镜像持有者（与生产 stack 相同的模式）：按 `images/agent-chrome/Dockerfile`（仓库根 context）构建镜像，以 `sleep infinity` 常驻，使该镜像不被清理，供 controller 的 `AGENT_CHROME_IMAGE` 使用；controller 依赖它启动。它不是 session 容器，也不暴露 CDP；每个 session 的 agent-chrome 容器仍由 controller 通过 Docker Engine API 动态创建和销毁。
 - 所有容器在 `moat` bridge 网络中，controller 通过容器 IP 访问 9222。
 
 ### 3.6 生命周期总览
