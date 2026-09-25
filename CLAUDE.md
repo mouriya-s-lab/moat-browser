@@ -55,7 +55,7 @@ moat-browser/
 │   ├── controller/     # Node.js — wire 协议服务端
 │   └── e2e/            # E2E 测试
 ├── images/
-│   ├── user-chrome/    # User Chrome 镜像 (neko + Chromium)
+│   ├── user-chrome/    # User Chrome 镜像 (neko base + Chrome for Testing)
 │   └── agent-chrome/   # Agent Chrome 镜像 (Chrome for Testing + CDP)
 ├── skills/
 │   └── moat/
@@ -85,7 +85,7 @@ moat-browser/
 - Rust 测试: `cd cli && cargo test`
 - 与 upstream agent-browser 同步: `cd cli && git fetch upstream && git merge upstream/main`（仅 `connection.rs` 和新增 session 命令会产生冲突）
 - Docker: 构建与部署由 `v*` tag 触发 `.github/workflows/deploy.yml`（self-hosted runner 构建并推送 controller / user-chrome / agent-chrome 镜像，再经 Komodo API 执行 `moat-browser` stack 的 UpdateStack + DeployStack），不手动 docker build/compose 上线
-  - agent-chrome 必须以仓库根目录为 context 构建：`docker build --platform linux/amd64 -f images/agent-chrome/Dockerfile .`（Chrome 版本从 Patchright 锚派生，见 README §11.4）
+  - user-chrome 与 agent-chrome 都必须以仓库根目录为 context 构建：`docker build --platform linux/amd64 -f images/<user-chrome|agent-chrome>/Dockerfile .`（Chrome 版本从 Patchright 锚派生，见 README §11.4）；部署前三方版本校验：`.github/scripts/verify-chrome-versions.sh <controller 镜像> <user 镜像> <agent 镜像>`
 
 ## Target Environment
 

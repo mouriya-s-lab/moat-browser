@@ -12,41 +12,41 @@
 
 ### 1.2 基础镜像
 
+`ghcr.io/m1k1o/neko/base`，以版本 tag + digest 固定（见 `images/user-chrome/Dockerfile`），不用 `latest`。base 自带远程桌面功能栈，浏览器由本仓库装入：
+
+| 组件 | 来源 |
+|------|------|
+| Xorg + xserver-xorg-video-dummy | neko base：无头 X11 显示 |
+| GStreamer (ximagesrc + VP8/H264) | neko base：屏幕捕获 + 视频编码（CPU） |
+| pion WebRTC (Go) | neko base：P2P 低延迟流传输 |
+| X11 C 绑定 (libXtst) | neko base：鼠标/键盘输入注入 |
+| PulseAudio | neko base：音频（登录场景可选） |
+| supervisord | neko base：进程编排，加载 `/etc/neko/supervisord/*.conf` |
+| neko server (Go 单二进制) + Vue.js 客户端 | neko base：HTTP + WebSocket + WebRTC 信令，浏览器内播放器 |
+| openbox | Debian 包（base 不带，与上游 neko 浏览器变体一样自行安装） |
+| Chrome for Testing | chrome-for-testing-public，装到 `/opt/chrome`，版本由 Patchright 锚派生 |
+| fonts-liberation、ca-certificates | Debian 包（CfT 在 base 之外的依赖） |
+
+### 1.3 为什么用 neko base + Chrome for Testing
+
+人类登录本身不依赖 CDP，但 agent 要整份打开 user 写出的 profile，两侧浏览器必须同版本；同时 user 侧浏览器版本要由仓库控制，而不是跟随上游浮动的 `neko/chromium:latest`。因此 user-chrome 与 agent-chrome 用同一个锚派生 CfT（README §11.4），构建阶段与 agent-chrome 相同（§2.5），同样以仓库根目录为 context：
+
+```bash
+docker build --platform linux/amd64 -f images/user-chrome/Dockerfile .
 ```
-ghcr.io/m1k1o/neko/chromium:latest
-```
 
-neko v3 官方 Chromium 镜像。自带完整功能栈，不需要从零组装：
+### 1.4 浏览器配置
 
-| 组件 | 来自 neko 镜像 |
-|------|---------------|
-| Xorg + xserver-xorg-video-dummy | 无头 X11 显示 |
-| openbox | 窗口管理 |
-| GStreamer (ximagesrc + VP8/H264) | 屏幕捕获 + 视频编码 |
-| pion WebRTC (Go) | P2P 低延迟流传输 |
-| X11 C 绑定 (libXtst) | 鼠标/键盘输入注入 |
-| PulseAudio | 音频（登录场景可选） |
-| supervisord | 进程编排 |
-| neko server (Go 单二进制) | HTTP + WebSocket + WebRTC 信令 |
-| Vue.js 客户端 | 浏览器内 WebRTC 播放器 |
-| Debian Chromium | 浏览器（人类登录够用，不需要 CDP） |
+唯一实现是 `images/user-chrome/`（`Dockerfile`、`chromium.conf`、`start-chromium.sh`、`openbox.xml`、`policies.json`），本文只说明设计要点：
 
-### 1.3 为什么直接用官方镜像
-
-人类登录场景不依赖 CDP session 高级功能（`Target.setAutoAttach` 等）。Debian Chromium 143 的 CDP session bug（见 README §11.1）**不影响** user-chrome，因为 user-chrome 只做人类交互（WebRTC 桌面流），不做程序化浏览器操控。
-
-自定义 Dockerfile 只做两件事：
-1. 挂载 profile 目录卷
-2. 注入 Chromium policy 文件（启用 cookie 持久化）
-
-### 1.4 Dockerfile
-
-```dockerfile
-FROM ghcr.io/m1k1o/neko/chromium:latest
-
-# Chromium policy: 启用 cookie 持久化 + 会话恢复
-COPY policies.json /etc/chromium/policies/managed/policies.json
-```
+| 要点 | 原因 |
+|------|------|
+| `--user-data-dir=/home/neko/.config/chromium`，不加 `--bwsi` | profile 落在宿主挂载点；访客模式不会把登录态写入 profile |
+| `--password-store=basic` | 与 agent-chrome 相同的 cookie 加密方式，拷贝后可直接解密 |
+| 不启用 remote debugging | user-chrome 只做人类交互，不对任何调用方开放 CDP |
+| `start-chromium.sh` 在 exec 浏览器前删除 profile 顶层 `SingletonLock`/`SingletonSocket`/`SingletonCookie` | 容器被替换后 profile 仍在但主机名变了，上一个容器的锁会让浏览器拒绝启动；同一时刻只有一个 user-chrome 容器、容器内只有一个浏览器进程，此刻的锁必然过期 |
+| 镜像内预建 `/home/neko/.config/chromium` 并归 `neko` 所有 | 新建的 named volume 继承该属主，浏览器才能创建 profile |
+| `policies.json` 放在 `/etc/opt/chrome_for_testing/policies/managed/` | CfT 只读取自己品牌的策略目录；放在 Chromium 目录会静默失效 |
 
 `policies.json`:
 
@@ -58,21 +58,22 @@ COPY policies.json /etc/chromium/policies/managed/policies.json
 }
 ```
 
-这让 Chromium 在容器重启后保留登录状态（前提是 profile 目录通过卷挂载持久化）。
+这让浏览器在容器重启后保留登录状态（前提是 profile 目录通过卷挂载持久化）。
 
 ### 1.5 进程编排
 
-由 neko 镜像内置的 supervisord 管理，不需要自定义。启动顺序：
+neko base 的 supervisord 管理显示栈与 neko server；`images/user-chrome/chromium.conf` 挂到 `/etc/neko/supervisord/chromium.conf`，增加 `openbox` 与 `chromium` 两个 program（浏览器日志 `/var/log/neko/chromium.log`）：
 
+```mermaid
+flowchart TD
+  S["supervisord (PID 1)"] --> X["Xorg：无头 X11 (dummy driver)"]
+  S --> P["PulseAudio：音频"]
+  S --> O["openbox：窗口管理"]
+  S --> C["chromium：start-chromium → /opt/chrome/chrome"]
+  S --> N["neko server：HTTP :8080 + WebRTC 信令"]
 ```
-supervisord (PID 1, nodaemon)
-├── dbus            → 系统消息总线
-├── Xorg            → 无头 X11 (dummy driver)
-├── openbox         → 窗口管理
-├── PulseAudio      → 音频
-├── Chromium        → --no-sandbox
-└── neko server     → HTTP :8080 + WebRTC 信令
-```
+
+neko base 的 healthcheck 只请求 neko server 的 `/health`，不反映浏览器进程状态；浏览器是否正常要看 `supervisorctl status chromium` 与 `chromium.log`。
 
 ### 1.6 端口
 
@@ -87,9 +88,9 @@ supervisord (PID 1, nodaemon)
 
 | 容器路径 | 宿主路径 | 用途 |
 |---------|---------|------|
-| `/home/neko/.config/chromium` | `/data/profile` | Chromium profile 持久化（Cookie、localStorage、Session） |
+| `/home/neko/.config/chromium` | `/data/profile` | 浏览器 profile 持久化（Cookie、localStorage、Session） |
 
-neko 容器内以 `neko` 用户 (UID 1000) 运行 Chromium。宿主目录必须：
+容器内以 `neko` 用户 (UID 1000) 运行浏览器。宿主目录必须：
 
 ```bash
 chown -R 1000:1000 /data/profile
@@ -110,8 +111,8 @@ chown -R 1000:1000 /data/profile
 
 | 约束 | 原因 |
 |------|------|
-| `shm_size: 2gb` | Chromium 使用 /dev/shm 做进程间通信，Docker 默认 64MB 会导致崩溃 |
-| `cap_add: SYS_ADMIN` | Chromium sandbox 需要（neko 镜像内 Chromium 已带 `--no-sandbox`，但 SYS_ADMIN 仍推荐） |
+| `shm_size: 2gb` | 浏览器使用 /dev/shm 做进程间通信，Docker 默认 64MB 会导致崩溃 |
+| `cap_add: SYS_ADMIN` | 浏览器 sandbox 需要（`chromium.conf` 已带 `--no-sandbox`，但 SYS_ADMIN 仍推荐） |
 
 ---
 
@@ -125,7 +126,7 @@ chown -R 1000:1000 /data/profile
 
 两个原因：
 
-1. **CDP session bug**：Debian Chromium 143 的 `Target.setAutoAttach` 创建的 session 立即失效，Playwright/Patchright/Puppeteer 的 `connectOverCDP` 完全不工作。必须使用 Chrome for Testing（同版本号无此问题）。
+1. **CDP session bug**：Debian 打包的 Chromium 的 `Target.setAutoAttach` 创建的 session 立即失效，Playwright/Patchright/Puppeteer 的 `connectOverCDP` 完全不工作。必须使用 Chrome for Testing（同版本号无此问题）。
 
 2. **不需要 neko 功能栈**：agent-chrome 不需要 WebRTC、GStreamer、输入注入、Vue.js 客户端。这些组件只会浪费内存和增加攻击面。
 
@@ -290,7 +291,7 @@ user-chrome                       Controller                    agent-chrome
 | agent-chrome #1 | `/data/profile` | `/data/profiles/agent-abc123` |
 | agent-chrome #2 | `/data/profile` | `/data/profiles/agent-def456` |
 
-user-chrome 容器内 Chromium 以 neko 用户运行，profile 默认在 `/home/neko/.config/chromium`。通过卷挂载，这个路径映射到宿主的 `/data/profile`。
+user-chrome 容器内浏览器以 neko 用户运行，`--user-data-dir=/home/neko/.config/chromium`。通过卷挂载，这个路径映射到宿主的 `/data/profile`。
 
 agent-chrome 使用 `--user-data-dir=/data/profile`，容器内路径统一。每个实例挂载各自的宿主目录（拷贝份）。
 
@@ -356,7 +357,8 @@ DELETE /containers/<id>
 
 唯一实现是 `packages/e2e/docker-compose.test.yml`，本文不再保存副本。设计要点：
 
-- user-chrome、controller 常驻；controller 挂载 Docker socket 来管理 agent-chrome，`profile-data` 卷同时挂载到 user-chrome（读写）和 controller（只读，作为 `cp -a` 源），`profiles-work` 是 profile 拷贝的工作目录。
+- user-chrome、controller 常驻，三个镜像都以仓库根目录为 context 构建；controller 挂载 Docker socket 来管理 agent-chrome，`profile-data` 卷同时挂载到 user-chrome（读写）和 controller（只读，作为 `cp -a` 源），`profiles-work` 是 profile 拷贝的工作目录。
+- `NEKO_WEBRTC_NAT1TO1` 由运行环境提供（WebRTC 客户端能到达的本机地址），未设置时 compose 直接报错，不写死任何测试机地址。
 - compose 中的 `agent-chrome-image` 是镜像持有者（与生产 stack 相同的模式）：按 `images/agent-chrome/Dockerfile`（仓库根 context）构建镜像，以 `sleep infinity` 常驻，使该镜像不被清理，供 controller 的 `AGENT_CHROME_IMAGE` 使用；controller 依赖它启动。它不是 session 容器，也不暴露 CDP；每个 session 的 agent-chrome 容器仍由 controller 通过 Docker Engine API 动态创建和销毁。
 - 所有容器在 `moat` bridge 网络中，controller 通过容器 IP 访问 9222。
 
@@ -395,6 +397,6 @@ DELETE /containers/<id>
 | Debian Chromium CDP bug | agent-chrome | 必须用 Chrome for Testing（README §11.1） |
 | `--no-sandbox` | 两者 | 容器内 zygote 沙箱不可用（README §11.2） |
 | UID 1000 | 两者 | profile 目录 `chown -R 1000:1000`（README §11.3） |
-| Patchright 版本匹配 | agent-chrome | CfT 版本在构建内从 Patchright 锚派生，controller 拒绝版本不符的浏览器（README §11.4） |
+| Patchright 版本锚 | 两者 | 两个浏览器镜像的 CfT 都在构建内从 Patchright 锚派生；部署前三方校验，controller 拒绝版本不符的 agent 浏览器（README §11.4） |
 | shm_size | 两者 | Chromium 需要 ≥ 2GB /dev/shm（或 `--disable-dev-shm-usage`） |
 | WebRTC 端口 1:1 映射 | user-chrome | UDP 端口不能 remap |
