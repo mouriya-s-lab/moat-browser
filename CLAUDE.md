@@ -74,7 +74,7 @@
 
 ## 运行约束
 
-- 两个浏览器镜像只有 `linux/amd64`
+- 只推荐在 x86_64（amd64）Linux 上部署；两个浏览器镜像只有 `linux/amd64`，没有适配 Apple Silicon，不推荐在 macOS 上运行（README §9）
 - 运行 Bun 的 VM 必须用 host CPU（Bun 在 qemu64 上会 hang，README §11.5）
 
 ## Commit Format

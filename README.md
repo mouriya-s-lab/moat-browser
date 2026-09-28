@@ -233,6 +233,8 @@ Controller 地址的优先级：本次 `--controller` > `MOAT_CONTROLLER` > `~/.
 
 ## 9. 自行部署
 
+**只推荐在 x86_64（amd64）Linux 主机上部署，不推荐 macOS。**两个浏览器镜像只有 `linux/amd64`（Chrome for Testing 的 Linux 包只有 x64），项目没有适配 Apple Silicon。在 Apple Silicon 上经 Docker Desktop / OrbStack 转译运行已知有问题：宿主 `chown 1000:1000` 的目录在容器内显示为 root 所有，浏览器无法写入 profile；agent-chrome 在 384MiB 内存上限下会 OOM。
+
 仓库根目录的 `compose.yaml` 从源码在本地构建全部三个 moat-browser 镜像，不需要任何预构建的 moat-browser 镜像（构建时仍会拉取公开的基础镜像和 Chrome for Testing 包）：
 
 ```bash
@@ -251,7 +253,6 @@ docker compose up -d --build
 | `agent-chrome-image` | 无 | 无；负责构建 Controller 为每个 session 创建容器所用的镜像，并让它一直被引用，避免 `docker image prune` 后 connect 失败 |
 
 - `MOAT_DATA_DIR` 必须是绝对路径：Controller 通过 Docker socket 创建 agent-chrome 容器时，按宿主路径（`PROFILES_HOST_PATH`）挂载 session 拷贝。
-- 两个浏览器镜像只有 `linux/amd64`（Chrome for Testing 的 Linux 包只有 x64）。在 Apple Silicon 上经 OrbStack 转译运行时有两处差异：宿主 `chown 1000:1000` 的目录在容器内显示为 root 所有，需要放宽目录权限；agent-chrome 在 384MiB 内存上限下会 OOM（§11.4）。原生 amd64 Linux 主机上没有这两个问题。
 - Controller 与 user-chrome 必须在同一台 Docker 主机上，共用 `moat` 网络。
 - 本仓库不包含 CI。维护者的镜像发布与生产部署在单独的私有仓库中维护。
 

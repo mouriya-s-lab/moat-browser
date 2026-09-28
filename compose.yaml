@@ -1,5 +1,9 @@
 # Self-hosted moat-browser, built locally from this repository.
 #
+# Supported deployment host: x86_64 (amd64) Linux. The browser images are
+# linux/amd64 only and Apple Silicon is not supported; running under
+# Docker Desktop / OrbStack emulation on macOS is not recommended.
+#
 #   export MOAT_DATA_DIR=/srv/moat-browser        # absolute host path
 #   export NEKO_WEBRTC_NAT1TO1=<address your browser uses to reach this host>
 #   export NEKO_USER_PASSWORD=... NEKO_ADMIN_PASSWORD=...
