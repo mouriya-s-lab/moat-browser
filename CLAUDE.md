@@ -17,8 +17,8 @@
 
 ## Issues
 
-- Tracked in `moat-lab/moat-browser`（`Mouriya-Emma/moat-browser` 是 transfer 前的旧名，只靠 GitHub redirect 可达，不再使用）。
-- 查当前 open issue 用 `issue://moat-lab/moat-browser?state=open`，不在本文件维护清单。
+- Tracked in `mouriya-s-lab/moat-browser`（`Mouriya-Emma/moat-browser`、`moat-lab/moat-browser` 是 transfer 前的旧名，只靠 GitHub redirect 可达，不再使用）。
+- 查当前 open issue 用 `issue://mouriya-s-lab/moat-browser?state=open`，不在本文件维护清单。
 
 ## Tech Stack
 

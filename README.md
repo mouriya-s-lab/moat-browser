@@ -359,7 +359,7 @@ TypeScript（`packages/types`）与 Rust（`cli/sdk/src/wire.rs`）各自维护�
 
 ### 11.11 session 拷贝可能滞留在宿主
 
-删除拷贝是尽力而为的：容器停止或删除失败时不删拷贝，`rm -rf` 失败会被忽略；启动回收只清理仍有对应容器的拷贝，不扫描孤儿目录。每份拷贝都是整份源 profile，含人的登录 cookie，滞留既占磁盘也让凭据副本无限期存在。生产环境已观察到约 75 个滞留目录，跟踪于 [#289](https://github.com/moat-lab/moat-browser/issues/289)。
+删除拷贝是尽力而为的：容器停止或删除失败时不删拷贝，`rm -rf` 失败会被忽略；启动回收只清理仍有对应容器的拷贝，不扫描孤儿目录。每份拷贝都是整份源 profile，含人的登录 cookie，滞留既占磁盘也让凭据副本无限期存在。生产环境已观察到约 75 个滞留目录，跟踪于 [#289](https://github.com/mouriya-s-lab/moat-browser/issues/289)。
 
 ---
 
