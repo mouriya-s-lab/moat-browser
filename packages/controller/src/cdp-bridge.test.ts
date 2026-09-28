@@ -1,10 +1,11 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserContext, Locator, Page, Response } from "patchright";
 import type { BrowserCommand, CookieEntry } from "@moat-browser/types";
 import { clearSessionRuntimeState, executeCommand, type Result } from "./cdp-bridge.js";
+import { profileDestination } from "./container-manager.js";
 import type { RefStore } from "./ref-store.js";
 import type { ControllerError, CommandResultData } from "@moat-browser/types";
 
@@ -148,7 +149,7 @@ function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): Browse
   } as unknown as BrowserContext;
 }
 
-function remoteDownloadContext(page: Page, bytes: Buffer): {
+function remoteDownloadContext(page: Page, bytes: Buffer, profileCopyPath: string): {
   readonly context: BrowserContext;
   readonly emitDownload: (filename: string) => void;
   readonly browserSend: ReturnType<typeof mock>;
@@ -179,7 +180,7 @@ function remoteDownloadContext(page: Page, bytes: Buffer): {
     browserSend,
     pageSend,
     emitDownload(filename: string) {
-      const directory = join(TEST_PROFILES_WORK, `agent-${SESSION}`, ".moat-downloads");
+      const directory = join(profileCopyPath, ".moat-downloads");
       mkdirSync(directory, { recursive: true });
       writeFileSync(join(directory, "download-guid"), bytes);
       listeners.get("Browser.downloadWillBegin")?.({
@@ -847,14 +848,15 @@ describe("cdp-bridge", () => {
       });
       const locator = mockLocator({ click });
       page = mockPage({ locator: mock(() => locator) });
-      const remote = remoteDownloadContext(page, Buffer.from("downloaded bytes"));
+      const profileCopyPath = profileDestination(TEST_PROFILES_WORK, "download-owner", SESSION);
+      const remote = remoteDownloadContext(page, Buffer.from("downloaded bytes"), profileCopyPath);
       emitDownload = remote.emitDownload;
       ctx = remote.context;
 
       const data = assertOk(await executeCommand(ctx, {
         action: "download",
         selector: "#download",
-      }, refStore, SESSION));
+      }, refStore, SESSION, { deadline: Date.now() + 10_000, budget: 10_000, profileCopyPath }));
 
       expect(click).toHaveBeenCalledTimes(1);
       expect(data).toEqual({
@@ -862,6 +864,8 @@ describe("cdp-bridge", () => {
         base64: Buffer.from("downloaded bytes").toString("base64"),
         suggestedFilename: "report.txt",
       });
+      expect(existsSync(join(profileCopyPath, ".moat-downloads", "download-guid"))).toBe(false);
+      expect(existsSync(join(TEST_PROFILES_WORK, `agent-${SESSION}`))).toBe(false);
       expect(remote.browserSend).toHaveBeenCalledWith("Browser.setDownloadBehavior", {
         behavior: "allowAndName",
         downloadPath: "/data/profile/.moat-downloads",
@@ -870,21 +874,24 @@ describe("cdp-bridge", () => {
     });
 
     it("wait for download returns bytes from the remote Chrome filesystem", async () => {
+      const profileCopyPath = profileDestination(TEST_PROFILES_WORK, "wait-owner", SESSION);
       page = mockPage();
-      const remote = remoteDownloadContext(page, Buffer.from("event bytes"));
+      const remote = remoteDownloadContext(page, Buffer.from("event bytes"), profileCopyPath);
       ctx = remote.context;
       setTimeout(() => remote.emitDownload("event.bin"), 0);
 
       const data = assertOk(await executeCommand(ctx, {
         action: "waitfordownload",
         timeout: 1234,
-      }, refStore, SESSION));
+      }, refStore, SESSION, { deadline: Date.now() + 10_000, budget: 10_000, profileCopyPath }));
 
       expect(data).toEqual({
         _tag: "BinaryFileResult",
         base64: Buffer.from("event bytes").toString("base64"),
         suggestedFilename: "event.bin",
       });
+      expect(existsSync(join(profileCopyPath, ".moat-downloads", "download-guid"))).toBe(false);
+      expect(existsSync(join(TEST_PROFILES_WORK, `agent-${SESSION}`))).toBe(false);
     });
 
     it("pdf returns the generated document bytes", async () => {

@@ -115,6 +115,7 @@ export type CdpConnection = {
 export type CommandExecutionOptions = {
   readonly deadline: number;
   readonly budget: number;
+  readonly profileCopyPath?: string;
 };
 
 const contextCdpUrls = new WeakMap<BrowserContext, string>();
@@ -208,7 +209,7 @@ function frameIds(frameTree: { readonly frame: { readonly id: string }; readonly
 async function remoteDownload(
   context: BrowserContext,
   page: Page,
-  sessionId: string,
+  profileCopyPath: string,
   timeout: number | undefined,
   trigger?: () => Promise<void>,
 ): Promise<BinaryFileResult> {
@@ -217,11 +218,7 @@ async function remoteDownload(
 
   const browserCdp = await browser.newBrowserCDPSession();
   const pageCdp = await context.newCDPSession(page);
-  const localDownloadPath = join(
-    process.env.PROFILES_WORK ?? "/data/profiles",
-    `agent-${sessionId}`,
-    ".moat-downloads",
-  );
+  const localDownloadPath = join(profileCopyPath, ".moat-downloads");
   try {
     await mkdir(localDownloadPath, { recursive: true });
     await chmod(localDownloadPath, 0o777);
@@ -5240,20 +5237,26 @@ export async function executeCommand(
       case "download": {
         const resolved = resolveLocator(scope, refStore, sessionId, refScope, command.ref, command.selector);
         if (resolved._tag === "Err") return resolved;
+        if (options?.profileCopyPath === undefined) {
+          return err({ _tag: "CommandFailed", message: "Profile copy path unavailable for download" });
+        }
         return ok(await remoteDownload(
           context,
           page,
-          sessionId,
+          options.profileCopyPath,
           operationTimeout(options),
           () => resolved.value.click(),
         ));
       }
 
       case "waitfordownload": {
+        if (options?.profileCopyPath === undefined) {
+          return err({ _tag: "CommandFailed", message: "Profile copy path unavailable for download" });
+        }
         return ok(await remoteDownload(
           context,
           page,
-          sessionId,
+          options.profileCopyPath,
           operationTimeout(options, command.timeout),
         ));
       }

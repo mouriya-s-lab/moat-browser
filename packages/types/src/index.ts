@@ -834,6 +834,7 @@ export type ControllerError =
   | { readonly _tag: "CdpUnreachable"; readonly containerId: string }
   | { readonly _tag: "CdpDisconnected"; readonly containerId: string }
   | { readonly _tag: "ProfileCopyFailed"; readonly message: string }
+  | { readonly _tag: "ProfileCleanupFailed"; readonly sessionId: string; readonly path: string; readonly message: string }
   | {
       readonly _tag: "BrowserVersionMismatch";
       readonly containerId: string;
@@ -955,6 +956,7 @@ export const ErrorCode: Record<ControllerError["_tag"], number> = {
   CdpUnreachable: 81,
   CdpDisconnected: 81,
   ProfileCopyFailed: 82,
+  ProfileCleanupFailed: 82,
   BrowserVersionMismatch: 80,
   ProfileUnavailable: 2,
   ElementNotFound: 66,

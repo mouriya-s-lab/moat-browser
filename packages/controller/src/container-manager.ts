@@ -1,7 +1,8 @@
+import type { Dirent } from "node:fs";
 import { execFile as execFileCb } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { realpath, readFile, stat } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
+import { readdir, realpath, readFile, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
   ControllerError,
@@ -17,6 +18,8 @@ const execFile = promisify(execFileCb);
 export type Result<T, E> =
   | { readonly _tag: "Ok"; readonly value: T }
   | { readonly _tag: "Err"; readonly error: E };
+
+type ProfileCleanupError = Extract<ControllerError, { readonly _tag: "ProfileCleanupFailed" }>;
 
 function Ok<T>(value: T): Result<T, never> {
   return { _tag: "Ok", value };
@@ -199,9 +202,11 @@ function ownerPathToken(owner: string): string {
   return Buffer.from(owner, "utf8").toString("base64url");
 }
 
-function profileDestination(profilesWork: string, owner: string, sessionId: string): string {
+export function profileDestination(profilesWork: string, owner: string, sessionId: string): string {
   return `${profilesWork}/agent-${ownerPathToken(owner)}-${sessionId}`;
 }
+
+const LEGACY_PROFILE_NAME = /^agent-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ─── Controller owner resolution ───
 
@@ -307,6 +312,8 @@ export function buildCreateBody(
 
 // ─── Docker Engine API ───
 
+const DOCKER_REQUEST_TIMEOUT_MS = 10_000;
+
 const defaultDockerFetch: DockerFetch = async (path, init) => {
   return new Promise((resolve, reject) => {
     const req = httpRequest(
@@ -315,6 +322,7 @@ const defaultDockerFetch: DockerFetch = async (path, init) => {
         path,
         method: (init?.method as string) ?? "GET",
         headers: init?.headers as Record<string, string> | undefined,
+        signal: init?.signal ?? AbortSignal.timeout(DOCKER_REQUEST_TIMEOUT_MS),
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -329,9 +337,7 @@ const defaultDockerFetch: DockerFetch = async (path, init) => {
       },
     );
     req.on("error", reject);
-    if (init?.body) {
-      req.write(String(init.body));
-    }
+    if (init?.body) req.write(String(init.body));
     req.end();
   });
 };
@@ -479,36 +485,42 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     return Ok({ containerId, ip, cdpPort: 9222 } as const);
   }
 
+  async function removeProfileCopy(sessionId: string, path = profileDestination(config.profilesWork, config.owner, sessionId)): Promise<Result<void, ProfileCleanupError>> {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return Ok(undefined);
+    } catch (error) {
+      return Err({
+        _tag: "ProfileCleanupFailed",
+        sessionId,
+        path,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function destroy(sessionId: string): Promise<Result<void, ControllerError>> {
     let containerId = containers.get(sessionId);
     if (!containerId) {
-      // Fallback: owner-scoped label reverse-lookup covers the
-      // create-before-map and cross-restart windows without crossing owners.
+      // The label lookup also covers failed create and a restarted controller.
       const found = await findContainerIdBySession(sessionId);
       if (found._tag === "Err") return found;
       if (found.value === undefined) {
-        try {
-          await execFile("rm", ["-rf", profileDestination(config.profilesWork, config.owner, sessionId)]);
-        } catch {
-          // A missing container is still reported distinctly; the next
-          // cleanup/retry can remove any profile copy that remains.
-        }
+        const removed = await removeProfileCopy(sessionId);
+        if (removed._tag === "Err") return removed;
         return Err({ _tag: "SessionNotFound", sessionId });
       }
       containerId = found.value;
     }
 
     const stopDelete = await stopAndDelete(containerId);
-    if (stopDelete._tag === "Err") return stopDelete;
-
-    try {
-      await execFile("rm", ["-rf", profileDestination(config.profilesWork, config.owner, sessionId)]);
-    } catch {
-      // best-effort — Docker is the authoritative resource terminal state
+    if (stopDelete._tag === "Err") {
+      // Docker has not confirmed removal; the profile might still be mounted.
+      return stopDelete;
     }
 
     containers.delete(sessionId);
-    return Ok(undefined);
+    return removeProfileCopy(sessionId);
   }
 
   async function inspect(containerId: string): Promise<Result<ContainerInfo, ControllerError>> {
@@ -537,6 +549,7 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
     if (found._tag === "Err") return found;
 
     let reaped = 0;
+    let cleanupFailure: ControllerError | undefined;
     for (const c of found.value) {
       const stopDelete = await stopAndDelete(c.id);
       if (stopDelete._tag === "Err") {
@@ -545,22 +558,84 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
             stopDelete.error._tag
           }: ${"message" in stopDelete.error ? stopDelete.error.message : ""}`,
         );
+        cleanupFailure ??= stopDelete.error;
         continue;
       }
       if (c.sessionId) {
-        try {
-          await execFile(
-            "rm",
-            ["-rf", profileDestination(config.profilesWork, config.owner, c.sessionId)],
-          );
-        } catch {
-          // best-effort — Docker is the authoritative resource terminal state
+        const removed = await removeProfileCopy(c.sessionId);
+        if (removed._tag === "Err") {
+          console.warn(`[reap-failed] owner=${config.owner} container=${c.id} session=${c.sessionId} ${removed.error._tag}: ${removed.error.message}`);
+          cleanupFailure ??= removed.error;
         }
         containers.delete(c.sessionId);
       }
       reaped++;
     }
+
+    const swept = await sweepOrphanProfiles();
+    if (swept._tag === "Err") return swept;
+    if (cleanupFailure) return Err(cleanupFailure);
     return Ok({ reaped });
+  }
+
+  async function sweepOrphanProfiles(): Promise<Result<void, ControllerError>> {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(config.profilesWork, { withFileTypes: true });
+    } catch (error) {
+      if (isRecord(error) && error.code === "ENOENT") return Ok(undefined);
+      return Err({ _tag: "ContainerCreateFailed", message: `Profile directory scan failed: ${error instanceof Error ? error.message : String(error)}` });
+    }
+    const ownPrefix = `agent-${ownerPathToken(config.owner)}-`;
+    const candidates = entries.filter((entry) =>
+      entry.isDirectory() && (
+        LEGACY_PROFILE_NAME.test(entry.name)
+        || (entry.name.startsWith(ownPrefix)
+          && LEGACY_PROFILE_NAME.test(`agent-${entry.name.slice(ownPrefix.length)}`))
+      )
+    );
+    if (candidates.length === 0) return Ok(undefined);
+
+    // An all-owner, all-state inventory only protects mounts. It does not
+    // authorize this controller to reap another owner's containers or copies.
+    const all = await listAllAgentChromeContainers();
+    if (all._tag === "Err") return all;
+    const protectedPaths = new Set<string>();
+    for (const container of all.value) {
+      try {
+        const res = await dockerFetch(`/containers/${container.id}/json`);
+        if (!res.ok) {
+          return Err({ _tag: "ContainerCreateFailed", message: `Docker inspect failed during profile sweep (${res.status}): ${await res.text()}` });
+        }
+        const detail: unknown = await res.json();
+        if (!isRecord(detail) || !Array.isArray(detail.Mounts)) {
+          return Err({ _tag: "ContainerCreateFailed", message: `Docker inspect returned no mounts for ${container.id}` });
+        }
+        for (const mount of detail.Mounts) {
+          if (!isRecord(mount) || typeof mount.Source !== "string" || typeof mount.Destination !== "string") {
+            return Err({ _tag: "ContainerCreateFailed", message: `Docker inspect returned invalid mount for ${container.id}` });
+          }
+          if (mount.Destination === "/data/profile") protectedPaths.add(mount.Source);
+        }
+      } catch (error) {
+        return Err({ _tag: "ContainerCreateFailed", message: `Docker inspect failed during profile sweep: ${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
+
+    let failure: ControllerError | undefined;
+    for (const entry of candidates) {
+      const hostPath = join(config.profilesHostPath, entry.name);
+      if (protectedPaths.has(hostPath)) continue;
+      const sessionId = entry.name.startsWith(ownPrefix)
+        ? entry.name.slice(ownPrefix.length)
+        : entry.name.slice("agent-".length);
+      const removed = await removeProfileCopy(sessionId, join(config.profilesWork, entry.name));
+      if (removed._tag === "Err") {
+        console.warn(`[profile-sweep-failed] owner=${config.owner} path=${removed.error.path} message=${removed.error.message}`);
+        failure ??= removed.error;
+      }
+    }
+    return failure ? Err(failure) : Ok(undefined);
   }
 
   async function listAllocations(): Promise<Result<ReadonlyArray<ExternalAllocation>, ControllerError>> {
@@ -685,6 +760,24 @@ export function createContainerManager(config: ContainerManagerConfig): Containe
       const deleteRes = await dockerFetch(`/containers/${containerId}`, { method: "DELETE" });
       if (!deleteRes.ok && deleteRes.status !== 404) {
         const text = await deleteRes.text();
+        if (deleteRes.status === 409 && /removal.*already in progress/i.test(text)) {
+          const started = Date.now();
+          try {
+            // Docker's removed condition is the terminal authority. Do not
+            // delete a mounted copy merely because another DELETE is underway.
+            const waited = await dockerFetch(`/containers/${containerId}/wait?condition=removed`, {
+              method: "POST",
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (waited.ok || waited.status === 404) {
+              console.log(`[docker-remove-wait] container=${containerId} elapsed_ms=${Date.now() - started} outcome=removed`);
+              return Ok(undefined);
+            }
+            return Err({ _tag: "ContainerCreateFailed", message: `Docker removal wait failed (${waited.status}): ${await waited.text()}` });
+          } catch (error) {
+            return Err({ _tag: "ContainerCreateFailed", message: `Docker removal wait failed after ${Date.now() - started}ms: ${error instanceof Error ? error.message : String(error)}` });
+          }
+        }
         return Err({ _tag: "ContainerCreateFailed", message: `Docker delete failed (${deleteRes.status}): ${text}` });
       }
     } catch (err) {
