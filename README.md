@@ -346,9 +346,9 @@ Bun 在 qemu64 CPU 上会 hang，VM 必须使用 `cpu: host`。
 
 user-chrome 的 Chrome 常驻运行，Controller 拷贝时不会暂停它，也不做 SQLite checkpoint，只删除拷贝顶层属于运行中进程的 `Singleton*` 锁。如果人正在操作、浏览器正在写 profile，拷贝可能落在写入中间。人完成登录后再 connect 可以降低这种风险，但没有机制保证一致性。
 
-### 11.8 本地 session 按 `HOME` 单槽
+### 11.8 缺陷：本地 session 按 `HOME` 单槽
 
-CLI 把 session id 存在 `$HOME/.moat/session`，没有其他覆盖方式。共享同一个 `HOME` 的多个 agent 会落到同一个 session，重新回到 §1.1 的争用。本地"已有 session 就拒绝 connect"的检查也不是原子的：同一个 `HOME` 下两个 connect 同时执行，可能都注册成功，后写的覆盖先写的，先注册的 session 就没有本地句柄了。并行的 agent 需要各自的 `HOME`。
+这是缺陷，不是设计约束，跟踪于 [#296](https://github.com/mouriya-s-lab/moat-browser/issues/296)（最高优先级）。CLI 把 session id 存在 `$HOME/.moat/session`，没有其他覆盖方式；upstream agent-browser 用来隔离多个 agent 的 `--session` / `AGENT_BROWSER_SESSION` 在 moat 里被拒绝。共享同一个 `HOME` 的多个 agent 会落到同一个 session，重新回到 §1.1 的争用。本地"已有 session 就拒绝 connect"的检查也不是原子的：同一个 `HOME` 下两个 connect 同时执行，可能都注册成功，后写的覆盖先写的，先注册的 session 就没有本地句柄了。修复前，并行的 agent 需要各自的 `HOME`。
 
 ### 11.9 session id 就是访问凭证
 
