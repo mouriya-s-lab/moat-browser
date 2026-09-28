@@ -1,9 +1,6 @@
 .git
 .gitignore
-.github
 .env*
-.sops.yaml
-secrets.yml
 **/node_modules
 **/dist
 **/target

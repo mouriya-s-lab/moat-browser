@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 前置条件：
-- 目标版本已由 `v*` tag 触发的 `.github/workflows/deploy.yml` 部署，Controller + user-chrome 在 Browser VM 上
+- 目标版本已部署到 Browser VM（维护者经私有部署仓库发布），Controller + user-chrome 在运行
 - 本机有编译好的 `moat` 二进制：`cli/target/release/moat`
 - 环境变量：`export MOAT_CONTROLLER="ws://browser.hb.lan:3000"`
 

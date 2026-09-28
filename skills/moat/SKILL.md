@@ -10,16 +10,18 @@ moat is a remote-browser CLI. The Controller starts one agent Chrome container p
 
 ## Setup
 
-Install the CLI from a checkout of this repository:
+Build the CLI from a checkout of this repository:
+
+```bash
+cd cli && cargo build --release && cd ..
+sudo install -m 0755 cli/target/release/moat /usr/local/bin/moat
+```
+
+With access to the maintainers' private release repo, install the prebuilt
+Linux x86_64 binary instead through authenticated `gh`:
 
 ```bash
 bash scripts/install.sh
-```
-
-Or, without a local checkout, run the installer through authenticated `gh`:
-
-```bash
-gh api repos/moat-lab/moat-browser/contents/scripts/install.sh --jq .content | base64 -d | bash
 ```
 
 Configure the Controller URL:
@@ -36,8 +38,9 @@ not written to either the config or session file:
 moat --controller "ws://<other-controller>:3000" connect --profile default
 ```
 
-Controller selection priority is `--controller` > non-empty
-`MOAT_CONTROLLER` > `~/.moat/config.json` `controller`.
+Controller selection priority is `--controller` > `MOAT_CONTROLLER` >
+`~/.moat/config.json` `controller`. A set but empty `--controller` or
+`MOAT_CONTROLLER` is an error; it does not fall through to the next source.
 
 ## Session lifecycle
 

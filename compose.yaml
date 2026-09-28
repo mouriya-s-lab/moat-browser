@@ -1,0 +1,83 @@
+# Self-hosted moat-browser, built locally from this repository.
+#
+#   export MOAT_DATA_DIR=/srv/moat-browser        # absolute host path
+#   export NEKO_WEBRTC_NAT1TO1=<address your browser uses to reach this host>
+#   export NEKO_USER_PASSWORD=... NEKO_ADMIN_PASSWORD=...
+#   mkdir -p "$MOAT_DATA_DIR/profile" "$MOAT_DATA_DIR/profiles"
+#   sudo chown -R 1000:1000 "$MOAT_DATA_DIR"
+#   docker compose up -d --build
+#
+# MOAT_DATA_DIR/profile holds the human-maintained source profile;
+# MOAT_DATA_DIR/profiles holds per-session copies. The Controller creates one
+# agent-chrome container per session through the Docker socket and bind-mounts
+# its copy by host path, so MOAT_DATA_DIR must be an absolute host path.
+
+services:
+  user-chrome:
+    image: moat-browser/user-chrome:local
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: images/user-chrome/Dockerfile
+    restart: unless-stopped
+    shm_size: "2gb"
+    cap_add:
+      - SYS_ADMIN
+    ports:
+      - "8080:8080"
+      - "52000-52100:52000-52100/udp"
+    volumes:
+      - ${MOAT_DATA_DIR:?set MOAT_DATA_DIR to an absolute host path}/profile:/home/neko/.config/chromium
+    environment:
+      NEKO_DESKTOP_SCREEN: "1920x1080@30"
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: "${NEKO_USER_PASSWORD:?set NEKO_USER_PASSWORD}"
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: "${NEKO_ADMIN_PASSWORD:?set NEKO_ADMIN_PASSWORD}"
+      NEKO_WEBRTC_EPR: "52000-52100"
+      NEKO_WEBRTC_ICELITE: "1"
+      NEKO_WEBRTC_NAT1TO1: "${NEKO_WEBRTC_NAT1TO1:?set NEKO_WEBRTC_NAT1TO1 to the address clients use to reach this host}"
+    networks:
+      - moat
+
+  controller:
+    image: moat-browser/controller:local
+    build:
+      context: .
+      dockerfile: packages/controller/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${MOAT_DATA_DIR:?set MOAT_DATA_DIR to an absolute host path}/profile:/data/profile:ro
+      - ${MOAT_DATA_DIR:?set MOAT_DATA_DIR to an absolute host path}/profiles:/data/profiles
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      PORT: "3000"
+      PROFILE_SOURCE: /data/profile
+      PROFILES_WORK: /data/profiles
+      PROFILES_HOST_PATH: ${MOAT_DATA_DIR:?set MOAT_DATA_DIR to an absolute host path}/profiles
+      DOCKER_NETWORK: moat
+      AGENT_CHROME_IMAGE: moat-browser/agent-chrome:local
+    depends_on:
+      - user-chrome
+      - agent-chrome-image
+    networks:
+      - moat
+
+  # Builds the image the Controller uses for per-session agent containers and
+  # keeps it referenced so an image prune does not remove it.
+  agent-chrome-image:
+    image: moat-browser/agent-chrome:local
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: images/agent-chrome/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["sleep infinity"]
+    networks:
+      - moat
+
+networks:
+  moat:
+    driver: bridge
+    name: moat

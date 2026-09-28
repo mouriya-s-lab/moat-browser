@@ -2,96 +2,80 @@
 
 ## Project Context
 
-- **Project**: moat-browser — 企业级浏览器 RPC 系统。AI Agent 通过 CDP 操作远程 Chromium，用户通过 neko WebRTC 完成 SaaS 登录
-- **This repo's role**: 应用代码（SDK + Controller + CLI + Docker 镜像 + E2E 测试）
-- **Design doc**: `README.md`
-- **Core idea**: 有状态登录 + 无状态执行。人类负责登录（neko WebRTC），Agent 负责执行（Patchright CDP），Profile 在中间桥接
-- **SDK 策略**: SDK 是 RPC 抽象层，TS 和 Rust 各一个实现，共享同一 wire 协议。CLI 是 agent-browser 的 fork，transport 层改为调用 Rust SDK（而非本地 Unix socket），其余保持 upstream 同步
+- **目的**：解决两件事：多个 agent 抢同一个浏览器；人的登录态（user-data）如何交给 agent。与任何特定业务无关。
+- **核心设计**：一份由人维护的源 profile，每个 agent session 一份 `cp -a` 拷贝，每个 session 一个独立的 agent-chrome 容器。拷贝不回写，session 结束即删除。生命周期由 Controller 持有。
+- **载体**：neko 是人的登录入口（WebRTC 远程桌面），agent-browser 是 agent 的命令词汇（`moat` CLI 是它的 fork）。两者都是可替换的现成实现，不是核心。
+- **This repo's role**：开源应用代码（Controller、Rust CLI + SDK、wire 类型、两个浏览器镜像、E2E）和从源码自行构建的 `compose.yaml`。不含 CI、私有镜像引用、生产 compose 或任何 secret。
+- **设计文档**：`README.md`（问题、设计、生命周期、部署、已知约束）；模块细节在 `docs/`；面向 agent 的 CLI 契约在 `skills/moat/SKILL.md`。
 
 ## Related Repos
 
-| Repo | Role | Relationship |
+|Repo|Role|Relationship|
 |---|---|---|
-| homelab-tf (`~/work/homelab-tf`) | IaC (OpenTofu + Ansible + Komodo) | Browser VM 104 (`browser.hb.lan`, 192.168.1.221) 的 Komodo Stack 与 CI/CD 部署入口 |
+|moat-browser-deploy（`mouriya-s-lab/moat-browser-deploy`，私有）|CI/CD + 生产部署声明|全部 workflow（镜像构建推送与部署、CLI 发布、Komodo 同步）、Komodo stack 声明、生产 compose、GitHub Actions secrets。发版在该仓库打 tag，它 checkout 本仓库同名 ref 构建|
+|homelab-tf (`~/work/homelab-tf`)|IaC (OpenTofu + Ansible + Komodo)|生产主机与 Komodo Core/Periphery、ResourceSync 对象|
 
 ## Issues
 
-- Tracked in: `moat-lab/moat-browser`（`Mouriya-Emma/moat-browser` 是 transfer 前的旧名，仅靠 GitHub redirect 可达，不要再用）
-- 当前 open 树：umbrella #237（dogfood 审计 51 项交互可信度缺陷）+ child #238–#252；umbrella #224 + child #225–#228（CLI 与 upstream 对齐）
+- Tracked in `moat-lab/moat-browser`（`Mouriya-Emma/moat-browser` 是 transfer 前的旧名，只靠 GitHub redirect 可达，不再使用）。
+- 查当前 open issue 用 `issue://moat-lab/moat-browser?state=open`，不在本文件维护清单。
 
 ## Tech Stack
 
-- **Rust SDK + CLI**: Rust workspace（`cli/sdk` + CLI fork），不在 Bun workspace 里
-- **Controller**: Node.js + TypeScript（Patchright 与 Bun 有 CDP 兼容性问题）
-- **TS SDK / types / e2e**: Bun + TypeScript
-- **Wire 协议**: agent-browser daemon JSON + session envelope（详见 README Section 10.1）
-- **WebSocket**: 原生 ws（不用 socket.io）
-- **Browser automation**: patchright（反检测 Playwright fork）
-- **Runtime validation**: arktype
-- **Container management**: Docker Engine API via fetch + Unix socket（不用 dockerode）
-- **Type system**: discriminated union ADT (`_tag` field) + exhaustive switch
+- **Controller**：Node.js + TypeScript（Patchright 在 Bun 下连接 CDP 有兼容性问题，README §11.6）
+- **wire 类型 / E2E**：Bun + TypeScript（`packages/types`、`packages/e2e`）
+- **CLI + SDK**：Rust workspace `cli/`（`moat-cli` 产出二进制 `moat`，`sdk` 即 `moat-sdk`），不在 Bun workspace 里
+- **Wire 协议**：沿用 agent-browser daemon 的命令 JSON 形状（SDK 规范化后发送）+ session envelope；请求只有 `register`、`deregister`、`command`（README §10）
+- **WebSocket**：原生 `ws`（不用 socket.io）；CLI 每个发往 Controller 的请求新开一个连接
+- **Browser automation**：patchright（反检测 Playwright fork）经 `connectOverCDP` 连接 agent-chrome
+- **浏览器**：两侧都是由 Patchright 版本锚派生的同版本 Chrome for Testing（README §11.4）
+- **Runtime validation**：arktype
+- **Container management**：Docker Engine API via fetch + Unix socket（不用 dockerode）
+- **Type system**：discriminated union ADT（`_tag` field）+ exhaustive switch
 
 ## Directory Structure
 
-```
-moat-browser/
-├── cli/                # Rust workspace — fork 自 vercel-labs/agent-browser
-│   ├── Cargo.toml      # Rust workspace root，不在 Bun workspace 里
-│   ├── sdk/            # Rust SDK crate — WebSocket transport + session 管理
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs      # MoatClient: connect/resume/command/disconnect
-│   │       ├── wire.rs     # WireRequest/WireResponse serde 定义
-│   │       ├── session.rs  # ~/.moat/session 文件读写
-│   │       └── error.rs    # SDK error types
-│   ├── moat-cli/       # CLI 二进制（fork，connection.rs 改为调用 SDK）
-│   │   └── src/
-│   │       ├── main.rs         # connect/disconnect/status + 命令 passthrough
-│   │       └── connection.rs   # 替换 upstream: Unix socket → moat-sdk WebSocket
-│   └── UPSTREAM.md     # 记录与 upstream 的 diff、合并策略
-├── packages/           # Bun workspace (TS/Node)
-│   ├── types/          # Wire 协议 canonical 定义 + ADT + arktype schema
-│   ├── sdk/            # TS SDK — RPC 客户端库
-│   ├── controller/     # Node.js — wire 协议服务端
-│   └── e2e/            # E2E 测试
-├── images/
-│   ├── user-chrome/    # User Chrome 镜像 (neko base + Chrome for Testing)
-│   └── agent-chrome/   # Agent Chrome 镜像 (Chrome for Testing + CDP)
-├── skills/
-│   └── moat/
-│       └── SKILL.md    # Agent 可发现性文档，随包分发
-├── README.md           # 设计文档
-├── CLAUDE.md
-├── package.json
-├── bunfig.toml
-└── tsconfig.json
-```
+|路径|内容|
+|---|---|
+|`cli/moat-cli/`|`moat` CLI，agent-browser 的 fork；fork 专属代码在 `src/fork_features/`|
+|`cli/sdk/`|Rust SDK：WebSocket transport、`~/.moat/session`、wire 编解码（`wire.rs`）|
+|`cli/UPSTREAM.md`|与 upstream agent-browser 的差异和同步记录|
+|`packages/types/`|wire 协议与 ADT 的 TypeScript 定义 + arktype schema|
+|`packages/controller/`|Controller：`ws-server.ts`、`session-registry.ts`、`session-admission.ts`、`container-manager.ts`、`cdp-bridge.ts`、`browser-anchor.ts`|
+|`packages/e2e/`|E2E 测试、`profile-guard.ts`、测试用 `docker-compose.test.yml`|
+|`images/user-chrome/`|neko base + Chrome for Testing，人的登录入口|
+|`images/agent-chrome/`|Debian + Xorg + openbox + Chrome for Testing + socat CDP 转发|
+|`images/chrome-anchor.mjs`|从 Patchright 派生 Chrome 版本|
+|`compose.yaml`|从源码本地构建并运行全部服务（README §9）|
+|`scripts/`|`verify-chrome-versions.sh`（三镜像版本校验）、`cli-command-contract.py`、`install.sh`（从 moat-browser-deploy 的 release 下载 CLI）|
+|`skills/moat/SKILL.md`|面向 agent 的 CLI 使用说明，随仓库分发|
+|`docs/`|容器、Controller、Rust SDK 设计，E2E 方案，spike 历史报告|
 
 ## Code Conventions
 
-- ADT: 所有 union 类型使用 `_tag` discriminant + `readonly` fields
-- Switch: `default: exhaustive(x)` 兜底，不允许 fall-through
-- Error handling: 返回 `Result | Error` union，不 throw
-- Types: 不使用 `any`、`as` 类型断言（第三方库交互除外）
-- Container API: fetch + Docker Engine Unix socket，不用 dockerode
-- Validation: arktype 做运行时验证，TypeScript 做编译时检查
+- ADT：所有 union 类型使用 `_tag` discriminant + `readonly` fields
+- Switch：`default: exhaustive(x)` 兜底，不允许 fall-through
+- Error handling：返回 `Result | Error` union，不 throw
+- Types：不使用 `any`、`as` 类型断言（第三方库交互除外）
+- Validation：arktype 做运行时验证，TypeScript 做编译时检查
+- wire 协议改动必须同时改 `packages/types` 与 `cli/sdk/src/wire.rs`，两边没有机械一致性校验（README §11.10）
+- CLI 的 fork 改动遵循 `cli/UPSTREAM.md` 与 `cli/moat-cli/src/fork_features/trunk-patches.md` 的记录方式
 
 ## Verification Commands
 
-- TS 包 typecheck: `bun run build` (per package under `packages/`)
-- TS 单元测试: `bun test packages/sdk/` or `bun test packages/controller/`
-- E2E 测试: `bun test packages/e2e/`
-- Rust 构建: `cd cli && cargo build --release`
-- Rust 测试: `cd cli && cargo test`
-- 与 upstream agent-browser 同步: `cd cli && git fetch upstream && git merge upstream/main`（仅 `connection.rs` 和新增 session 命令会产生冲突）
-- Docker: 构建与部署由 `v*` tag 触发 `.github/workflows/deploy.yml`（self-hosted runner 构建并推送 controller / user-chrome / agent-chrome 镜像，再经 Komodo API 执行 `moat-browser` stack 的 UpdateStack + DeployStack），不手动 docker build/compose 上线
-  - user-chrome 与 agent-chrome 都必须以仓库根目录为 context 构建：`docker build --platform linux/amd64 -f images/<user-chrome|agent-chrome>/Dockerfile .`（Chrome 版本从 Patchright 锚派生，见 README §11.4）；部署前三方版本校验：`.github/scripts/verify-chrome-versions.sh <controller 镜像> <user 镜像> <agent 镜像>`
+- TS typecheck：`bun run build`（在 `packages/controller` 或 `packages/types` 下）
+- TS 单元测试：`bun test packages/controller/`、`bun test packages/types/`
+- E2E：`bun test packages/e2e/`（本地环境用 `packages/e2e` 的 `compose:up` / `compose:down`）
+- Rust：`cd cli && cargo build --release`、`cd cli && cargo test`
+- Profile 护栏（推进 Patchright 锚或发布前必跑）：`MOAT=cli/target/release/moat bun run packages/e2e/profile-guard.ts --controller-image <c> --user-image <u> --agent-image <a>`（README §11.4）
+- 浏览器镜像以仓库根目录为 context 构建：`docker build --platform linux/amd64 -f images/<user-chrome|agent-chrome>/Dockerfile .`；三方版本校验：`scripts/verify-chrome-versions.sh <controller 镜像> <user 镜像> <agent 镜像>`
+- 本地整套运行：`docker compose up -d --build`（需要的环境变量见 `compose.yaml` 顶部注释与 README §9）
+- 发布与生产部署不在本仓库：见 moat-browser-deploy。本仓库不得加入 workflow、私有 registry 镜像引用或 secret 文件
 
-## Target Environment
+## 运行约束
 
-- VM 104 at `browser.hb.lan` (192.168.1.221; Browser server, Komodo managed)
-- Docker ready, Bun installed
-- CPU: host (Bun hangs on qemu64)
+- 两个浏览器镜像只有 `linux/amd64`
+- 运行 Bun 的 VM 必须用 host CPU（Bun 在 qemu64 上会 hang，README §11.5）
 
 ## Commit Format
 
@@ -103,4 +87,4 @@ via [HAPI](https://hapi.run)
 Co-Authored-By: HAPI <noreply@hapi.run>
 ```
 
-Types: `init`, `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+Types：`init`、`feat`、`fix`、`refactor`、`test`、`docs`、`chore`

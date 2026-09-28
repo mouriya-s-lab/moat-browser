@@ -105,7 +105,7 @@ chown -R 1000:1000 /data/profile
 | `NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD` | `<admin-pw>` | 管理员密码（可控制键鼠） |
 | `NEKO_WEBRTC_EPR` | `52000-52100` | WebRTC 端口范围 |
 | `NEKO_WEBRTC_ICELITE` | `1` | 轻量 ICE agent（同 LAN 无需 STUN/TURN） |
-| `NEKO_WEBRTC_NAT1TO1` | WebRTC 客户端可达的宿主地址（生产取值见 `stacks/moat-browser/compose.yaml`） | 写入 ICE candidate 的地址 |
+| `NEKO_WEBRTC_NAT1TO1` | WebRTC 客户端可达的宿主地址（自行部署时由 `compose.yaml` 的同名环境变量提供） | 写入 ICE candidate 的地址 |
 
 ### 1.9 关键约束
 
@@ -356,13 +356,18 @@ POST /containers/<id>/stop
 DELETE /containers/<id>
 ```
 
-### 3.5 docker-compose（开发/E2E 环境）
+### 3.5 docker-compose
 
-唯一实现是 `packages/e2e/docker-compose.test.yml`，本文不再保存副本。设计要点：
+有两份编排，本文不保存副本：
 
-- user-chrome、controller 常驻，三个镜像都以仓库根目录为 context 构建；controller 挂载 Docker socket 来管理 agent-chrome，`profile-data` 卷同时挂载到 user-chrome（读写）和 controller（只读，作为 `cp -a` 源），`profiles-work` 是 profile 拷贝的工作目录。
-- `NEKO_WEBRTC_NAT1TO1` 由运行环境提供（WebRTC 客户端能到达的本机地址），未设置时 compose 直接报错，不写死任何测试机地址。
-- compose 中的 `agent-chrome-image` 是镜像持有者（与生产 stack 相同的模式）：按 `images/agent-chrome/Dockerfile`（仓库根 context）构建镜像，以 `sleep infinity` 常驻，使该镜像不被清理，供 controller 的 `AGENT_CHROME_IMAGE` 使用；controller 依赖它启动。它不是 session 容器，也不暴露 CDP；每个 session 的 agent-chrome 容器仍由 controller 通过 Docker Engine API 动态创建和销毁。
+- `compose.yaml`（仓库根目录）：自行部署用，三个镜像都从源码本地构建，宿主数据目录由 `MOAT_DATA_DIR` 指定（`profile/` 为源 profile，`profiles/` 为 session 拷贝），用法见 README §9。
+- `packages/e2e/docker-compose.test.yml`：E2E 用，源 profile 放在 `profile-data` 卷，session 拷贝放在宿主 `/tmp/moat-profiles`，`moat` 网络为 external。
+
+两者共同的设计要点：
+
+- user-chrome、controller 常驻；controller 挂载 Docker socket 来管理 agent-chrome，源 profile 同时挂载到 user-chrome（读写）和 controller（只读，作为 `cp -a` 源）。
+- `NEKO_WEBRTC_NAT1TO1` 由运行环境提供（WebRTC 客户端能到达的本机地址），未设置时 compose 直接报错，不写死任何地址。
+- `agent-chrome-image` 是镜像持有者：按 `images/agent-chrome/Dockerfile`（仓库根 context）构建镜像，以 `sleep infinity` 常驻，使该镜像不被清理，供 controller 的 `AGENT_CHROME_IMAGE` 使用；controller 依赖它启动。它不是 session 容器，也不暴露 CDP；每个 session 的 agent-chrome 容器仍由 controller 通过 Docker Engine API 动态创建和销毁。
 - 所有容器在 `moat` bridge 网络中，controller 通过容器 IP 访问 9222。
 
 ### 3.6 生命周期总览
