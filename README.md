@@ -114,7 +114,9 @@ Controller 用 Patchright（Playwright 的反检测 fork）驱动 agent-chrome�
 - **驱动时不暴露 CDP 痕迹**：普通 Playwright 接入后会对每个页面发送 `Runtime.enable`，页面脚本可以借此察觉调试器，这是常见的自动化检测点。Patchright 不发 `Runtime.enable`，改在隔离的执行上下文里运行脚本，也不启用 Console 域。这些补丁在驱动层，对 `connectOverCDP` 同样生效。
 - **版本锚**：两侧 Chrome for Testing 的版本都从 Patchright 派生（§11.4）。
 
-Patchright 还有一部分补丁调整的是它自己启动 Chrome 时的默认参数，这部分在 moat 里用不上：Controller 不启动浏览器，agent-chrome 里的 Chrome 由 supervisord 启动（`images/agent-chrome/supervisord.conf`）。同等效果由 supervisord 的参数直接给出：带 `--disable-blink-features=AutomationControlled`，不带 `--enable-automation`、`--disable-popup-blocking`、`--disable-component-update`、`--disable-default-apps`、`--disable-extensions`。
+agent-chrome 的 Chrome 不由 Patchright 启动，而由 supervisord 启动（`images/agent-chrome/supervisord.conf`），Controller 只负责接入。这样做是为了在保留上述反检测能力的同时让扩展可用：启动参数完全由镜像决定，带 `--disable-blink-features=AutomationControlled`，不带 `--enable-automation`、`--disable-popup-blocking`、`--disable-component-update`、`--disable-default-apps`、`--disable-extensions`。Patchright 调整启动默认参数的那部分补丁因此用不上，它的效果已经由这组参数直接给出。
+
+扩展只有一个来源：人在 user-chrome 里安装（user-chrome 同样不禁用扩展，也没有限制扩展的策略），扩展随源 profile 整份拷贝进每个 session。agent 侧不能自行加载扩展，`moat --extension` 返回 `unsupported_in_moat`。profile 护栏（§11.4）不检查扩展，拷贝后的扩展能否在 agent 侧正常启用没有自动化验证。
 
 ---
 
