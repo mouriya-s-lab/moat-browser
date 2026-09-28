@@ -108,6 +108,14 @@ flowchart LR
 
 两侧浏览器都使用 `--password-store=basic`，都以 uid 1000 运行，版本相同（§11.4），所以拷贝过去的 cookie 可以在 agent 侧直接解密使用。这一点由 §11.4 的 profile 护栏端到端验证，配置一致本身并不能证明。
 
+Controller 用 Patchright（Playwright 的反检测 fork）驱动 agent-chrome。它在这里承担三件事：
+
+- **执行命令**：`packages/controller/src/cdp-bridge.ts` 用 `chromium.connectOverCDP` 接入 agent-chrome。agent 的每条命令（`open`、`find role ... click`、`snapshot` 等）都由 Controller 翻译成 Patchright 的 Playwright API 调用来执行。
+- **驱动时不暴露 CDP 痕迹**：普通 Playwright 接入后会对每个页面发送 `Runtime.enable`，页面脚本可以借此察觉调试器，这是常见的自动化检测点。Patchright 不发 `Runtime.enable`，改在隔离的执行上下文里运行脚本，也不启用 Console 域。这些补丁在驱动层，对 `connectOverCDP` 同样生效。
+- **版本锚**：两侧 Chrome for Testing 的版本都从 Patchright 派生（§11.4）。
+
+Patchright 还有一部分补丁调整的是它自己启动 Chrome 时的默认参数，这部分在 moat 里用不上：Controller 不启动浏览器，agent-chrome 里的 Chrome 由 supervisord 启动（`images/agent-chrome/supervisord.conf`）。同等效果由 supervisord 的参数直接给出：带 `--disable-blink-features=AutomationControlled`，不带 `--enable-automation`、`--disable-popup-blocking`、`--disable-component-update`、`--disable-default-apps`、`--disable-extensions`。
+
 ---
 
 ## 5. Session 生命周期
