@@ -38,7 +38,7 @@
 |路径|内容|
 |---|---|
 |`cli/moat-cli/`|`moat` CLI，agent-browser 的 fork；fork 专属代码在 `src/fork_features/`|
-|`cli/sdk/`|Rust SDK：WebSocket transport、`~/.moat/session`、wire 编解码（`wire.rs`）|
+|`cli/sdk/`|Rust SDK：WebSocket transport、命名 session 槽位（`$HOME/.moat/sessions/<name>`）、wire 编解码（`wire.rs`）|
 |`cli/UPSTREAM.md`|与 upstream agent-browser 的差异和同步记录|
 |`packages/types/`|wire 协议与 ADT 的 TypeScript 定义 + arktype schema|
 |`packages/controller/`|Controller：`ws-server.ts`、`session-registry.ts`、`session-admission.ts`、`container-manager.ts`、`cdp-bridge.ts`、`browser-anchor.ts`|
@@ -58,7 +58,7 @@
 - Error handling：返回 `Result | Error` union，不 throw
 - Types：不使用 `any`、`as` 类型断言（第三方库交互除外）
 - Validation：arktype 做运行时验证，TypeScript 做编译时检查
-- wire 协议改动必须同时改 `packages/types` 与 `cli/sdk/src/wire.rs`，两边没有机械一致性校验（README §11.10）
+- wire 协议改动必须同时改 `packages/types` 与 `cli/sdk/src/wire.rs`，两边没有机械一致性校验（README §11.9）
 - CLI 的 fork 改动遵循 `cli/UPSTREAM.md` 与 `cli/moat-cli/src/fork_features/trunk-patches.md` 的记录方式
 
 ## Verification Commands

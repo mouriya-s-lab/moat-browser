@@ -17,7 +17,6 @@ const CONTROLLER_OWNED_FLAGS: &[&str] = &[
 ];
 
 const UPSTREAM_LOCAL_FLAGS: &[&str] = &[
-    "--session",
     "--session-name",
     "--state",
     "--download-path",
@@ -172,10 +171,9 @@ mod tests {
                 .unwrap()
                 .contains("unsupported_in_moat")
         );
-        assert!(
-            unsupported_flag(&args(&["snapshot", "--session", "x"]), "snapshot")
-                .unwrap()
-                .contains("unsupported_in_moat")
+        assert_eq!(
+            unsupported_flag(&args(&["snapshot", "--session", "x"]), "snapshot"),
+            None
         );
     }
 

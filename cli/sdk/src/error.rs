@@ -6,6 +6,7 @@ use crate::wire::{CapacityDetails, CommandFailureCause};
 pub enum SdkError {
     NoSession,
     SessionAlreadyActive { session_id: String },
+    InvalidSessionName(String),
     ConnectionFailed(String),
     WebSocket(String),
     Timeout {
@@ -44,7 +45,10 @@ impl SdkError {
             }
             Self::RegisterFailed { cause, .. } | Self::DeregisterFailed { cause, .. } => cause.clone(),
             Self::CommandFailed { cause, .. } => Some(cause.clone()),
-            Self::NoSession | Self::Timeout { .. } | Self::MissingArguments { .. } => None,
+            Self::NoSession
+            | Self::Timeout { .. }
+            | Self::MissingArguments { .. }
+            | Self::InvalidSessionName(_) => None,
             Self::SessionAlreadyActive { .. }
             | Self::SessionFileError(_)
             | Self::ConfigError(_) => Some(CommandFailureCause::Transport),
@@ -71,6 +75,10 @@ impl fmt::Display for SdkError {
                     "Session already active: {session_id}; disconnect it before connecting again"
                 )
             }
+            Self::InvalidSessionName(name) => write!(
+                f,
+                "Invalid session name {name:?}: use 1-255 ASCII letters, digits, '-' or '_'"
+            ),
             Self::ConnectionFailed(msg) => write!(f, "Connection failed: {}", msg),
             Self::WebSocket(msg) => write!(f, "WebSocket error: {}", msg),
             Self::Timeout {

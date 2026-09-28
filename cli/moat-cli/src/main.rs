@@ -137,6 +137,7 @@ fn sdk_error_type(error: &SdkError) -> &str {
         SdkError::Timeout { .. } => ERROR_TIMEOUT,
         SdkError::NoSession => ERROR_TARGET_NOT_FOUND,
         SdkError::MissingArguments { .. } => ERROR_MISSING_ARGUMENTS,
+        SdkError::InvalidSessionName(_) => ERROR_INVALID_VALUE,
         SdkError::SessionAlreadyActive { .. }
         | SdkError::ConnectionFailed(_)
         | SdkError::WebSocket(_)
@@ -306,6 +307,17 @@ async fn main() {
         }
         exit(1);
     }
+    // Validate before any connection or filesystem access, even for commands
+    // that do not require an active Controller session.
+    if let Err(error) = moat_sdk::session::validate_name(&flags.session) {
+        if flags.json {
+            print_sdk_json_error(&error);
+        } else {
+            eprintln!("{} {}", color::error_indicator(), error);
+        }
+        exit(1);
+    }
+
 
     // ─── moat-specific subcommands ───
 
@@ -339,7 +351,7 @@ async fn main() {
                 .filter(|value| !value.starts_with("--"))
                 .map(String::as_str);
 
-            match MoatClient::init(&url, profile).await {
+            match MoatClient::init(&url, profile, &flags.session).await {
                 Ok(client) => {
                     if flags.json {
                         println!(
@@ -373,8 +385,8 @@ async fn main() {
         // use: select an existing session
         "use" => {
             let session_id = match clean.get(1) {
-                Some(id) => id.clone(),
-                None => {
+                Some(id) if !id.trim().is_empty() => id.clone(),
+                _ => {
                     if flags.json {
                         print_json_error_with_type(
                             "Missing arguments for: use\nUsage: moat use <session-id>",
@@ -389,7 +401,7 @@ async fn main() {
                     exit(1);
                 }
             };
-            match moat_sdk::session::write_session_id(&session_id) {
+            match moat_sdk::session::write_session_id(&flags.session, &session_id) {
                 Ok(()) => {
                     if flags.json {
                         println!(
@@ -429,7 +441,7 @@ async fn main() {
                     exit(78);
                 }
             };
-            let session_id = match moat_sdk::session::read_session_id() {
+            let session_id = match moat_sdk::session::read_session_id(&flags.session) {
                 Ok(Some(id)) => id,
                 _ => {
                     if flags.json {
@@ -440,7 +452,17 @@ async fn main() {
                     exit(77);
                 }
             };
-            let client = MoatClient::from_session(url, session_id);
+            let client = match MoatClient::from_session(url, session_id, &flags.session) {
+                Ok(client) => client,
+                Err(error) => {
+                    if flags.json {
+                        print_sdk_json_error(&error);
+                    } else {
+                        eprintln!("{} {}", color::error_indicator(), error);
+                    }
+                    exit(1);
+                }
+            };
             match client.destroy().await {
                 Ok(()) => {
                     if flags.json {
@@ -462,7 +484,7 @@ async fn main() {
         }
 
         "status" => {
-            match moat_sdk::session::read_session_id() {
+            match moat_sdk::session::read_session_id(&flags.session) {
                 Ok(Some(id)) => {
                     let url =
                         controller_url(&flags.controller).unwrap_or_else(|_| "(not set)".into());
@@ -566,7 +588,7 @@ async fn main() {
         }
     };
 
-    match send_command(cmd.clone(), &url).await {
+    match send_command(cmd.clone(), &url, &flags.session).await {
         Ok(resp) => {
             let success = resp.success;
             let action = cmd.get("action").and_then(|v| v.as_str());
@@ -706,7 +728,7 @@ async fn run_batch(
         };
 
         let action = cmd.get("action").and_then(|v| v.as_str());
-        match send_command(cmd.clone(), &url).await {
+        match send_command(cmd.clone(), &url, &flags.session).await {
             Ok(resp) => {
                 if !resp.success {
                     success = false;
