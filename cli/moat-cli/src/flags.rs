@@ -376,9 +376,7 @@ pub fn parse_flags(args: &[String]) -> Flags {
         headed: env_var_is_truthy("AGENT_BROWSER_HEADED") || config.headed.unwrap_or(false),
         debug: env_var_is_truthy("AGENT_BROWSER_DEBUG") || config.debug.unwrap_or(false),
         session: env::var("AGENT_BROWSER_SESSION")
-            .ok()
-            .or(config.session)
-            .unwrap_or_else(|| "default".to_string()),
+            .unwrap_or_else(|_| "default".to_string()),
         headers: config.headers,
         executable_path: env::var("AGENT_BROWSER_EXECUTABLE_PATH")
             .ok()
@@ -512,6 +510,8 @@ pub fn parse_flags(args: &[String]) -> Flags {
                 if let Some(s) = args.get(i + 1) {
                     flags.session = s.clone();
                     i += 1;
+                } else {
+                    flags.session.clear();
                 }
             }
             "--idle-timeout" => {

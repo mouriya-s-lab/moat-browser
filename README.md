@@ -43,7 +43,7 @@ agent 要操作的网站大多需要登录，而密码、MFA、验证码应当�
 - 源 profile 只有一个写入者：人，通过 user-chrome 容器写入。Controller 只读挂载它。（运维还可以登记额外的命名 profile 作为来源，见 §6；拷贝与隔离规则相同。）
 - agent 执行 `moat connect` 时，Controller 把源 profile `cp -a` 到这个 session 专属的目录，再启动一个只属于这个 session 的 agent-chrome 容器。
 - 各个 agent 不共享浏览器进程、tab 或 profile 目录。它们共享的只是 connect 时拷贝到的登录态。这次拷贝不是原子快照（§11.7）。
-- 拷贝不会写回。session 里刷新的 cookie、新的登录、localStorage 改动都会在 session 结束时随拷贝一起删除（删除失败的情况见 §11.11）。登录态需要更新时，由人回到 user-chrome 重新登录。
+- 拷贝不会写回。session 里刷新的 cookie、新的登录、localStorage 改动都会在 session 结束时随拷贝一起删除（删除失败的情况见 §11.10）。登录态需要更新时，由人回到 user-chrome 重新登录。
 
 各对象的权威源头与生命周期：
 
@@ -51,11 +51,11 @@ agent 要操作的网站大多需要登录，而密码、MFA、验证码应当�
 |------|-------------|------|------|
 | 源 profile（宿主 `$MOAT_DATA_DIR/profile`） | 人，经 user-chrome | 首次登录 | 不随 session 变化；人重新登录时更新 |
 | session | Controller（`register` 分配随机 UUID） | `moat connect` | `moat disconnect`、idle 超时或 CDP 断开（§5） |
-| session profile 拷贝（`$MOAT_DATA_DIR/profiles/agent-<base64url(owner)>-<session>`） | Controller | session 创建时 `cp -a` | 容器删除后 `rm -rf`（§11.11） |
+| session profile 拷贝（`$MOAT_DATA_DIR/profiles/agent-<base64url(owner)>-<session>`） | Controller | session 创建时 `cp -a` | 容器删除后 `rm -rf`（§11.10） |
 | agent-chrome 容器 | Controller，经 Docker Engine API | 拷贝完成后 | session 结束 |
-| `~/.moat/session` | CLI 本地保存的 session id，只是索引 | connect 成功 | Controller 确认清理完成后删除 |
+| `$HOME/.moat/sessions/<name>` | CLI 本地保存的所选 session id，只是索引；`--session` > `AGENT_BROWSER_SESSION` > `default` | connect 前原子占位，注册成功后写入 id | Controller 确认清理完成后删除该槽位 |
 
-profile 拷贝和容器都嵌套在 session 之内：先有 session 再建拷贝和容器；结束 session 时先删容器，再删拷贝，最后才删除本地 session 文件。
+profile 拷贝和容器都嵌套在 Controller session 之内：先有 session 再建拷贝和容器；结束 session 时先删容器，再删拷贝，Controller 确认后 CLI 才删除所选本地槽位。不同名字的槽位互不影响。
 
 ---
 
@@ -133,6 +133,7 @@ sequenceDiagram
 
     Human->>U: 经 neko 登录目标站点（含 MFA）
     U->>U: 登录态写入源 profile
+    A->>A: 选槽位并原子占位（同名并发 connect 在此拒绝）
     A->>C: register（可带已注册的 profile 名）
     C->>C: 准入检查（§7），分配 session id
     C->>C: cp -a 源 profile → session 拷贝，删除拷贝顶层 Singleton*，chown 1000:1000
@@ -140,7 +141,7 @@ sequenceDiagram
     D->>B: 启动
     C->>B: 轮询 /json/version，比对浏览器版本锚
     C->>B: connectOverCDP
-    C-->>A: session id（CLI 写入 ~/.moat/session）
+    C-->>A: session id（CLI 写入所选 ~/.moat/sessions/name）
     loop 每条命令
         A->>C: command（sessionId + agent-browser JSON）
         C->>B: Patchright 执行
@@ -149,7 +150,7 @@ sequenceDiagram
     A->>C: deregister
     C->>D: 停止并删除容器
     C->>C: rm -rf session 拷贝
-    C-->>A: 确认清理完成（CLI 删除 ~/.moat/session；拷贝删除失败不影响确认，见 §11.11）
+    C-->>A: 确认清理完成（CLI 删除所选槽位；拷贝删除失败不影响确认，见 §11.10）
 ```
 
 ```mermaid
@@ -170,8 +171,8 @@ stateDiagram-v2
 
 | 事件 | 结果 |
 |------|------|
-| `moat disconnect`（`destroy`、`close-session`、`close` 为同一路径） | 关闭 CDP 连接，停止并删除容器，删除拷贝，释放准入名额。只有 Controller 确认清理完成，CLI 才删除 `~/.moat/session`；任一步失败或结果未知时返回非零，保留本地 session 以便重试。唯一例外是拷贝删除失败会被忽略（§11.11） |
-| 无命令时间超过 `SESSION_IDLE_TIMEOUT`（默认 10 分钟，每 30 秒扫描一次） | Controller 自行清理容器、拷贝和准入名额。agent 本地的 `~/.moat/session` 不会随之删除，要等 agent 执行一次得到确认的 `moat disconnect` |
+| `moat disconnect`（`destroy`、`close-session`、`close` 为同一路径） | 关闭 CDP 连接，停止并删除容器，删除拷贝，释放准入名额。只有 Controller 确认清理完成，CLI 才删除所选 `$HOME/.moat/sessions/<name>`；任一步失败或结果未知时返回非零，保留该槽位以便重试。唯一例外是拷贝删除失败会被忽略（§11.10） |
+| 无命令时间超过 `SESSION_IDLE_TIMEOUT`（默认 10 分钟，每 30 秒扫描一次） | Controller 自行清理容器、拷贝和准入名额。CLI 本地所选槽位不会随之删除，要等 agent 执行一次得到确认的 `moat disconnect` |
 | agent-chrome 的 CDP 断开 | 同上一行，但跳过关闭 CDP 连接 |
 | WebSocket 断开 | 不影响 session。CLI 本来就为每个发往 Controller 的请求新开一个连接，后续请求凭 session id 继续 |
 | Controller 重启 | 开始监听前先回收带本 Controller owner 标签的 agent-chrome 容器及其拷贝；回收失败只记录警告，照常开始监听 |
@@ -203,7 +204,7 @@ moat connect --profile named-fixture
   - `SESSION_OWNER_QUOTAS`：多个 owner 共享全局上限时的分配，如 `owner-a=3,owner-b=2`。
   - 满额时返回 `errorType: "capacity_exceeded"`，附带当前计数和重试条件（等现有 session 及其清理资源完全释放）。不排队。
 - **Controller owner**：取 `CONTROLLER_OWNER`，否则取 Controller 容器的 Compose project 标签。它限定容器标签、启动回收和配额的范围，不代表客户端身份。
-- **客户端**：每个 `$HOME` 只有一个 `~/.moat/session` 槽位。已有 session 时再次 `connect` 会在本地直接拒绝，不影响现有 session。同一台机器上并行的 agent 需要各自的 `HOME`（§11.8）。
+- **客户端**：`--session <name>` 优先于 `AGENT_BROWSER_SESSION`，两者未指定时选择 `default`；每个名字使用独立的 `$HOME/.moat/sessions/<name>` 句柄。名字须为 1–255 个 ASCII 字母、数字、`_` 或 `-`，无效名字在网络请求前拒绝。同一名字的 `connect` 在本地原子占位，第二个请求在注册前被拒绝；不同名字的 agent 可共享一个 `HOME` 而不共用浏览器。旧 `$HOME/.moat/session` 不再读取，已有远端 session 由 Controller idle 超时回收。
 
 每个 session 对应一个 agent-chrome 容器，内存硬上限 384MiB。
 
@@ -226,14 +227,16 @@ sudo install -m 0755 cli/target/release/moat /usr/local/bin/moat
 
 export MOAT_CONTROLLER="ws://<host>:3000"
 
-moat connect                                   # 默认使用人维护的源 profile
-moat open https://example.com/dashboard
-moat find role button --name "Sign in" click   # 主路径：语义定位器
-moat snapshot                                  # 陌生页面再用 snapshot + @eN
-moat disconnect
+moat --session agent-a connect                 # 同一 HOME 下按名字隔离；未指定则使用 default
+moat --session agent-a open https://example.com/dashboard
+moat --session agent-a find role button --name "Sign in" click
+moat --session agent-a snapshot
+moat --session agent-a disconnect
 ```
 
 Controller 地址的优先级：本次 `--controller` > `MOAT_CONTROLLER` > `~/.moat/config.json` 的 `controller` 字段。前两者一旦设置就必须是非空 URL，设为空值会直接报错，不会回落到下一级。
+
+session 槽位选择优先级为本次 `--session <name>` > `AGENT_BROWSER_SESSION` > `default`，仅改变本地 session 句柄的选择，不改变 Controller 的 profile 选择或 wire 协议。`status` 只读所选本地槽位与本次解析出的 Controller URL，不探测远端健康。
 
 与 agent-browser 的主要差异：不会自动启动本地浏览器，操作远程浏览器的命令需要先 `init`/`connect`，否则以 exit 77 退出（`--help`、`--version` 以及本地的 `state list/show/clear/clean/rename` 不需要 session；`status` 只看本地，没有 session 时同样返回 77）；`get cdp-url` 固定返回 `unsupported_in_moat`，因为 CDP 只在 Controller 的 Docker 网络内可达。
 
@@ -307,7 +310,7 @@ CLI 与 Controller 之间的命令体沿用 agent-browser daemon 的命令 JSON 
 
 - 预算：普通命令默认 25s（服务端 `COMMAND_TIMEOUT`），`register` 45s；wait 类命令可以用 `--timeout` 指定 1–120000ms。客户端 deadline 在服务端预算之外再留 5s 网络余量。服务端预算耗尽返回 `errorType: "timeout"`；客户端 deadline 到期由 SDK 本地报超时。两种情况下结果都可能已经部分生效。
 - Rust SDK 对单个编码后的请求和响应执行 8 MiB 上限检查。网络请求列表按页返回；网络正文和 HAR 通过续取句柄分块传输。
-- TypeScript 定义在 `packages/types`，Controller 用其中的 arktype schema 解析请求。Rust 侧定义在 `cli/sdk/src/wire.rs`：命令体是 `serde_json::Value`，由 SDK 规范化后序列化；响应用 serde 结构解析。两端各自维护，没有生成器或跨语言一致性测试（§11.10）。
+- TypeScript 定义在 `packages/types`，Controller 用其中的 arktype schema 解析请求。Rust 侧定义在 `cli/sdk/src/wire.rs`：命令体是 `serde_json::Value`，由 SDK 规范化后序列化；响应用 serde 结构解析。两端各自维护，没有生成器或跨语言一致性测试（§11.9）。
 - Controller 的内部模块与 ADT：`docs/controller-design.md`；Rust SDK：`docs/rust-sdk-design.md`。
 
 ---
@@ -356,19 +359,16 @@ Bun 在 qemu64 CPU 上会 hang，VM 必须使用 `cpu: host`。
 
 user-chrome 的 Chrome 常驻运行，Controller 拷贝时不会暂停它，也不做 SQLite checkpoint，只删除拷贝顶层属于运行中进程的 `Singleton*` 锁。如果人正在操作、浏览器正在写 profile，拷贝可能落在写入中间。人完成登录后再 connect 可以降低这种风险，但没有机制保证一致性。
 
-### 11.8 缺陷：本地 session 按 `HOME` 单槽
 
-这是缺陷，不是设计约束，跟踪于 [#296](https://github.com/mouriya-s-lab/moat-browser/issues/296)（最高优先级）。CLI 把 session id 存在 `$HOME/.moat/session`，没有其他覆盖方式；upstream agent-browser 用来隔离多个 agent 的 `--session` / `AGENT_BROWSER_SESSION` 在 moat 里被拒绝。共享同一个 `HOME` 的多个 agent 会落到同一个 session，重新回到 §1.1 的争用。本地"已有 session 就拒绝 connect"的检查也不是原子的：同一个 `HOME` 下两个 connect 同时执行，可能都注册成功，后写的覆盖先写的，先注册的 session 就没有本地句柄了。修复前，并行的 agent 需要各自的 `HOME`。
-
-### 11.9 session id 就是访问凭证
+### 11.8 session id 就是访问凭证
 
 Controller 不认证客户端，也不把 session 绑定到发起的连接：能访问 `:3000` 并持有 session id 的一方就能操作或销毁该 session。访问边界完全依赖网络（LAN / NetBird）。
 
-### 11.10 wire 协议两端定义没有机械校验
+### 11.9 wire 协议两端定义没有机械校验
 
 TypeScript（`packages/types`）与 Rust（`cli/sdk/src/wire.rs`）各自维护定义，没有生成器、共享 fixture 或跨语言一致性测试。改协议时两边都要改，并用 E2E 验证。
 
-### 11.11 session 拷贝可能滞留在宿主
+### 11.10 session 拷贝可能滞留在宿主
 
 删除拷贝是尽力而为的：容器停止或删除失败时不删拷贝，`rm -rf` 失败会被忽略；启动回收只清理仍有对应容器的拷贝，不扫描孤儿目录。每份拷贝都是整份源 profile，含人的登录 cookie，滞留既占磁盘也让凭据副本无限期存在。生产环境已观察到约 75 个滞留目录，跟踪于 [#289](https://github.com/mouriya-s-lab/moat-browser/issues/289)。
 

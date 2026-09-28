@@ -4,10 +4,10 @@ pub fn help_text() -> &'static str {
 Usage: moat <command> [args] [options]
 
 Session:
-  init | connect               Create a Controller-managed browser session
-  status                       Show local session/config; does not probe Controller health
+  init | connect               Create a Controller-managed browser session in the selected slot
+  status                       Show selected local slot/config; does not probe Controller health
   disconnect | destroy | close-session | close
-                               Destroy the active session; failures retain ~/.moat/session
+                               Destroy the selected session; failures retain its local handle
 
 
 Navigation and page actions:
@@ -64,6 +64,8 @@ Unavailable in moat architecture (stable unsupported_in_moat error):
 
 Global options:
   --json                       Emit exactly one JSON value per command
+  --session <name>             Select a local slot (1-255 ASCII letters/digits, '-' or '_');
+                               overrides AGENT_BROWSER_SESSION; default: default
   --controller <url>           Use this Controller for network commands in this invocation
   --annotate                   Number interactive elements in screenshots
   --screenshot-format <fmt>    png or jpeg
@@ -77,8 +79,8 @@ Global options:
 
 Environment:
   MOAT_CONTROLLER              Controller WebSocket URL
-  ~/.moat/session              Active session ID
-  ~/.moat/config.json          Optional Controller configuration
+  AGENT_BROWSER_SESSION         Local slot name; overridden by --session
+  ~/.moat/sessions/<name>      Selected slot's active session ID
   AGENT_BROWSER_DEFAULT_TIMEOUT Default wait-condition timeout in ms (default 25000)
   AGENT_BROWSER_INIT_SCRIPTS   Unsupported: upstream local launcher only
   AGENT_BROWSER_ENABLE         Unsupported: upstream plugin/runtime launcher only
@@ -93,7 +95,7 @@ Examples:
 }
 
 /// Moat-specific command help without inheriting upstream's local-browser
-/// daemon, named-session, or browser-launch claims.
+/// daemon or browser-launch claims.
 pub fn command_help_text(command: &str) -> Option<String> {
     let usage = match command {
         "init" => "init [--profile <name>] [--controller <url>]",

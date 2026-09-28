@@ -4,18 +4,13 @@
 
 Rust SDK 是 moat CLI 与 Controller 之间的 **transport 适配层**。
 
-agent-browser CLI 原本通过 Unix socket 连本地 daemon，moat 的 CLI fork 改为调用 Rust SDK，SDK 通过 WebSocket 连远程 Controller。CLI 的命令解析、输出格式、exit code 全部保持 upstream 不动，**只有 `connection.rs` 替换**。
+agent-browser CLI 原本通过 Unix socket 连本地 daemon；moat 的 CLI fork 通过 Rust SDK 的 WebSocket 请求远程 Controller。命令词汇尽量与 upstream 一致；CLI 另有 `connect`、`disconnect`、`status` 和命名 session 槽位，SDK 保存本地句柄并转换 wire envelope。fork 的实际改动边界见 `cli/UPSTREAM.md`。
 
-```
-agent-browser CLI (fork)
-    │
-    │  原来: Unix socket → 本地 daemon
-    │  现在: 调用 Rust SDK
-    ▼
-Rust SDK (本 crate)
-    │  WebSocket + session envelope
-    ▼
-Controller (远程)
+```mermaid
+flowchart TD
+    CLI["moat CLI（agent-browser fork）"] -- "命令与所选槽位" --> SDK["Rust SDK"]
+    SDK -- "WebSocket + session envelope" --> Controller["Controller（远程）"]
+    SDK -- "session id 索引" --> Slot["$HOME/.moat/sessions/name"]
 ```
 
 ## 2. 协议差异分析
@@ -201,33 +196,18 @@ types 变更：
 
 ### 4.2 Rust SDK 的翻译层
 
-SDK 只负责 transport 层翻译，**不做命令内容转换**（除少数名称映射）：
+SDK 管理每次调用的 WebSocket、wire envelope 与本地 session 索引。CLI 以 `--session` > `AGENT_BROWSER_SESSION` > `default` 选择槽位；名字限定为 1–255 个 ASCII 字母、数字、`_` 或 `-`。`init` 在发出 Register 前通过排他创建占位文件原子认领 `$HOME/.moat/sessions/<name>`；同名的第二个 `init` 在注册前失败。注册失败移除占位，成功后写入返回的 id。旧 `$HOME/.moat/session` 不读取；Controller 的 session 生命周期不由本地索引决定。
 
 ```rust
-// SDK 核心接口
-pub struct MoatClient {
-    ws: WebSocket,
-    session_id: Option<String>,
-    controller_url: String,
-}
-
 impl MoatClient {
-    /// 建立 session（对应 moat connect）
-    pub async fn connect(url: &str, profile: Option<&str>) -> Result<Self, Error>;
-
-    /// 发送命令（对应 agent-browser 的每个 action）
-    /// 输入: agent-browser Request 格式 { id, action, ...extra }
-    /// SDK 剥掉 id, 包上 { type: "command", sessionId, command: {action, ...extra} }
-    /// 收到响应后解包为 agent-browser Response 格式 { success, data, error }
-    pub async fn command(&self, request: Value) -> Result<Response, Error>;
-
-    /// 销毁 session（对应 moat disconnect）
-    pub async fn disconnect(&mut self) -> Result<(), Error>;
-
-    /// 恢复 session
-    pub async fn resume(url: &str, session_id: &str) -> Result<Self, Error>;
+    pub async fn init(url: &str, profile: Option<&str>, slot: &str) -> Result<Self, SdkError>;
+    pub fn from_session(url: String, session_id: String, slot: &str) -> Result<Self, SdkError>;
+    pub async fn command(&self, request: Value) -> Result<Response, SdkError>;
+    pub async fn destroy(&self) -> Result<(), SdkError>;
 }
 ```
+
+每条远端请求新建一个 WebSocket。`command` 去掉 daemon 请求的 `id`，包在所选 Controller session 的 envelope 中，再把响应转回 CLI 的结果形状；`destroy` 仅在 Controller 确认清理后删除所选槽位。`status` 只读本地句柄与 Controller 地址，不探测远端健康。不同名字的槽位互不干扰。
 
 **名称映射**（SDK 层做）：
 - 输入 `action: "evaluate"` → 发送 `action: "eval"`
@@ -244,22 +224,18 @@ CLI 收到:   { success: true, data: { url, title } }
 
 ## 5. Rust SDK crate 结构
 
-```
-cli/
-├── Cargo.toml          # workspace root
-├── sdk/
-│   ├── Cargo.toml      # moat-sdk crate
-│   └── src/
-│       ├── lib.rs       # pub MoatClient + connect/command/disconnect
-│       ├── wire.rs      # WireRequest/WireResponse serde 定义
-│       ├── session.rs   # session 文件 (~/.moat/session) 读写
-│       └── error.rs     # SDK error types
-├── src/                 # CLI 二进制 (fork)
-│   ├── connection.rs    # 唯一实质修改：调用 sdk::MoatClient
-│   ├── commands.rs      # upstream 不动
-│   ├── main.rs          # 加 connect/disconnect/status 子命令
-│   └── ...
-└── UPSTREAM.md
+```mermaid
+flowchart TD
+    Root["cli/：Rust workspace"] --> SDK["sdk/：moat-sdk"]
+    SDK --> Lib["src/lib.rs：MoatClient 与 wire 转换"]
+    SDK --> Session["src/session.rs：命名槽位与原子占位"]
+    SDK --> Wire["src/wire.rs：请求与响应"]
+    SDK --> Error["src/error.rs：SDK 错误"]
+    Root --> CLI["moat-cli/：agent-browser CLI fork"]
+    CLI --> Main["src/main.rs：connect / disconnect / status"]
+    CLI --> Flags["src/flags.rs：--session 与环境变量"]
+    CLI --> Connection["src/connection.rs：远程命令调用 SDK"]
+    Root --> Upstream["UPSTREAM.md：fork 改动边界"]
 ```
 
 ## 6. 实施顺序

@@ -421,6 +421,7 @@ fn local_state_rename(request: &Value) -> Result<Value, SdkError> {
 pub struct MoatClient {
     url: String,
     session_id: String,
+    slot: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,12 +530,9 @@ fn parse_capacity_details(
 }
 
 impl MoatClient {
-    /// Init: register a new session (creates container + CDP).
-    /// Opens ws, sends Register, receives session ID, closes ws.
-    pub async fn init(url: &str, profile: Option<&str>) -> Result<Self, SdkError> {
-        if let Some(session_id) = session::read_session_id()? {
-            return Err(SdkError::SessionAlreadyActive { session_id });
-        }
+    /// The selected slot is claimed before any Controller request.
+    pub async fn init(url: &str, profile: Option<&str>, slot: &str) -> Result<Self, SdkError> {
+        let claim = session::claim_session(slot)?;
         let deadline = ClientDeadline::new(REGISTER_SERVER_BUDGET_MS);
         let profile = profile.map(String::from);
         let resp = with_client_deadline(deadline, "register", async {
@@ -556,10 +554,11 @@ impl MoatClient {
                 session_id: Some(sid),
                 ..
             } => {
-                session::write_session_id(&sid)?;
+                claim.save(&sid)?;
                 Ok(Self {
                     url: url.to_string(),
                     session_id: sid,
+                    slot: slot.to_string(),
                 })
             }
             WireResponse::RegisterResult {
@@ -604,9 +603,14 @@ impl MoatClient {
         }
     }
 
-    /// Create client from an existing session ID (for subsequent commands).
-    pub fn from_session(url: String, session_id: String) -> Self {
-        Self { url, session_id }
+    /// Create client from an existing session ID in a selected local slot.
+    pub fn from_session(url: String, session_id: String, slot: &str) -> Result<Self, SdkError> {
+        session::validate_name(slot)?;
+        Ok(Self {
+            url,
+            session_id,
+            slot: slot.to_string(),
+        })
     }
 
     /// Send a command — opens a fresh ws, sends Command, receives response, closes ws.
@@ -758,7 +762,7 @@ impl MoatClient {
             } => {
                 // The retry handle is removed only after the controller proves
                 // that the owner-scoped remote cleanup succeeded.
-                session::clear_session_id()?;
+                session::clear_session_id(&self.slot)?;
                 Ok(())
             }
             WireResponse::DeregisterResult {
@@ -1838,6 +1842,14 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn existing_session_constructor_rejects_invalid_slot_before_transport() {
+        assert!(matches!(
+            MoatClient::from_session("ws://127.0.0.1:1".into(), "session-id".into(), "../x"),
+            Err(SdkError::InvalidSessionName(_))
+        ));
     }
 
     #[test]

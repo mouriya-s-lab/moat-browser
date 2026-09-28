@@ -6,7 +6,7 @@ allowed-tools: Bash(moat:*), Bash(*/moat:*)
 
 # moat remote browser
 
-moat is a remote-browser CLI. The Controller starts one agent Chrome container per session; the CLI registers the session, stores its ID in `~/.moat/session`, and sends later commands to that active session.
+moat is a remote-browser CLI. The Controller creates one agent Chrome container per session. The CLI stores each returned session ID as a local index in `$HOME/.moat/sessions/<name>`; commands use only the selected slot.
 
 ## Setup
 
@@ -42,6 +42,16 @@ Controller selection priority is `--controller` > `MOAT_CONTROLLER` >
 `~/.moat/config.json` `controller`. A set but empty `--controller` or
 `MOAT_CONTROLLER` is an error; it does not fall through to the next source.
 
+Choose the session slot with `--session <name>` > `AGENT_BROWSER_SESSION` > `default`. The name must be 1–255 ASCII letters, digits, `_`, or `-`; invalid names fail locally with `invalid_value` before any Controller request. Different names under the same HOME hold independent sessions:
+
+```bash
+moat --session research connect
+moat --session research open https://example.com
+moat --session research disconnect
+```
+
+Use the same selector for each command in one session. The old `$HOME/.moat/session` path is not read; remote sessions referenced only there expire through Controller idle cleanup.
+
 ## Session lifecycle
 
 Start a session before issuing browser commands. `--profile` accepts only a
@@ -67,11 +77,12 @@ moat close-session
 moat close
 ```
 
-Only a confirmed remote cleanup clears `~/.moat/session` and exits
-successfully. A transport, Docker deletion, or unknown terminal state returns
-non-zero and retains the local session handle so the command can be retried.
-When a handle already exists, a second `connect` is rejected before remote
-registration and the existing session remains active.
+Only confirmed remote cleanup clears the **selected** `$HOME/.moat/sessions/<name>`
+and exits successfully. A transport, Docker deletion, or unknown terminal
+state returns non-zero and retains that slot so cleanup can be retried.
+`connect` atomically claims its selected slot before Register. A second
+concurrent `connect` for the same name is rejected before remote registration;
+another name can connect independently.
 
 `moat status` is a local session/configuration view: it shows the session
 handle and the Controller URL resolved for this invocation, but does not probe
