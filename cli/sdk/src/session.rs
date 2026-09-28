@@ -67,6 +67,9 @@ pub struct SessionClaim {
 
 impl SessionClaim {
     pub fn save(mut self, session_id: &str) -> Result<(), SdkError> {
+        if session_id.trim().is_empty() {
+            return Err(SdkError::SessionFileError("cannot save an empty session id".into()));
+        }
         self.file
             .write_all(session_id.as_bytes())
             .map_err(|error| SdkError::SessionFileError(format!("write: {}", error)))?;

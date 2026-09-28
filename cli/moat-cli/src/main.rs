@@ -385,8 +385,8 @@ async fn main() {
         // use: select an existing session
         "use" => {
             let session_id = match clean.get(1) {
-                Some(id) => id.clone(),
-                None => {
+                Some(id) if !id.trim().is_empty() => id.clone(),
+                _ => {
                     if flags.json {
                         print_json_error_with_type(
                             "Missing arguments for: use\nUsage: moat use <session-id>",
