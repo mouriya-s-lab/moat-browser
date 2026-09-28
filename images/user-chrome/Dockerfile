@@ -25,6 +25,8 @@ RUN mkdir -p /home/neko/.config/chromium \
     && chown neko:neko /home/neko/.config/chromium
 COPY --from=chrome-for-testing /opt/chrome /opt/chrome
 COPY images/user-chrome/start-chromium.sh /usr/local/bin/start-chromium
+COPY --chmod=755 images/user-chrome/start-neko.sh /usr/local/bin/start-neko
 COPY images/user-chrome/chromium.conf /etc/neko/supervisord/chromium.conf
 COPY images/user-chrome/openbox.xml /etc/neko/openbox.xml
 COPY images/user-chrome/policies.json /etc/opt/chrome_for_testing/policies/managed/policies.json
+CMD ["/usr/local/bin/start-neko"]

@@ -37,7 +37,7 @@ docker build --platform linux/amd64 -f images/user-chrome/Dockerfile .
 
 ### 1.4 浏览器配置
 
-唯一实现是 `images/user-chrome/`（`Dockerfile`、`chromium.conf`、`start-chromium.sh`、`openbox.xml`、`policies.json`），本文只说明设计要点：
+唯一实现是 `images/user-chrome/`（`Dockerfile`、`chromium.conf`、`start-neko.sh`、`start-chromium.sh`、`openbox.xml`、`policies.json`），本文只说明设计要点：
 
 | 要点 | 原因 |
 |------|------|
@@ -45,6 +45,7 @@ docker build --platform linux/amd64 -f images/user-chrome/Dockerfile .
 | `--password-store=basic` | 与 agent-chrome 相同的 cookie 加密方式，拷贝后可直接解密 |
 | 不启用 remote debugging | user-chrome 只做人类交互，不对任何调用方开放 CDP |
 | `start-chromium.sh` 在 exec 浏览器前删除 profile 顶层 `SingletonLock`/`SingletonSocket`/`SingletonCookie` | 容器被替换后 profile 仍在但主机名变了，上一个容器的锁会让浏览器拒绝启动；同一时刻只有一个 user-chrome 容器、容器内只有一个浏览器进程，此刻的锁必然过期 |
+| `start-neko.sh` 在启动 supervisord 前删除容器私有 `/tmp/.X99-lock` 与 `/tmp/.X11-unix/X99` | 硬停止后复用同一容器会保留旧 Xorg 锁；新 PID 命名空间的进程可能占用锁中的 PID，使 Xorg 误判 display 99 正被使用。清理只在本次启动的 Xorg 尚未出现时执行，不删除宿主 profile，也不改 supervisor 的重试行为 |
 | 镜像内预建 `/home/neko/.config/chromium` 并归 `neko` 所有 | 新建的 named volume 继承该属主，浏览器才能创建 profile |
 | `policies.json` 放在 `/etc/opt/chrome_for_testing/policies/managed/` | CfT 只读取自己品牌的策略目录；放在 Chromium 目录会静默失效 |
 
@@ -62,7 +63,7 @@ docker build --platform linux/amd64 -f images/user-chrome/Dockerfile .
 
 ### 1.5 进程编排
 
-neko base 的 supervisord 管理显示栈与 neko server；`images/user-chrome/chromium.conf` 挂到 `/etc/neko/supervisord/chromium.conf`，增加 `openbox` 与 `chromium` 两个 program（浏览器日志 `/var/log/neko/chromium.log`）：
+镜像的 `CMD` 先运行 `start-neko.sh` 清除容器内 display 99 的旧锁与 socket，再 `exec` neko base 原有的 `/usr/bin/supervisord -c /etc/neko/supervisord.conf`。supervisord 仍为 PID 1，管理显示栈与 neko server；`images/user-chrome/chromium.conf` 加入 `/etc/neko/supervisord/`，增加 `openbox` 与 `chromium` 两个 program（浏览器日志 `/var/log/neko/chromium.log`）：
 
 ```mermaid
 flowchart TD
