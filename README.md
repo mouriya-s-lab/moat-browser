@@ -149,8 +149,9 @@ sequenceDiagram
     end
     A->>C: deregister
     C->>D: 停止并删除容器
-    C->>C: rm -rf session 拷贝
-    C-->>A: 确认清理完成（CLI 删除所选槽位；拷贝删除失败不影响确认，见 §11.10）
+    D-->>C: 确认容器删除
+    C->>C: 删除 session 拷贝，再释放准入名额
+    C-->>A: 确认清理完成（CLI 删除所选槽位；清理失败则保留槽位）
 ```
 
 ```mermaid
@@ -171,11 +172,11 @@ stateDiagram-v2
 
 | 事件 | 结果 |
 |------|------|
-| `moat disconnect`（`destroy`、`close-session`、`close` 为同一路径） | 关闭 CDP 连接，停止并删除容器，删除拷贝，释放准入名额。只有 Controller 确认清理完成，CLI 才删除所选 `$HOME/.moat/sessions/<name>`；任一步失败或结果未知时返回非零，保留该槽位以便重试。唯一例外是拷贝删除失败会被忽略（§11.10） |
-| 无命令时间超过 `SESSION_IDLE_TIMEOUT`（默认 10 分钟，每 30 秒扫描一次） | Controller 自行清理容器、拷贝和准入名额。CLI 本地所选槽位不会随之删除，要等 agent 执行一次得到确认的 `moat disconnect` |
-| agent-chrome 的 CDP 断开 | 同上一行，但跳过关闭 CDP 连接 |
-| WebSocket 断开 | 不影响 session。CLI 本来就为每个发往 Controller 的请求新开一个连接，后续请求凭 session id 继续 |
-| Controller 重启 | 开始监听前先回收带本 Controller owner 标签的 agent-chrome 容器及其拷贝；回收失败只记录警告，照常开始监听 |
+| `moat disconnect`（`destroy`、`close-session`、`close` 为同一路径） | 关闭 CDP 连接，停止并删除容器，删除拷贝，释放准入名额。只有 Controller 确认清理完成，CLI 才删除所选 `$HOME/.moat/sessions/<name>`；任一步失败或结果未知时返回非零，保留该槽位以便重试。 |
+| 无命令时间超过 `SESSION_IDLE_TIMEOUT`（默认 10 分钟，每 30 秒扫描一次） | Controller 自行清理容器、拷贝和准入名额；清理失败保留尚未确认清理的资源。CLI 本地所选槽位不会随之删除，要等 agent 执行一次得到确认的 `moat disconnect`。 |
+| agent-chrome 的 CDP 断开 | 同上一行，但跳过关闭 CDP 连接。 |
+| WebSocket 断开 | 不影响 session。CLI 本来就为每个发往 Controller 的请求新开一个连接，后续请求凭 session id 继续。 |
+| Controller 重启 | 开始监听前先回收本 Controller owner 的 agent-chrome 容器及其拷贝，扫描本 owner 与旧格式的孤儿目录；Docker/磁盘清理或准入 reconcile 失败则不接受新连接。 |
 
 ---
 
@@ -368,9 +369,11 @@ Controller 不认证客户端，也不把 session 绑定到发起的连接：能
 
 TypeScript（`packages/types`）与 Rust（`cli/sdk/src/wire.rs`）各自维护定义，没有生成器、共享 fixture 或跨语言一致性测试。改协议时两边都要改，并用 E2E 验证。
 
-### 11.10 session 拷贝可能滞留在宿主
+### 11.10 session 拷贝清理与跨 owner 边界
 
-删除拷贝是尽力而为的：容器停止或删除失败时不删拷贝，`rm -rf` 失败会被忽略；启动回收只清理仍有对应容器的拷贝，不扫描孤儿目录。每份拷贝都是整份源 profile，含人的登录 cookie，滞留既占磁盘也让凭据副本无限期存在。生产环境已观察到约 75 个滞留目录，跟踪于 [#289](https://github.com/mouriya-s-lab/moat-browser/issues/289)。
+删除顺序以 Docker 为准：停止/删除失败时保留可能仍在挂载的整份 profile；Docker 确认已删除后再删除副本，`rm` 失败返回 `command_failed`/`cleanup` 并保留准入占位与 CLI 句柄以待重试。Controller 启动时回收本 owner 的遗留容器，扫描本 owner 的当前格式与 `agent-<uuid>` 旧格式目录；用所有 owner 的 Docker mount 检查保护存活副本，清理未挂载的候选。启动检查失败则拒绝监听。CDP 下载使用当前 owner 的副本内目录，不再生成单独的旧格式目录。
+
+其他 owner 的当前格式目录即使暂时没有 Docker mount，也可能正在复制、尚未创建容器；本 Controller 不依据一次 mount 快照跨 owner 删除。生产宿主的 `D−L` / `L−D` 须在发布后逐项核对，若含其他 owner 孤儿，应交其 owner 确认生命周期并清理。副本含登录 cookie，不能以“无容器”替代确认。详细生命周期见 `docs/controller-design.md`。
 
 ---
 

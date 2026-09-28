@@ -19,6 +19,7 @@ import type {
   Result as ContainerResult,
 } from "./container-manager.js";
 import {
+  profileDestination,
   resolveProfilePath,
 } from "./container-manager.js";
 import {
@@ -151,6 +152,8 @@ function formatError(error: ControllerError): string {
       return `CDP disconnected for container ${error.containerId}`;
     case "ProfileCopyFailed":
       return `Profile copy failed: ${error.message}`;
+    case "ProfileCleanupFailed":
+      return `Profile cleanup failed for session ${error.sessionId} at ${error.path}: ${error.message}`;
     case "BrowserVersionMismatch": {
       const observed = error.observed;
       switch (observed._tag) {
@@ -219,6 +222,8 @@ function wireFailure(error: ControllerError, stage: CleanupStage = "command"): W
         errorType: "command_failed",
         cause: stage === "cleanup" ? "cleanup" : "container_creation",
       };
+    case "ProfileCleanupFailed":
+      return { errorType: "command_failed", cause: "cleanup" };
     case "CdpUnreachable":
     case "CdpDisconnected":
     case "CommandFailed":
@@ -456,7 +461,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     if (releaseError && result._tag === "Ok") {
       result = { _tag: "Err", error: releaseError };
     }
-    if (destroyResult._tag === "Ok" && !releaseError) {
+    if (!releaseError && containerGone(destroyResult)) {
       sessionContainers.delete(sessionId);
     }
     let failureDetails = "";
@@ -546,14 +551,15 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
   }
 
+  function containerGone(result: ContainerResult<void, ControllerError>): boolean {
+    return result._tag === "Ok" || result.error._tag === "SessionNotFound";
+  }
+
   function releaseAfterCleanup(
     sessionId: string,
     cleanupResult: ContainerResult<void, ControllerError>,
   ): Promise<ControllerError | undefined> {
-    const releaseEligible =
-      cleanupResult._tag === "Ok"
-      || cleanupResult.error._tag === "SessionNotFound";
-    return releaseEligible
+    return containerGone(cleanupResult)
       ? releaseAdmissionOnce(sessionId)
       : Promise.resolve(undefined);
   }
@@ -629,10 +635,10 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     await updateAdmissionPhase(sessionId, "cleanup");
     const destroyResult = await destroyForRollback(sessionId);
     const releaseError = await releaseAfterCleanup(sessionId, destroyResult);
-    if (destroyResult._tag === "Ok" && !releaseError) {
+    if (!releaseError && containerGone(destroyResult)) {
       sessionContainers.delete(sessionId);
     }
-    if (destroyResult._tag === "Err") {
+    if (destroyResult._tag === "Err" && destroyResult.error._tag !== "SessionNotFound") {
       console.warn(
         `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId ?? "unknown"} operation=register-timeout trigger=register outcome=failed error=${formatError(
           destroyResult.error,
@@ -783,6 +789,11 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       }
       const destroyResult = await destroyForRollback(sessionId);
       await releaseAfterCleanup(sessionId, destroyResult);
+      if (destroyResult._tag === "Err" && destroyResult.error._tag !== "SessionNotFound") {
+        console.warn(
+          `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} operation=register-rollback trigger=register outcome=failed error=${formatError(destroyResult.error)}`,
+        );
+      }
       registry.deregister(sessionId, false);
       return errorToRegisterResponse(containerResult.error);
     }
@@ -810,7 +821,7 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
       // Rollback: destroy container + deregister without invoking cleanup hooks.
       const destroyResult = await destroyForRollback(sessionId);
       await releaseAfterCleanup(sessionId, destroyResult);
-      if (destroyResult._tag === "Err") {
+      if (destroyResult._tag === "Err" && destroyResult.error._tag !== "SessionNotFound") {
         console.warn(
           `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-rollback trigger=register outcome=failed error=${formatError(
             destroyResult.error,
@@ -832,16 +843,18 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
     if (cdp === null) {
       registry.deregister(sessionId, false);
+      // The connection promise may never settle. Container/profile cleanup
+      // begins at the deadline, not when a late CDP handshake eventually ends.
+      startLateRegistrationCleanup(sessionId, containerId, undefined);
       void cdpPromise.then(
-        (lateCdp) => startLateRegistrationCleanup(sessionId, containerId, lateCdp),
-        (error) => {
-          startLateRegistrationCleanup(
-            sessionId,
-            containerId,
-            undefined,
-            `CDP rejected: ${error instanceof Error ? error.message : String(error)}`,
+        (lateCdp) => lateCdp.browser.close().catch((error: unknown) => {
+          console.warn(
+            `[cleanup-result] owner=${config.controllerOwner} session=${sessionId} container=${containerId} operation=register-timeout trigger=register outcome=failed error=Late CDP close failed: ${error instanceof Error ? error.message : String(error)}`,
           );
-        },
+        }),
+        (error) => console.warn(
+          `[register-late-cdp] owner=${config.controllerOwner} session=${sessionId} error=${error instanceof Error ? error.message : String(error)}`,
+        ),
       );
       return registerTimeoutResponse("cdp", sessionId);
     }
@@ -907,7 +920,11 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     }
 
     registry.touchActivity(sessionId);
-    const options: CommandExecutionOptions = { deadline, budget };
+    const options: CommandExecutionOptions = {
+      deadline,
+      budget,
+      profileCopyPath: profileDestination(config.profilesWork, config.controllerOwner, sessionId),
+    };
     const result = await withDeadline(
       () => runCommand(cdp.context, command, refStore, sessionId, options),
       deadline,

@@ -234,15 +234,9 @@ agent-chrome 的 9222 端口不对宿主暴露。Controller 通过 Docker 内部
 
 | 容器路径 | 宿主路径 | 用途 |
 |---------|---------|------|
-| `/data/profile` | `/data/profiles/agent-<session-id>` | 从 user-chrome 拷贝来的 profile |
+| `/data/profile` | `${PROFILES_HOST_PATH}/agent-<base64url(controllerOwner)>-<sessionId>` | 从 user-chrome 复制的独立 profile |
 
-由 Controller 在创建容器前准备：
-
-```bash
-cp -a /data/profile /data/profiles/agent-<session-id>
-rm -f /data/profiles/agent-<session-id>/Singleton*
-chown -R 1000:1000 /data/profiles/agent-<session-id>
-```
+Controller 在 `PROFILES_WORK` 对应目录执行 `cp -a` 整份源 profile、删除副本顶层 `Singleton*` 并 `chown -R 1000:1000`；Docker bind mount 使用同一目录在宿主侧的 `PROFILES_HOST_PATH`。两者必须指向同一底层目录。删除顺序为先等 Docker 确认容器已删除，再删除副本；副本删除失败返回清理错误，不确认 session 清理完成。CDP 下载写在该副本中的 `.moat-downloads`。
 
 ### 2.11 CDP 就绪检测
 
@@ -270,47 +264,39 @@ patchright.chromium.connectOverCDP(`http://<container-ip>:9222`)
 
 ```mermaid
 flowchart LR
-  U["user-chrome<br/>/home/neko/.config/chromium<br/>(宿主 /data/profile)"] -- "cp -a（整份）" --> C["Controller<br/>/data/profiles/agent-&lt;id&gt;"]
-  C -- "容器挂载" --> A["agent-chrome<br/>/data/profile"]
+  U["user-chrome<br/>/home/neko/.config/chromium<br/>(宿主源 profile)"] -- "cp -a 整份" --> C["Controller<br/>PROFILES_WORK/agent-&lt;ownerToken&gt;-&lt;sessionId&gt;"]
+  C -- "PROFILES_HOST_PATH 对应目录 bind mount" --> A["agent-chrome<br/>/data/profile"]
 ```
 
 详细流程：
 
-1. 人类通过 neko 登录 SaaS → Cookie/Session 写入 user-chrome 的 `/home/neko/.config/chromium/`
-2. user-chrome 挂载 `/data/profile` 到宿主，宿主持有完整 profile
-3. Agent 请求 `connect` → Controller 执行：
-   ```bash
-   cp -a /data/profile /data/profiles/agent-<session-id>
-   rm -f /data/profiles/agent-<session-id>/Singleton*
-   chown -R 1000:1000 /data/profiles/agent-<session-id>
-   ```
-4. Controller 通过 Docker Engine API 创建 agent-chrome 容器，挂载拷贝
-5. Agent 请求 `disconnect` → Controller 停止并删除容器 + `rm -rf /data/profiles/agent-<session-id>`
+1. 人类通过 neko 登录 SaaS，Cookie/Session 写入 user-chrome 的持久化源 profile。
+2. Agent `connect` 时 Controller 先取得准入占位，再复制整份源 profile，删除副本顶层锁文件并调整属主。
+3. Controller 经 Docker Engine API 创建 agent-chrome 容器并挂载该副本；CDP 就绪且版本匹配后才返回 session ID。
+4. `disconnect`、idle 或 CDP 断开触发清理；Docker 确认容器删除后才删除副本，最后释放准入占位。失败不伪装成成功。
 
 ### 3.2 Profile 路径映射
 
 | 容器 | 容器内路径 | 宿主路径 |
 |------|-----------|---------|
-| user-chrome | `/home/neko/.config/chromium` | `/data/profile` |
-| agent-chrome #1 | `/data/profile` | `/data/profiles/agent-abc123` |
-| agent-chrome #2 | `/data/profile` | `/data/profiles/agent-def456` |
+| user-chrome | `/home/neko/.config/chromium` | `${MOAT_DATA_DIR}/profile`（自行部署） |
+| agent-chrome session A | `/data/profile` | `${PROFILES_HOST_PATH}/agent-<ownerToken>-<sessionA>` |
+| agent-chrome session B | `/data/profile` | `${PROFILES_HOST_PATH}/agent-<ownerToken>-<sessionB>` |
 
-user-chrome 容器内浏览器以 neko 用户运行，`--user-data-dir=/home/neko/.config/chromium`。通过卷挂载，这个路径映射到宿主的 `/data/profile`。
-
-agent-chrome 使用 `--user-data-dir=/data/profile`，容器内路径统一。每个实例挂载各自的宿主目录（拷贝份）。
+user-chrome 以 `neko` 用户运行；agent-chrome 使用 `--user-data-dir=/data/profile`，每个 session 挂载自己的整份副本。生产环境的源与副本路径由部署环境提供，不从本表的自行部署示例推断。
 
 ### 3.3 网络模型
 
 所有容器在同一个 Docker bridge 网络中：
 
-```
-                  docker network: moat
-                         │
-        ┌────────────────┼────────────────┐
-        │                │                │
-  user-chrome      agent-chrome #1   agent-chrome #2
-  172.18.0.2       172.18.0.3        172.18.0.4
-  :8080 (neko)     :9222 (CDP)       :9222 (CDP)
+```mermaid
+flowchart TD
+  N["Docker bridge network: moat"] --> U["user-chrome<br/>neko :8080 + WebRTC UDP"]
+  N --> C["controller<br/>WebSocket :3000"]
+  N --> A["agent-chrome session A<br/>CDP :9222"]
+  N --> B["agent-chrome session B<br/>CDP :9222"]
+  C -- "私有 CDP" --> A
+  C -- "私有 CDP" --> B
 ```
 
 - Controller 运行在宿主（或另一个容器），通过 Docker 网络访问 agent-chrome 的 CDP 端口
@@ -322,40 +308,11 @@ agent-chrome 使用 `--user-data-dir=/data/profile`，容器内路径统一。�
 
 Controller 通过 Docker Engine API（fetch + Unix socket）管理 agent-chrome：
 
-**创建容器**：
-```
-POST /containers/create
-{
-  "Image": "agent-chrome:latest",
-  "ExposedPorts": { "9222/tcp": {} },
-  "HostConfig": {
-    "Binds": ["/data/profiles/agent-<id>:/data/profile"],
-    "NetworkMode": "moat",
-    "ShmSize": 2147483648,
-    "Memory": 402653184,
-    "MemorySwap": 402653184
-  }
-}
-```
-
-**启动容器**：
-```
-POST /containers/<id>/start
-```
-
-**获取容器 IP**：
-```
-GET /containers/<id>/json
-→ .NetworkSettings.Networks.moat.IPAddress
-```
+**创建与启动**：Controller 发送 `POST /containers/create`，配置 `AGENT_CHROME_IMAGE`、`moat-browser.role/owner/session-id` 标签、`PROFILES_HOST_PATH` 下的 session 拷贝 bind mount、`DOCKER_NETWORK`、2 GiB shm，以及 384 MiB memory/memory-swap 限额；随后 `POST /containers/<id>/start` 与 `GET /containers/<id>/json` 获取网络地址。
 
 每个 agent-chrome 的 cgroup 内存上限固定为 384 MiB，且 `MemorySwap` 与 `Memory` 相同，避免浏览器 session 在共享宿主上无限增长。该限制与共享准入总额 N=5 配套，不把稳态均值当作任意负载的安全证明。
 
-**停止 + 删除**：
-```
-POST /containers/<id>/stop
-DELETE /containers/<id>
-```
+**停止与删除**：`POST /containers/<id>/stop?t=5` 后 `DELETE /containers/<id>`；Docker 报“removal already in progress”时等待 `/containers/<id>/wait?condition=removed`。只有 Docker 确认删除才清理副本。Docker 请求默认 10 秒中止；清理失败保留未确认已释放的资源并返回错误。启动 reap 只删除本 owner 容器，profile sweep 则检查所有 owner 的容器挂载以保护存活副本（详见 `docs/controller-design.md`）。
 
 ### 3.5 docker-compose
 
@@ -373,28 +330,22 @@ DELETE /containers/<id>
 
 ### 3.6 生命周期总览
 
-```
-                    常驻                              按需
-              ┌─────────────┐                  ┌─────────────┐
-              │ user-chrome │                  │ agent-chrome │
-              │             │                  │   ×N 个实例   │
-              │ 人类登录 SaaS │                  │              │
-              │ profile 写入 │                  │ profile 拷贝  │
-              │             │                  │ CDP :9222    │
-              └──────┬──────┘                  └──────┬──────┘
-                     │                                │
-                     │   /data/profile (源)            │  /data/profiles/agent-<id> (拷贝)
-                     │                                │
-              ┌──────▼────────────────────────────────▼──────┐
-              │                 Controller                    │
-              │                                              │
-              │  1. cp -a profile → profiles/agent-<id>      │
-              │  2. docker create agent-chrome (挂载拷贝)     │
-              │  3. 轮询 CDP :9222/json/version              │
-              │  4. Patchright connectOverCDP                 │
-              │  5. 执行命令 → 返回结果                        │
-              │  6. disconnect → stop + rm 容器 + rm profile  │
-              └──────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    actor Human as 人类
+    participant User as user-chrome
+    participant Controller as Controller
+    participant Docker as Docker Engine
+    participant Agent as agent-chrome
+    Human->>User: neko 登录，写入持久化源 profile
+    Controller->>Controller: 为 session 占额并复制源 profile
+    Controller->>Docker: create/start 带 owner/session 标签的容器
+    Docker->>Agent: 挂载独立副本
+    Controller->>Agent: 校验 CDP 版本并连接 Patchright
+    Controller->>Agent: 执行命令
+    Controller->>Docker: stop/delete 容器
+    Docker-->>Controller: 确认删除
+    Controller->>Controller: 删除副本后释放占额
 ```
 
 ---

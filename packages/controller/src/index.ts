@@ -155,32 +155,30 @@ const handler = createWsHandler({
   config,
 });
 
-// Startup reap is owner-scoped: this controller can only reclaim its own
-// agent-chrome containers. A missing owner is a startup error, never a reason
-// to fall back to a global role-label sweep.
+// Container reap is owner-scoped. Profile sweep checks mounts from all owners
+// but only removes own unmounted copies and ownerless legacy UUID copies.
+// A failed sweep/cleanup cannot establish a safe startup state for admission.
 const reapResult = await containerManager.reap();
-if (reapResult._tag === "Ok") {
-  console.log(`[startup-reap] owner=${config.controllerOwner} reaped=${reapResult.value.reaped}`);
-} else {
-  console.warn(
+if (reapResult._tag === "Err") {
+  console.error(
     `[startup-reap-failed] owner=${config.controllerOwner} ${reapResult.error._tag}: ${
       "message" in reapResult.error ? reapResult.error.message : ""
     }`,
   );
+  process.exit(78);
 }
+console.log(`[startup-reap] owner=${config.controllerOwner} reaped=${reapResult.value.reaped}`);
 
-if (reapResult._tag === "Ok") {
-  const reconciled = await admission.reconcile();
-  if (reconciled._tag === "Ok") {
-    console.log(`[admission-reconcile] owner=${config.controllerOwner} removed=${reconciled.value.removed}`);
-  } else {
-    console.warn(
-      `[admission-reconcile-failed] owner=${config.controllerOwner} ${reconciled.error._tag}: ${
-        "message" in reconciled.error ? reconciled.error.message : ""
-      }`,
-    );
-  }
+const reconciled = await admission.reconcile();
+if (reconciled._tag === "Err") {
+  console.error(
+    `[admission-reconcile-failed] owner=${config.controllerOwner} ${reconciled.error._tag}: ${
+      "message" in reconciled.error ? reconciled.error.message : ""
+    }`,
+  );
+  process.exit(78);
 }
+console.log(`[admission-reconcile] owner=${config.controllerOwner} removed=${reconciled.value.removed}`);
 
 const wss = new WebSocketServer({ port: config.port });
 
