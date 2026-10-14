@@ -24,6 +24,7 @@ import {
 } from "./container-manager.js";
 import {
   createSessionAdmission,
+  MAX_TOTAL_QUOTA,
   type AdmissionPhase,
   type SessionAdmission,
 } from "./session-admission.js";
@@ -357,8 +358,8 @@ export function createWsHandler(deps: WsHandlerDeps): WsHandler {
     configuredAdmission ??
     createSessionAdmission({
       owner: config.controllerOwner,
-      ownerQuota: 5,
-      totalQuota: 5,
+      ownerQuota: MAX_TOTAL_QUOTA,
+      totalQuota: MAX_TOTAL_QUOTA,
       pendingReservationGraceMs: config.cdpReadyTimeout * 2,
     });
 

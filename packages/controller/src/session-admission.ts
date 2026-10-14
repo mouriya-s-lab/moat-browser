@@ -69,7 +69,7 @@ export type SessionAdmissionConfig = {
   readonly listExternalAllocations?: () => Promise<
     Result<ReadonlyArray<ExternalAllocation>, ControllerError>
   >;
-  /** Optional complete static owner declaration, e.g. owner-a=3,owner-b=2. */
+  /** Optional complete static owner declaration, e.g. owner-a=2,owner-b=1. */
   readonly ownerQuotas?: Readonly<Record<string, number>>;
 };
 
@@ -82,7 +82,7 @@ export type SessionAdmission = {
   reconcile(): Promise<Result<{ readonly removed: number }, ControllerError>>;
 };
 
-const MAX_TOTAL_QUOTA = 5;
+export const MAX_TOTAL_QUOTA = 3;
 const LOCK_WAIT_MS = 900;
 const LOCK_STALE_MS = 5_000;
 const LOCK_RETRY_MS = 5;

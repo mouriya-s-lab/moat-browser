@@ -143,10 +143,11 @@ async function manifest(root: string): Promise<Entry[]> {
   }
   return entries;
 }
-type CopyComparison = { readonly missing: readonly string[]; readonly unchanged: number };
-async function compare(source: Entry[], dest: string): Promise<Result<CopyComparison>> {
+type CopyComparison = { readonly missing: readonly string[]; readonly unchanged: number; readonly changed: readonly string[] };
+async function compare(source: Entry[], dest: string, browserChanges?: ReadonlySet<string>): Promise<Result<CopyComparison>> {
   let unchanged = 0;
   const missing: string[] = [];
+  const changed: string[] = [];
   const sentinel = new Set(["Default/moat-sentinel/a/b/blob", "moat-top-sentinel"]);
   for (const entry of source) {
     let info: Stats;
@@ -159,17 +160,25 @@ async function compare(source: Entry[], dest: string): Promise<Result<CopyCompar
     }
     const kind = info.isFile() ? "file" : info.isDirectory() ? "directory" : info.isSymbolicLink() ? "symlink" : "other";
     if (kind !== entry.kind) return fail("profile-copy", `entry type changed: ${entry.path} ${entry.kind} -> ${kind}`);
-    if (entry.kind === "file" && entry.mtime === info.mtimeMs) {
+    if (entry.kind === "file") {
       const hash = await hashFile(join(dest, entry.path));
-      if (hash !== entry.hash) return fail("profile-copy", `sha256 differs despite preserved mtime: ${entry.path}`);
-      unchanged++;
-      sentinel.delete(entry.path);
+      if (hash !== entry.hash) {
+        if (sentinel.has(entry.path)) return fail("profile-copy", `sentinel hash changed: ${entry.path}`);
+        changed.push(entry.path);
+        // Chrome can rewrite files while restoring their original mtime.
+        // Only the independent cp-a control may establish that exception.
+        if (entry.mtime === info.mtimeMs && browserChanges !== undefined && !browserChanges.has(entry.path))
+          return fail("profile-copy", `sha256 differs despite preserved mtime without a browser control change: ${entry.path}`);
+      } else if (entry.mtime === info.mtimeMs) {
+        unchanged++;
+        sentinel.delete(entry.path);
+      }
     }
   }
   if (sentinel.size) return fail("profile-copy", `sentinel mtime/hash changed: ${[...sentinel].join(",")}`);
   try { await lstat(join(dest, "SingletonGuard")); return fail("profile-copy", "top-level SingletonGuard remains in copy"); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") { /* expected */ } else throw error; }
-  return ok({ missing, unchanged });
+  return ok({ missing, unchanged, changed });
 }
 async function main(options: Options): Promise<Result<string>> {
   const runId = `moat287-${randomUUID().slice(0, 12)}`;
@@ -361,7 +370,7 @@ async function main(options: Options): Promise<Result<string>> {
       "--user", "root", "-v", `${reference}:/data/profile`, "--entrypoint", "/bin/chown", options.agent, "-R", "1000:1000", "/data/profile"]);
     if (owned._tag === "Fail") return owned;
     const controlRun = await checked(currentStage, ["docker", "run", "-d", "--name", control, "--network", runId,
-      "--label", `moat287.owner=${owner}`, "--shm-size=2g", "--memory=384m", "--memory-swap=384m",
+      "--label", `moat287.owner=${owner}`, "--shm-size=2g", "--memory=768m", "--memory-swap=768m",
       "-v", `${reference}:/data/profile`, options.agent]);
     if (controlRun._tag === "Fail") return controlRun;
     if (options.emulationMemory) {
@@ -387,13 +396,13 @@ async function main(options: Options): Promise<Result<string>> {
       if (frozen._tag === "Fail") { paused.delete(id); return frozen; }
     }
     console.log("OBSERVE [profile-copy] candidate and reference paused after CDP readiness for stable manifest reads");
-    currentStage = "profile-copy";
-    const copy = await compare(entries, join(profiles, `agent-${Buffer.from(owner).toString("base64url")}-${connected.value.sessionId}`));
-    if (copy._tag === "Fail") return copy;
-    console.log(`OBSERVE [profile-copy] entries=${entries.length} unchanged-hashes=${copy.value.unchanged} sentinels=2 missing=${copy.value.missing.length}`);
     currentStage = "copy-control";
     const referenceCopy = await compare(entries, reference);
     if (referenceCopy._tag === "Fail") return fail(currentStage, referenceCopy.reason);
+    currentStage = "profile-copy";
+    const copy = await compare(entries, join(profiles, `agent-${Buffer.from(owner).toString("base64url")}-${connected.value.sessionId}`), new Set(referenceCopy.value.changed));
+    if (copy._tag === "Fail") return copy;
+    console.log(`OBSERVE [profile-copy] entries=${entries.length} unchanged-hashes=${copy.value.unchanged} sentinels=2 missing=${copy.value.missing.length} browser-control-changes=${referenceCopy.value.changed.length}`);
     const actualMissing = [...copy.value.missing].sort(), controlMissing = [...referenceCopy.value.missing].sort();
     for (const path of actualMissing) console.log(`OBSERVE [profile-copy] browser-removed=${path}`);
     if (JSON.stringify(actualMissing) !== JSON.stringify(controlMissing))
@@ -440,8 +449,12 @@ async function main(options: Options): Promise<Result<string>> {
     if (example._tag === "Fail") return example;
     const exampleSnapshot = await cliStep("example", ["snapshot"]);
     if (exampleSnapshot._tag === "Fail") return exampleSnapshot;
-    if (!cliSnapshot(exampleSnapshot.value)?.includes('heading "Example Domain"')) return fail("example", `unexpected example snapshot: ${diagnostic(exampleSnapshot.value)}`);
-    console.log('OBSERVE [example] heading "Example Domain"');
+    if (!cliSnapshot(exampleSnapshot.value)?.includes("documentation")) return fail("example", `unexpected example snapshot: ${diagnostic(exampleSnapshot.value)}`);
+    const exampleTitle = await cliStep("example", ["get", "title"]);
+    if (exampleTitle._tag === "Fail") return exampleTitle;
+    const titleData = cliData(exampleTitle.value);
+    if (typeof titleData !== "object" || titleData === null || !("title" in titleData) || titleData.title !== "Example Domain") return fail("example", `unexpected example title: ${diagnostic(exampleTitle.value)}`);
+    console.log('OBSERVE [example] title "Example Domain" and documentation text');
     const disconnected = await cliStep("disconnect", ["disconnect"]);
     if (disconnected._tag === "Fail") return disconnected;
     sessionActive = false;

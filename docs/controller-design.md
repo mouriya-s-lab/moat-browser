@@ -62,4 +62,4 @@ Controller owner 来自 `CONTROLLER_OWNER` 或自身容器的 Compose project �
 
 `ws-server.ts` 负责错误映射：profile 名不合法是 `invalid_value`；无 session/已过期是 `target_not_found`；Docker/复制/版本锚创建失败与清理失败带 `command_failed` 的对应 cause；`ProfileCleanupFailed` 明确为 `command_failed` + `cleanup`；容量拒绝保留 `capacity_exceeded` 的总额、owner 占额和重试条件；预算耗尽是 `timeout`，可能已有部分副作用。不要只凭 HTTP/WebSocket 连通或类型检查声称清理完成。
 
-主要环境变量与缺省值见 README §9；`index.ts:loadConfig` 是实际解析入口。`PORT=3000`、`CDP_READY_TIMEOUT=30000`、`COMMAND_TIMEOUT=25000`、`SESSION_TOTAL_QUOTA=5`、`SESSION_IDLE_TIMEOUT=600000` 均可由环境覆盖；`SESSION_QUOTA` 和 `SESSION_OWNER_QUOTAS` 控制 owner 静态配额；`ADMISSION_STATE_PATH` 默认 `${PROFILES_WORK}/.moat-admission`，所有共享配额的 Controller 必须指向同一状态目录。配置错误、版本锚读取失败、启动清理或准入 reconcile 失败时进程退出 78，不继续接受新 session。
+主要环境变量与缺省值见 README §9；`index.ts:loadConfig` 是实际解析入口。`PORT=3000`、`CDP_READY_TIMEOUT=30000`、`COMMAND_TIMEOUT=25000`、`SESSION_TOTAL_QUOTA=3`、`SESSION_IDLE_TIMEOUT=600000` 均可由环境覆盖；总额只接受 1–3。`SESSION_QUOTA` 和 `SESSION_OWNER_QUOTAS` 控制 owner 静态配额；`ADMISSION_STATE_PATH` 默认 `${PROFILES_WORK}/.moat-admission`，所有共享配额的 Controller 必须指向同一状态目录。配置错误、版本锚读取失败、启动清理或准入 reconcile 失败时进程退出 78，不继续接受新 session。

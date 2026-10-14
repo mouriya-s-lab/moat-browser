@@ -6,7 +6,7 @@ import {
   type ProfileRegistry,
 } from "./container-manager.js";
 import { loadExpectedBrowserVersion } from "./browser-anchor.js";
-import { createSessionAdmission } from "./session-admission.js";
+import { createSessionAdmission, MAX_TOTAL_QUOTA } from "./session-admission.js";
 import { createSessionRegistry } from "./session-registry.js";
 import { createRefStore } from "./ref-store.js";
 import { createWsHandler } from "./ws-server.js";
@@ -42,10 +42,10 @@ function parseOwnerQuotas(raw: string | undefined): Readonly<Record<string, numb
   for (const item of raw.split(",")) {
     const [owner, quota] = item.split("=", 2).map((part) => part.trim());
     if (!owner || quota === undefined) {
-      quotas["__invalid__"] = 6;
+      quotas["__invalid__"] = MAX_TOTAL_QUOTA + 1;
       continue;
     }
-    quotas[owner] = parseQuota(quota, 6);
+    quotas[owner] = parseQuota(quota, MAX_TOTAL_QUOTA + 1);
   }
   return quotas;
 }
@@ -67,7 +67,7 @@ async function loadConfig(): Promise<ControllerConfig> {
     process.exit(78);
   }
 
-  const sessionQuotaTotal = parseQuota(process.env.SESSION_TOTAL_QUOTA, 5);
+  const sessionQuotaTotal = parseQuota(process.env.SESSION_TOTAL_QUOTA, MAX_TOTAL_QUOTA);
   const sessionQuota = parseQuota(process.env.SESSION_QUOTA, sessionQuotaTotal);
   const sessionOwnerQuotas = parseOwnerQuotas(process.env.SESSION_OWNER_QUOTAS);
 

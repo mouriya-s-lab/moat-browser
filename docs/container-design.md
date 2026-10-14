@@ -309,9 +309,9 @@ flowchart TD
 
 Controller 通过 Docker Engine API（fetch + Unix socket）管理 agent-chrome：
 
-**创建与启动**：Controller 发送 `POST /containers/create`，配置 `AGENT_CHROME_IMAGE`、`moat-browser.role/owner/session-id` 标签、`PROFILES_HOST_PATH` 下的 session 拷贝 bind mount、`DOCKER_NETWORK`、2 GiB shm，以及 384 MiB memory/memory-swap 限额；随后 `POST /containers/<id>/start` 与 `GET /containers/<id>/json` 获取网络地址。
+**创建与启动**：Controller 发送 `POST /containers/create`，配置 `AGENT_CHROME_IMAGE`、`moat-browser.role/owner/session-id` 标签、`PROFILES_HOST_PATH` 下的 session 拷贝 bind mount、`DOCKER_NETWORK`、2 GiB shm，以及 768 MiB memory/memory-swap 限额；随后 `POST /containers/<id>/start` 与 `GET /containers/<id>/json` 获取网络地址。
 
-每个 agent-chrome 的 cgroup 内存上限固定为 384 MiB，且 `MemorySwap` 与 `Memory` 相同，避免浏览器 session 在共享宿主上无限增长。该限制与共享准入总额 N=5 配套，不把稳态均值当作任意负载的安全证明。
+每个 agent-chrome 的 cgroup 内存上限固定为 768 MiB，且 `MemorySwap` 与 `Memory` 相同，避免浏览器 session 在共享宿主上无限增长。该限制与共享准入总额 N=3 配套，三个 session 的内存上限合计 2.25 GiB；宿主还需为常驻服务与系统保留余量，不把稳态均值当作任意负载的安全证明。
 
 **停止与删除**：`POST /containers/<id>/stop?t=5` 后 `DELETE /containers/<id>`；Docker 报“removal already in progress”时等待 `/containers/<id>/wait?condition=removed`。只有 Docker 确认删除才清理副本。Docker 请求默认 10 秒中止；清理失败保留未确认已释放的资源并返回错误。启动 reap 只删除本 owner 容器，profile sweep 则检查所有 owner 的容器挂载以保护存活副本（详见 `docs/controller-design.md`）。
 

@@ -196,7 +196,7 @@ export const LABEL_ROLE = "moat-browser.role";
 export const LABEL_ROLE_AGENT_CHROME = "agent-chrome";
 export const LABEL_SESSION_ID = "moat-browser.session-id";
 export const LABEL_OWNER = "moat-browser.owner";
-export const AGENT_CHROME_MEMORY_BYTES = 384 * 1024 * 1024;
+export const AGENT_CHROME_MEMORY_BYTES = 768 * 1024 * 1024;
 
 function ownerPathToken(owner: string): string {
   return Buffer.from(owner, "utf8").toString("base64url");

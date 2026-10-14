@@ -102,7 +102,7 @@ flowchart LR
 |------|---------|------|
 | user-chrome（`images/user-chrome`） | 常驻，唯一 | neko base + Chrome for Testing；profile 在 `/home/neko/.config/chromium`（宿主挂载）；不开 remote debugging |
 | Controller（`packages/controller`） | 常驻，唯一服务端进程 | Node.js + `ws` + Patchright + arktype；通过 Unix socket 调 Docker Engine API（不用 dockerode） |
-| agent-chrome（`images/agent-chrome`） | 每个 session 一个，按需创建和销毁 | `debian:bookworm-slim` + Xorg dummy + openbox + Chrome for Testing；Chrome 只监听 `127.0.0.1:9223`，socat 转发到 `0.0.0.0:9222`；内存上限 384MiB，`/dev/shm` 2GiB |
+| agent-chrome（`images/agent-chrome`） | 每个 session 一个，按需创建和销毁 | `debian:bookworm-slim` + Xorg dummy + openbox + Chrome for Testing；Chrome 只监听本地回环端口 9223，socat 在端口 9222 向容器网络转发；内存上限 768MiB，`/dev/shm` 2GiB |
 | moat CLI + Rust SDK（`cli/`） | agent 所在机器 | 二进制 `moat`；每个发往 Controller 的请求新开一个 WebSocket |
 | wire 类型（`packages/types`） | 库 | wire 协议与 Controller ADT 的 TypeScript 定义和 arktype schema |
 
@@ -200,14 +200,14 @@ moat connect --profile named-fixture
 
 - **隔离单位是 session**：独立的容器、独立的 profile 拷贝、独立的 tab、弹窗和键鼠状态。一个 session 里的操作不会改变另一个 session 的浏览器状态。隔离只到浏览器为止：多个 session 用同一账号登录同一个网站时，在网站上做的修改（发消息、改设置、下单）对所有 session 和人都可见，网站也可能因为同一账号多处同时登录而让旧会话失效。
 - **准入**：
-  - `SESSION_TOTAL_QUOTA`：全局上限，取值 1–5，默认 5。
+  - `SESSION_TOTAL_QUOTA`：全局上限，取值 1–3，默认 3。
   - `SESSION_QUOTA`：本 Controller owner 的上限，默认等于全局上限。
-  - `SESSION_OWNER_QUOTAS`：多个 owner 共享全局上限时的分配，如 `owner-a=3,owner-b=2`。
+  - `SESSION_OWNER_QUOTAS`：多个 owner 共享全局上限时的分配，如 `owner-a=2,owner-b=1`。
   - 满额时返回 `errorType: "capacity_exceeded"`，附带当前计数和重试条件（等现有 session 及其清理资源完全释放）。不排队。
 - **Controller owner**：取 `CONTROLLER_OWNER`，否则取 Controller 容器的 Compose project 标签。它限定容器标签、启动回收和配额的范围，不代表客户端身份。
 - **客户端**：`--session <name>` 优先于 `AGENT_BROWSER_SESSION`，两者未指定时选择 `default`；每个名字使用独立的 `$HOME/.moat/sessions/<name>` 句柄。名字须为 1–255 个 ASCII 字母、数字、`_` 或 `-`，无效名字在网络请求前拒绝。同一名字的 `connect` 在本地原子占位，第二个请求在注册前被拒绝；不同名字的 agent 可共享一个 `HOME` 而不共用浏览器。旧 `$HOME/.moat/session` 不再读取，已有远端 session 由 Controller idle 超时回收。
 
-每个 session 对应一个 agent-chrome 容器，内存硬上限 384MiB。
+每个 session 对应一个 agent-chrome 容器，内存硬上限 768MiB；三个 session 的内存上限合计 2.25GiB，宿主还需为常驻服务与系统保留余量。
 
 ---
 
@@ -247,7 +247,7 @@ session 槽位选择优先级为本次 `--session <name>` > `AGENT_BROWSER_SESSI
 
 ## 9. 自行部署
 
-**只推荐在 x86_64（amd64）Linux 主机上部署，不推荐 macOS。**两个浏览器镜像只有 `linux/amd64`（Chrome for Testing 的 Linux 包只有 x64），项目没有适配 Apple Silicon。在 Apple Silicon 上经 Docker Desktop / OrbStack 转译运行已知有问题：宿主 `chown 1000:1000` 的目录在容器内显示为 root 所有，浏览器无法写入 profile；agent-chrome 在 384MiB 内存上限下会 OOM。
+**只推荐在 x86_64（amd64）Linux 主机上部署，不推荐 macOS。**两个浏览器镜像只有 `linux/amd64`（Chrome for Testing 的 Linux 包只有 x64），项目没有适配 Apple Silicon。在 Apple Silicon 上经 Docker Desktop / OrbStack 转译运行已知有问题：宿主 `chown 1000:1000` 的目录在容器内显示为 root 所有，浏览器无法写入 profile；agent-chrome 在该环境也曾发生 OOM。
 
 仓库根目录的 `compose.yaml` 从源码在本地构建全部三个 moat-browser 镜像，不需要任何预构建的 moat-browser 镜像（构建时仍会拉取公开的基础镜像和 Chrome for Testing 包）：
 
@@ -283,7 +283,7 @@ Controller 环境变量：
 | `DOCKER_NETWORK` | `moat` | agent-chrome 加入的网络 |
 | `AGENT_CHROME_IMAGE` | `agent-chrome:latest` | agent-chrome 镜像（`compose.yaml` 设为 `moat-browser/agent-chrome:local`） |
 | `CONTROLLER_OWNER` | Compose project 标签 | 资源 owner；无法解析时启动以 78 退出 |
-| `SESSION_TOTAL_QUOTA` / `SESSION_QUOTA` / `SESSION_OWNER_QUOTAS` | `5` / 同总额 / 无 | 准入（§7）；配置非法时启动以 78 退出 |
+| `SESSION_TOTAL_QUOTA` / `SESSION_QUOTA` / `SESSION_OWNER_QUOTAS` | `3` / 同总额 / 无 | 准入（§7）；配置非法时启动以 78 退出 |
 | `SESSION_IDLE_TIMEOUT` | `600000` ms | idle 回收 |
 | `CDP_READY_TIMEOUT` | `30000` ms | 等待 agent-chrome CDP 就绪 |
 | `COMMAND_TIMEOUT` | `25000` ms | 普通命令的服务端预算 |
@@ -346,7 +346,7 @@ MOAT=cli/target/release/moat bun run packages/e2e/profile-guard.ts \
   --controller-image <controller 镜像> --user-image <user 镜像> --agent-image <agent 镜像>
 ```
 
-护栏的流程：用 user 镜像的浏览器在临时容器里登录本地 fixture，产出源 profile；再由候选 Controller 真实拷贝并启动 agent。它检查关键条目与哨兵文件在拷贝后是否保留、候选 Controller 的拷贝与同浏览器 `cp -a` 对照组的差异、SIGTRAP、`basic` password store，以及登录凭据在 agent 侧是否直接有效（含空 profile 负对照）；它不对整份 profile 逐文件校验。末行为 `PASS profile-guard …`（exit 0）才算通过；任何阶段失败都会输出一行 `FAIL [stage] 原因` 并以非 0 退出。在 Apple Silicon 上经 OrbStack 转译运行 amd64 Chrome 时，384MiB 内存上限会触发 OOM，可以加 `--emulation-memory-1g`（只放宽护栏自建的容器）；原生 amd64 主机上不需要。
+护栏的流程：用 user 镜像的浏览器在临时容器里登录本地 fixture，产出源 profile；再由候选 Controller 真实拷贝并启动 agent。它检查关键条目与哨兵文件在拷贝后是否保留、候选 Controller 的拷贝与同浏览器 `cp -a` 对照组的差异、SIGTRAP、`basic` password store，以及登录凭据在 agent 侧是否直接有效（含空 profile 负对照）；它不对整份 profile 逐文件校验。浏览器可能保留缓存文件的 mtime 却改写内容；只有独立对照组也改写了同一文件时，护栏才接受这种变化，哨兵始终要求 mtime/hash 不变。末行为 `PASS profile-guard …`（exit 0）才算通过；任何阶段失败都会输出一行 `FAIL [stage] 原因` 并以非 0 退出。在 Apple Silicon 上经 OrbStack 转译运行 amd64 Chrome 时，可以加 `--emulation-memory-1g` 诊断额外的内存开销（只放宽护栏自建的容器）；正式发布验收使用原生 amd64 主机和默认 768MiB 预算。
 
 ### 11.5 Bun 需要 host CPU
 
