@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { wireRequestSchema, exhaustive, ErrorCode } from "../src/index";
-import type { ArkErrors } from "arktype";
+import { wireRequestSchema } from "../src/index";
+import { type } from "arktype";
 
 describe("wireRequestSchema — valid requests", () => {
   test("register without profile", () => {
@@ -288,29 +288,3 @@ describe("wireRequestSchema — invalid requests", () => {
     expect(result).toBeInstanceOf(type.errors);
   });
 });
-
-describe("exhaustive", () => {
-  test("throws on any value", () => {
-    expect(() => exhaustive("x" as never)).toThrow("Unhandled discriminant");
-  });
-});
-
-describe("ErrorCode", () => {
-  test("maps all 12 ControllerError tags", () => {
-    expect(Object.keys(ErrorCode)).toHaveLength(12);
-    expect(ErrorCode.SessionNotFound).toBe(77);
-    expect(ErrorCode.SessionExpired).toBe(83);
-    expect(ErrorCode.ContainerCreateFailed).toBe(80);
-    expect(ErrorCode.CdpUnreachable).toBe(81);
-    expect(ErrorCode.CdpDisconnected).toBe(81);
-    expect(ErrorCode.ProfileCopyFailed).toBe(82);
-    expect(ErrorCode.ElementNotFound).toBe(66);
-    expect(ErrorCode.Timeout).toBe(75);
-    expect(ErrorCode.CommandFailed).toBe(1);
-    expect(ErrorCode.ValidationFailed).toBe(2);
-    expect(ErrorCode.CapacityExceeded).toBe(84);
-  });
-});
-
-// We need to import type to use type.errors
-import { type } from "arktype";

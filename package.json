@@ -1,5 +1,10 @@
 {
   "name": "moat-browser",
   "private": true,
-  "workspaces": ["packages/*"]
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "bun run --cwd packages/types build && bun test packages/controller/ packages/types/"
+  }
 }

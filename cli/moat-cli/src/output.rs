@@ -315,7 +315,6 @@ fn render_thrown_value(value: &serde_json::Value) -> String {
     render(value, 0)
 }
 
-
 fn render_attribute_value(value: &serde_json::Value) -> String {
     match value.get("_tag").and_then(|tag| tag.as_str()) {
         Some("AttributeMissing") => "attribute missing".to_string(),
@@ -347,7 +346,6 @@ fn render_geometry(value: &serde_json::Value) -> String {
         _ => serde_json::to_string_pretty(value).unwrap_or_else(|_| "<invalid geometry>".to_string()),
     }
 }
-
 
 fn print_network_body(label: &str, snapshot: &serde_json::Value) {
     let readiness = snapshot.get("readiness");
@@ -419,7 +417,6 @@ fn network_body_summary(request: &serde_json::Value) -> String {
         .unwrap_or("unknown");
     format!("body={state}/{transfer} bytes={known}")
 }
-
 
 fn print_request_detail(request: &serde_json::Value) {
     let request_id = request
@@ -1897,33 +1894,6 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
 mod tests {
     use super::format_storage_text;
     use serde_json::json;
-
-    #[test]
-    fn test_format_stream_status_text_for_enabled_stream() {
-        let data = json!({
-            "enabled": true,
-            "port": 9223,
-            "connected": true,
-            "screencasting": false
-        });
-
-        let rendered = super::format_stream_status_text(Some("stream_status"), &data).unwrap();
-
-        assert_eq!(
-            rendered,
-            "Streaming enabled on ws://127.0.0.1:9223\nConnected: true\nScreencasting: false"
-        );
-    }
-
-    #[test]
-    fn test_format_stream_status_text_for_disabled_stream() {
-        let data =
-            json!({ "enabled": false, "port": null, "connected": false, "screencasting": false });
-
-        let rendered = super::format_stream_status_text(Some("stream_status"), &data).unwrap();
-
-        assert_eq!(rendered, "Streaming disabled");
-    }
 
     #[test]
     fn test_format_storage_text_for_all_entries() {

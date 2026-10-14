@@ -126,20 +126,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_red_contains_ansi_codes() {
-        // Test the format structure (actual color depends on NO_COLOR env)
-        let formatted = format!("\x1b[31m{}\x1b[0m", "error");
-        assert!(formatted.contains("\x1b[31m"));
-        assert!(formatted.contains("\x1b[0m"));
-    }
-
-    #[test]
-    fn test_green_contains_ansi_codes() {
-        let formatted = format!("\x1b[32m{}\x1b[0m", "success");
-        assert!(formatted.contains("\x1b[32m"));
-    }
-
-    #[test]
     fn test_console_level_prefix_contains_level() {
         // Regardless of color state, the level text should be present
         assert!(console_level_prefix("error").contains("error"));

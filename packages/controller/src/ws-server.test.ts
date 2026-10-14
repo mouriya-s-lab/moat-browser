@@ -44,27 +44,19 @@ const config: ControllerConfig = {
 };
 
 let originalLog: typeof console.log;
-let originalWarn: typeof console.warn;
 let logs: string[];
-let warns: string[];
 let registry: SessionRegistry | undefined;
 
 beforeEach(() => {
   logs = [];
-  warns = [];
   originalLog = console.log;
-  originalWarn = console.warn;
   console.log = (...args: unknown[]) => {
     logs.push(args.map(String).join(" "));
-  };
-  console.warn = (...args: unknown[]) => {
-    warns.push(args.map(String).join(" "));
   };
 });
 
 afterEach(() => {
   console.log = originalLog;
-  console.warn = originalWarn;
   registry?.dispose();
   registry = undefined;
 });
@@ -137,18 +129,18 @@ type DestroyOutcome =
 
 function createContainerManager(
   destroyed: string[],
-  destroyResult: (sessionId: string) => DestroyOutcome = () => ok(undefined) as DestroyOutcome,
+  destroyResult: (sessionId: string) => DestroyOutcome = () => ok(undefined),
 ): ContainerManager {
   return {
     async create(_sessionId, _profilePath) {
-      return ok({ containerId: "ctr-1", ip: "127.0.0.1", cdpPort: 9222 });
+      return ok({ containerId: "ctr-1", ip: "agent-chrome.test", cdpPort: 9222 });
     },
     async destroy(sessionId) {
       destroyed.push(sessionId);
       return destroyResult(sessionId);
     },
     async inspect(containerId) {
-      return ok({ containerId, ip: "127.0.0.1", cdpPort: 9222 });
+      return ok({ containerId, ip: "agent-chrome.test", cdpPort: 9222 });
     },
     async reap() {
       return ok({ reaped: 0 });
@@ -161,8 +153,8 @@ function expectSessionLog(kind: string, sessionId: string, suffix = ""): void {
   expect(logs.some((line) => pattern.test(line))).toBe(true);
 }
 
-describe("ws-server activity logging", () => {
-  it("logs register, command, deregister, and cdp disconnect events", async () => {
+describe("ws-server cleanup and validation", () => {
+  it("joins disconnect cleanup before completing deregistration and retains activity logs", async () => {
     registry = createSessionRegistry();
     const destroyed: string[] = [];
     const fakeBrowser = createFakeBrowser();
@@ -201,10 +193,12 @@ describe("ws-server activity logging", () => {
 
     await fakeBrowser.disconnect();
     expectSessionLog("cdp-disconnect", sessionId);
-    expect(destroyed).toContain(sessionId);
+    await fakeSocket.sendMessage({ type: "deregister", sessionId });
+    expect(fakeSocket.sent[2]).toEqual({ type: "deregister_result", sessionId, success: true });
+    expect(destroyed).toEqual([sessionId]);
 
     await fakeSocket.sendMessage({ type: "register", profile: "secondary" });
-    const secondRegisterResponse = fakeSocket.sent[2];
+    const secondRegisterResponse = fakeSocket.sent[3];
     expect(secondRegisterResponse.type).toBe("register_result");
     if (secondRegisterResponse.type !== "register_result" || !secondRegisterResponse.success) {
       throw new Error("expected successful second register response");
@@ -216,45 +210,37 @@ describe("ws-server activity logging", () => {
     expect(fakeBrowser.closeCount()).toBe(1);
   });
 
-  it("logs explicit session expiration with the supplied reason", () => {
+  it("reports failed idle cleanup with its session, trigger, and wire cause", async () => {
     registry = createSessionRegistry();
+    const fakeSocket = createFakeSocket();
+    const browser = createFakeBrowser();
     const handler = createWsHandler({
       registry,
-      containerManager: createContainerManager([]),
-      refStore: createRefStore(),
-      config,
-    });
-
-    handler.onSessionExpired("session-1", "idle timeout");
-
-    expectSessionLog("expired", "session-1", " reason=idle timeout");
-  });
-
-  it("warns when idle-expired destroy fails so orphan reasons are observable", async () => {
-    registry = createSessionRegistry();
-    const handler = createWsHandler({
-      registry,
-      containerManager: createContainerManager([], (sid) => ({
+      containerManager: createContainerManager([], () => ({
         _tag: "Err",
-        error: { _tag: "ContainerCreateFailed", message: `No container for session ${sid}` },
+        error: { _tag: "ContainerCreateFailed", message: "removal failed" },
       })),
       refStore: createRefStore(),
       config,
+      async connectCDP() {
+        return { browser: browser.browser, context: {} as BrowserContext };
+      },
     });
-
-    handler.onSessionExpired("session-orphan", "idle timeout");
-
-    // let the fire-and-forget destroy chain settle
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const hit = warns.find(
-      (line) =>
-        line.includes("[destroy-failed]") &&
-        line.includes("session=session-orphan") &&
-        line.includes("trigger=idle-expired") &&
-        line.includes("No container for session session-orphan"),
-    );
-    expect(hit).toBeDefined();
+    handler.handleConnection(fakeSocket.socket);
+    await fakeSocket.sendMessage({ type: "register" });
+    const registered = fakeSocket.sent[0];
+    if (registered.type !== "register_result" || !registered.success) throw new Error("registration failed");
+    const sessionId = registered.sessionId;
+    registry.transition(sessionId, { _tag: "Expired", reason: "idle timeout" });
+    handler.onSessionExpired(sessionId, "idle timeout");
+    // The response joins the in-flight cleanup and is its completion boundary.
+    await fakeSocket.sendMessage({ type: "deregister", sessionId });
+    expect(fakeSocket.sent[1]).toMatchObject({
+      type: "deregister_result", success: false, errorType: "command_failed", cause: "cleanup",
+    });
+    expect(logs.some(line => line.startsWith("[cleanup-result]") &&
+      line.includes(`session=${sessionId}`) && line.includes("trigger=idle-expired") &&
+      line.includes("outcome=failed") && line.includes("removal failed"))).toBe(true);
   });
 
   it("keeps admission occupied when container removal succeeds but profile cleanup fails, then releases after retry", async () => {

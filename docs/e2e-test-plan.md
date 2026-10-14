@@ -1,4 +1,6 @@
-# E2E 测试方案：CLI 全功能验证
+# E2E 测试方案：CLI 全功能验证（历史计划）
+
+本文保留早期调查计划，不是当前测试入口。旧 `e2e.test.ts` 烟测及其共享 compose 已移除；当前真实 profile 回归入口为 `packages/e2e/profile-guard.ts`（README §11.4），CLI 调查工具为 `scripts/cli-command-contract.py`。
 
 ## 1. 目标
 
@@ -234,7 +236,7 @@ echo ""
 
 ```
 packages/e2e/
-├── e2e.test.ts              # 现有 TS WebSocket 级测试（保留）
+├── e2e.test.ts              # 原计划中的 TS WebSocket 烟测，现已移除
 ├── cli-e2e.sh               # 新增：CLI 级 E2E 测试脚本
 └── cli-e2e-results.md       # 新增：测试结果记录
 ```

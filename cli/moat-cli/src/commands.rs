@@ -3843,118 +3843,6 @@ mod tests {
 
     // === Unknown command ===
 
-    // === Record Tests ===
-
-    #[test]
-    fn test_record_start() {
-        let cmd = parse_command(&args("record start output.webm"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "recording_start");
-        assert_eq!(cmd["path"], "output.webm");
-        assert!(cmd.get("url").is_none());
-    }
-
-    #[test]
-    fn test_record_start_with_url() {
-        let cmd = parse_command(
-            &args("record start demo.webm https://example.com"),
-            &default_flags(),
-        )
-        .unwrap();
-        assert_eq!(cmd["action"], "recording_start");
-        assert_eq!(cmd["path"], "demo.webm");
-        assert_eq!(cmd["url"], "https://example.com");
-    }
-
-    #[test]
-    fn test_record_start_with_url_no_protocol() {
-        let cmd = parse_command(
-            &args("record start demo.webm example.com"),
-            &default_flags(),
-        )
-        .unwrap();
-        assert_eq!(cmd["action"], "recording_start");
-        assert_eq!(cmd["path"], "demo.webm");
-        assert_eq!(cmd["url"], "https://example.com");
-    }
-
-    #[test]
-    fn test_record_start_with_chrome_extension_url() {
-        let cmd = parse_command(
-            &args("record start demo.webm chrome-extension://abcdef/popup.html"),
-            &default_flags(),
-        )
-        .unwrap();
-        assert_eq!(cmd["action"], "recording_start");
-        assert_eq!(cmd["path"], "demo.webm");
-        assert_eq!(cmd["url"], "chrome-extension://abcdef/popup.html");
-    }
-
-    #[test]
-    fn test_record_start_missing_path() {
-        let result = parse_command(&args("record start"), &default_flags());
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ParseError::MissingArguments { .. }
-        ));
-    }
-
-    #[test]
-    fn test_record_stop() {
-        let cmd = parse_command(&args("record stop"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "recording_stop");
-    }
-
-    #[test]
-    fn test_record_restart() {
-        let cmd = parse_command(&args("record restart output.webm"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "recording_restart");
-        assert_eq!(cmd["path"], "output.webm");
-        assert!(cmd.get("url").is_none());
-    }
-
-    #[test]
-    fn test_record_restart_with_url() {
-        let cmd = parse_command(
-            &args("record restart demo.webm https://example.com"),
-            &default_flags(),
-        )
-        .unwrap();
-        assert_eq!(cmd["action"], "recording_restart");
-        assert_eq!(cmd["path"], "demo.webm");
-        assert_eq!(cmd["url"], "https://example.com");
-    }
-
-    #[test]
-    fn test_record_restart_missing_path() {
-        let result = parse_command(&args("record restart"), &default_flags());
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ParseError::MissingArguments { .. }
-        ));
-    }
-
-    #[test]
-    fn test_record_invalid_subcommand() {
-        let result = parse_command(&args("record foo"), &default_flags());
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ParseError::UnknownSubcommand { .. }
-        ));
-    }
-
-    #[test]
-    fn test_record_missing_subcommand() {
-        let result = parse_command(&args("record"), &default_flags());
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ParseError::MissingArguments { .. }
-        ));
-    }
-
     // === Profile (CDP Tracing) Tests ===
 
     #[test]
@@ -4455,44 +4343,6 @@ mod tests {
     }
 
     // === Runtime stream control tests ===
-
-    #[test]
-    fn test_stream_enable_auto_port() {
-        let cmd = parse_command(&args("stream enable"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "stream_enable");
-        assert!(cmd.get("port").is_none());
-    }
-
-    #[test]
-    fn test_stream_enable_with_port() {
-        let cmd = parse_command(&args("stream enable --port 9223"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "stream_enable");
-        assert_eq!(cmd["port"], 9223);
-    }
-
-    #[test]
-    fn test_stream_status() {
-        let cmd = parse_command(&args("stream status"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "stream_status");
-    }
-
-    #[test]
-    fn test_stream_disable() {
-        let cmd = parse_command(&args("stream disable"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "stream_disable");
-    }
-
-    #[test]
-    fn test_stream_enable_invalid_port() {
-        let result = parse_command(&args("stream enable --port abc"), &default_flags());
-        assert!(matches!(result, Err(ParseError::InvalidValue { .. })));
-    }
-
-    #[test]
-    fn test_stream_missing_subcommand() {
-        let result = parse_command(&args("stream"), &default_flags());
-        assert!(matches!(result, Err(ParseError::MissingArguments { .. })));
-    }
 
     // === Trace Tests ===
 
@@ -5020,13 +4870,7 @@ mod tests {
         ));
     }
 
-    // === Inspect / CDP URL ===
-
-    #[test]
-    fn test_inspect() {
-        let cmd = parse_command(&args("inspect"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "inspect");
-    }
+    // === Unsupported CDP URL ===
 
     #[test]
     fn test_get_cdp_url_is_unsupported() {

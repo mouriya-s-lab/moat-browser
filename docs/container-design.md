@@ -317,12 +317,13 @@ Controller 通过 Docker Engine API（fetch + Unix socket）管理 agent-chrome�
 
 ### 3.5 docker-compose
 
-有两份编排，本文不保存副本：
+部署编排位于仓库根目录，本文不保存副本：
 
 - `compose.yaml`（仓库根目录）：自行部署用，三个镜像都从源码本地构建，宿主数据目录由 `MOAT_DATA_DIR` 指定（`profile/` 为源 profile，`profiles/` 为 session 拷贝），用法见 README §9。
-- `packages/e2e/docker-compose.test.yml`：E2E 用，源 profile 放在 `profile-data` 卷，session 拷贝放在宿主 `/tmp/moat-profiles`，`moat` 网络为 external。
 
-两者共同的设计要点：
+`packages/e2e/profile-guard.ts` 自建隔离的容器、网络与临时 profile，并在退出时清理。它不依赖部署 compose 或预先创建的共享网络。
+
+部署编排的设计要点：
 
 - user-chrome、controller 常驻；controller 挂载 Docker socket 来管理 agent-chrome，源 profile 同时挂载到 user-chrome（读写）和 controller（只读，作为 `cp -a` 源）。
 - `NEKO_WEBRTC_NAT1TO1` 由运行环境提供（WebRTC 客户端能到达的本机地址），未设置时 compose 直接报错，不写死任何地址。

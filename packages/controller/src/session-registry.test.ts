@@ -1,10 +1,12 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
 import {
   createSessionRegistry,
   type SessionRegistry,
 } from "./session-registry";
 
 let registry: SessionRegistry;
+
+afterEach(() => registry?.dispose());
 
 function makeActive(sessionId: string): void {
   const now = Date.now();
@@ -21,9 +23,6 @@ function makeActive(sessionId: string): void {
 describe("register", () => {
   beforeEach(() => {
     registry = createSessionRegistry();
-  });
-  afterEach(() => {
-    registry.dispose();
   });
 
   it("returns Ok with a UUID sessionId", () => {
@@ -54,9 +53,6 @@ describe("register", () => {
 describe("getActive", () => {
   beforeEach(() => {
     registry = createSessionRegistry();
-  });
-  afterEach(() => {
-    registry.dispose();
   });
 
   it("returns SessionNotFound for unknown sessionId", () => {
@@ -105,13 +101,16 @@ describe("idle timeout", () => {
   it("expires session after idle timeout", async () => {
     let expiredId: string | undefined;
     let expiredReason: string | undefined;
-    registry = createSessionRegistry(
-      { sessionIdleTimeout: 50, scanInterval: 20 },
-      (id, reason) => {
-        expiredId = id;
-        expiredReason = reason;
-      },
-    );
+    const expired = new Promise<void>((resolve) => {
+      registry = createSessionRegistry(
+        { sessionIdleTimeout: 50, scanInterval: 20 },
+        (id, reason) => {
+          expiredId = id;
+          expiredReason = reason;
+          resolve();
+        },
+      );
+    });
 
     const reg = registry.register();
     if (reg._tag !== "Ok") throw new Error("expected Ok");
@@ -120,8 +119,7 @@ describe("idle timeout", () => {
     // Transition to Active with lastActivity = now
     makeActive(sid);
 
-    // Wait for idle timeout + scan interval
-    await new Promise((r) => setTimeout(r, 120));
+    await expired;
 
     const state = registry.get(sid);
     expect(state?._tag).toBe("Expired");
@@ -130,31 +128,32 @@ describe("idle timeout", () => {
     }
     expect(expiredId).toBe(sid);
     expect(expiredReason).toBe("idle timeout");
-
-    registry.dispose();
   });
 
-  it("touchActivity resets idle timer", async () => {
-    registry = createSessionRegistry(
-      { sessionIdleTimeout: 80, scanInterval: 20 },
-    );
-
-    const reg = registry.register();
-    if (reg._tag !== "Ok") throw new Error("expected Ok");
-    const sid = reg.value;
-    makeActive(sid);
-
-    // Touch at 40ms — still within timeout
-    await new Promise((r) => setTimeout(r, 40));
-    registry.touchActivity(sid);
-
-    // Wait another 60ms — total 100ms from register, but only 60ms from touch
-    await new Promise((r) => setTimeout(r, 60));
-
-    const state = registry.get(sid);
-    expect(state?._tag).toBe("Active");
-
-    registry.dispose();
+  it("touchActivity prevents expiry at the old deadline and expires at the new one", async () => {
+    let now = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const expired = new Promise<void>((resolve) => {
+        registry = createSessionRegistry({ sessionIdleTimeout: 80, scanInterval: 1 }, () => resolve());
+      });
+      const registered = registry.register();
+      if (registered._tag !== "Ok") throw new Error("registration failed");
+      const sid = registered.value;
+      makeActive(sid);
+      now = 60;
+      registry.touchActivity(sid);
+      now = 100;
+      // The clock stays fixed while the real scanner runs, so scheduler delays
+      // cannot push this check past the session's new expiry deadline.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(registry.get(sid)?._tag).toBe("Active");
+      now = 160;
+      await expired;
+      expect(registry.get(sid)).toEqual({ _tag: "Expired", reason: "idle timeout" });
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 
@@ -178,7 +177,6 @@ describe("deregister", () => {
       expect(state.reason).toBe("deregistered");
     }
     expect(expiredReason).toBe("deregistered");
-    registry.dispose();
   });
 
   it("deregister on nonexistent returns SessionNotFound", () => {
@@ -188,6 +186,5 @@ describe("deregister", () => {
     if (result._tag === "Err") {
       expect(result.error._tag).toBe("SessionNotFound");
     }
-    registry.dispose();
   });
 });

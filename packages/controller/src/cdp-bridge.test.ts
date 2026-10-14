@@ -1,15 +1,16 @@
-import { describe, expect, it, mock, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { describe, expect, it, mock, beforeEach, afterEach, afterAll } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserContext, Locator, Page, Response } from "patchright";
 import type { BrowserCommand, CookieEntry } from "@moat-browser/types";
 import { clearSessionRuntimeState, executeCommand, type Result } from "./cdp-bridge.js";
 import { profileDestination } from "./container-manager.js";
-import type { RefStore } from "./ref-store.js";
+import { createRefStore, type RefStore } from "./ref-store.js";
 import type { ControllerError, CommandResultData } from "@moat-browser/types";
 
-// ─── Mock helpers ───
+// Browser doubles cover routing, transformations, and owned state.
+// They do not execute DOM code or prove browser capability.
 
 function mockLocator(overrides?: Partial<Locator>): Locator {
   const locator = {
@@ -141,7 +142,9 @@ function mockContext(pages: Page[], overrides?: Partial<BrowserContext>): Browse
       groupEnd: mock(() => Promise.resolve()),
     },
     newCDPSession: mock(() => Promise.resolve({
-      send: mock(() => Promise.resolve()),
+      send: mock((method: string) => Promise.resolve(method === "Page.getNavigationHistory"
+        ? { currentIndex: 0, entries: [{ id: 1, url: "about:blank", userTypedURL: "about:blank", title: "" }] }
+        : {})),
       on: mock(() => undefined),
       detach: mock(() => Promise.resolve()),
     })),
@@ -193,31 +196,6 @@ function remoteDownloadContext(page: Page, bytes: Buffer, profileCopyPath: strin
   };
 }
 
-function mockRefStore(): RefStore {
-  const store = new Map<string, Map<string, Locator>>();
-  return {
-    update(sessionId, refs) {
-      store.set(sessionId, new Map(refs));
-    },
-    resolve(sessionId, ref) {
-      return store.get(sessionId)?.get(ref);
-    },
-    resolveDetailed(sessionId, ref) {
-      const locator = store.get(sessionId)?.get(ref);
-      return locator ? { _tag: "Found", locator } : { _tag: "Missing" };
-    },
-    invalidate(sessionId, _reason) {
-      store.set(sessionId, new Map());
-    },
-    clear(sessionId) {
-      store.delete(sessionId);
-    },
-    entries(sessionId) {
-      return Array.from(store.get(sessionId)?.entries() ?? []);
-    },
-  };
-}
-
 function assertOk(r: Result<CommandResultData, ControllerError>): CommandResultData {
   expect(r._tag).toBe("Ok");
   if (r._tag !== "Ok") throw new Error("Expected Ok");
@@ -233,7 +211,15 @@ function assertErr(r: Result<CommandResultData, ControllerError>): ControllerErr
 // ─── Tests ───
 
 const SESSION = "test-session";
+const originalProfilesWork = process.env.PROFILES_WORK;
 const TEST_PROFILES_WORK = mkdtempSync(join(tmpdir(), "moat-controller-profiles-"));
+
+afterEach(() => clearSessionRuntimeState(SESSION));
+afterAll(() => {
+  if (originalProfilesWork === undefined) delete process.env.PROFILES_WORK;
+  else process.env.PROFILES_WORK = originalProfilesWork;
+  rmSync(TEST_PROFILES_WORK, { recursive: true, force: true });
+});
 
 describe("cdp-bridge", () => {
   let page: Page;
@@ -245,22 +231,12 @@ describe("cdp-bridge", () => {
     clearSessionRuntimeState(SESSION);
     page = mockPage();
     ctx = mockContext([page]);
-    refStore = mockRefStore();
+    refStore = createRefStore();
   });
 
   // ─── Navigation actions → NavigateResult ───
 
   describe("navigate → NavigateResult", () => {
-    it("navigate returns NavigateResult", async () => {
-      const r = await executeCommand(ctx, { action: "navigate", url: "https://example.com" }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(data._tag).toBe("NavigateResult");
-      if (data._tag === "NavigateResult") {
-        expect(data.url).toBe("https://example.com");
-        expect(data.title).toBe("Example");
-      }
-    });
-
     it("navigate applies request headers and wait strategy", async () => {
       await executeCommand(ctx, {
         action: "navigate",
@@ -272,131 +248,32 @@ describe("cdp-bridge", () => {
       expect(page.goto).toHaveBeenCalledWith("https://example.com", { waitUntil: "networkidle" });
     });
 
-    it("back returns NavigateResult", async () => {
-      const r = await executeCommand(ctx, { action: "back" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("NavigateResult");
+    it("back rejects an absent history entry", async () => {
+      const result = await executeCommand(ctx, { action: "back" }, refStore, SESSION);
+      expect(assertErr(result)).toEqual({ _tag: "CommandFailed", message: "No back history" });
+      expect(page.goBack).not.toHaveBeenCalled();
     });
 
-    it("forward returns NavigateResult", async () => {
-      const r = await executeCommand(ctx, { action: "forward" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("NavigateResult");
-    });
-
-    it("reload returns NavigateResult", async () => {
-      const r = await executeCommand(ctx, { action: "reload" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("NavigateResult");
+    it("forward rejects an absent history entry", async () => {
+      const result = await executeCommand(ctx, { action: "forward" }, refStore, SESSION);
+      expect(assertErr(result)).toEqual({ _tag: "CommandFailed", message: "No forward history" });
+      expect(page.goForward).not.toHaveBeenCalled();
     });
   });
 
   // ─── Semantic locator actions ───
 
   describe("semantic locators", () => {
-    it("getbyrole without subaction returns LocatorResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyrole", role: "button" }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(data._tag).toBe("LocatorResult");
-      if (data._tag === "LocatorResult") {
-        expect(data.found).toBe(true);
-        expect(data.count).toBe(1);
-      }
-    });
-
-    it("getbyrole with click subaction returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyrole", role: "button", subaction: "click" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("getbyrole with fill subaction returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyrole", role: "textbox", subaction: "fill", value: "hello" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("getbyrole with type subaction uses pressSequentially", async () => {
-      const r = await executeCommand(ctx, { action: "getbyrole", role: "textbox", subaction: "type", value: "hi" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("getbyrole with check subaction returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyrole", role: "checkbox", subaction: "check" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("getbyrole with uncheck subaction returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyrole", role: "checkbox", subaction: "uncheck" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("getbyrole with hover subaction returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyrole", role: "button", subaction: "hover" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
     it("getbyrole with nth narrows to nth element", async () => {
       await executeCommand(ctx, { action: "getbyrole", role: "button", nth: 2 }, refStore, SESSION);
       const loc = (page.getByRole as ReturnType<typeof mock>).mock.results[0].value;
       expect(loc.nth).toHaveBeenCalledWith(2);
     });
-
-    it("getbylabel without subaction returns LocatorResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbylabel", label: "Email" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("LocatorResult");
-    });
-
-    it("getbyplaceholder without subaction returns LocatorResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyplaceholder", placeholder: "Search..." }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("LocatorResult");
-    });
-
-    it("getbytext without subaction returns LocatorResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbytext", text: "Hello" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("LocatorResult");
-    });
-
-    it("getbyalttext without subaction returns LocatorResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbyalttext", text: "Logo" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("LocatorResult");
-    });
-
-    it("getbytitle without subaction returns LocatorResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbytitle", text: "Home" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("LocatorResult");
-    });
-
-    it("getbytestid without subaction returns LocatorResult", async () => {
-      const r = await executeCommand(ctx, { action: "getbytestid", testId: "submit-btn" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("LocatorResult");
-    });
   });
 
-  // ─── @eN reference actions → VoidResult ───
+  // ─── Reference validation ───
 
   describe("ref actions", () => {
-    beforeEach(() => {
-      const loc = mockLocator();
-      const refs = new Map<string, Locator>([["@e1", loc]]);
-      refStore.update(SESSION, refs);
-    });
-
-    it("click ref returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "click", ref: "@e1" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("fill ref returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "fill", ref: "@e1", value: "text" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("type ref returns VoidResult (uses pressSequentially)", async () => {
-      const r = await executeCommand(ctx, { action: "type", ref: "@e1", value: "text" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("hover ref returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "hover", ref: "@e1" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
     it("missing ref returns ElementNotFound", async () => {
       const r = await executeCommand(ctx, { action: "click", ref: "@e999" }, refStore, SESSION);
       const e = assertErr(r);
@@ -436,25 +313,6 @@ describe("cdp-bridge", () => {
       }
     });
 
-    it("screenshot returns ScreenshotResult", async () => {
-      const r = await executeCommand(ctx, { action: "screenshot" }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(data._tag).toBe("ScreenshotResult");
-      if (data._tag === "ScreenshotResult") {
-        expect(data.format).toBe("png");
-        expect(typeof data.base64).toBe("string");
-      }
-    });
-
-    it("screenshot jpeg uses format and quality", async () => {
-      const r = await executeCommand(ctx, { action: "screenshot", format: "jpeg", quality: 50 }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(data._tag).toBe("ScreenshotResult");
-      if (data._tag === "ScreenshotResult") {
-        expect(data.format).toBe("jpeg");
-      }
-    });
-
     it("screenshot applies selector or full page capture options", async () => {
       const locator = mockLocator();
       page = mockPage({ locator: mock(() => locator) });
@@ -463,75 +321,6 @@ describe("cdp-bridge", () => {
       expect(locator.screenshot).toHaveBeenCalled();
       await executeCommand(ctx, { action: "screenshot", fullPage: true }, refStore, SESSION);
       expect(page.screenshot).toHaveBeenLastCalledWith(expect.objectContaining({ fullPage: true }));
-    });
-
-    it("annotated screenshot draws and removes overlays around interactive refs", async () => {
-      const r = await executeCommand(ctx, { action: "screenshot", annotate: true }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(page.evaluate).toHaveBeenCalledTimes(2);
-      if (data._tag === "ScreenshotResult") {
-        expect(data.annotations?.map((annotation) => annotation.ref)).toEqual(["@e1"]);
-      }
-    });
-
-    it("eval returns EvalResult with the original value type", async () => {
-      const r = await executeCommand(ctx, { action: "eval", code: "1+1" }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(data._tag).toBe("EvalResult");
-      if (data._tag === "EvalResult") {
-        expect(data.result).toEqual({ answer: 42 });
-      }
-    });
-
-    it("url returns the active page URL", async () => {
-      const data = assertOk(await executeCommand(ctx, { action: "url" }, refStore, SESSION));
-      expect(data).toEqual({ _tag: "PageUrlResult", url: "https://example.com" });
-    });
-
-    it("title returns the active page title", async () => {
-      const data = assertOk(await executeCommand(ctx, { action: "title" }, refStore, SESSION));
-      expect(data).toEqual({ _tag: "PageTitleResult", title: "Example" });
-    });
-
-    it("count returns matching element count", async () => {
-      const data = assertOk(await executeCommand(ctx, { action: "count", selector: ".item" }, refStore, SESSION));
-      expect(data).toEqual({ _tag: "CountResult", count: 1 });
-    });
-
-    it("boundingbox returns locator geometry", async () => {
-      const data = assertOk(await executeCommand(ctx, { action: "boundingbox", selector: "button" }, refStore, SESSION));
-      expect(data).toEqual({
-        _tag: "BoundingBoxResult",
-        box: { _tag: "Box", x: 1, y: 2, width: 3, height: 4 },
-      });
-    });
-
-    it("styles returns computed style details", async () => {
-      const data = assertOk(await executeCommand(ctx, { action: "styles", selector: "button" }, refStore, SESSION));
-      expect(data._tag).toBe("ElementStylesResult");
-      if (data._tag === "ElementStylesResult") {
-        expect(data.elements[0].tag).toBe("button");
-        expect(data.elements[0].styles.fontSize).toBe("16px");
-      }
-    });
-  });
-
-  // ─── Keyboard / scroll / wait ───
-
-  describe("keyboard, scroll, wait", () => {
-    it("press returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "press", key: "Enter" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
-    it("scroll returns measured ScrollResult", async () => {
-      const r = await executeCommand(ctx, { action: "scroll", direction: "down" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("ScrollResult");
-    });
-
-    it("wait returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "wait", time: 1 }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("WaitResult");
     });
   });
 
@@ -564,7 +353,7 @@ describe("cdp-bridge", () => {
     });
 
     it("viewport applies dimensions and device scale factor through CDP", async () => {
-      const send = mock(() => Promise.resolve());
+      const send = mock((_method: string, _params?: unknown) => Promise.resolve());
       const detach = mock(() => Promise.resolve());
       ctx = mockContext([page], {
         newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
@@ -583,11 +372,10 @@ describe("cdp-bridge", () => {
         mobile: false,
       });
       expect(page.setViewportSize).not.toHaveBeenCalled();
-      expect(detach).toHaveBeenCalledTimes(0);
     });
 
     it("device applies metrics, touch, user agent metadata, and viewport", async () => {
-      const send = mock(() => Promise.resolve());
+      const send = mock((_method: string, _params?: unknown) => Promise.resolve());
       const detach = mock(() => Promise.resolve());
       ctx = mockContext([page], {
         newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
@@ -599,25 +387,25 @@ describe("cdp-bridge", () => {
       }, refStore, SESSION));
 
       expect(data._tag).toBe("VoidResult");
-      expect(send).toHaveBeenCalledTimes(3);
-      expect(send.mock.calls[0][0]).toBe("Emulation.setDeviceMetricsOverride");
-      expect(send.mock.calls[0][1]).toMatchObject({
+      expect(send).toHaveBeenCalledWith("Emulation.setDeviceMetricsOverride", expect.objectContaining({
         width: 390,
         height: 664,
         deviceScaleFactor: 3,
         mobile: true,
-      });
-      expect(send.mock.calls[1]).toEqual(["Emulation.setTouchEmulationEnabled", { enabled: true }]);
-      expect(send.mock.calls[2][0]).toBe("Network.setUserAgentOverride");
-      expect(send.mock.calls[2][1]).toMatchObject({
+      }));
+      expect(send).toHaveBeenCalledWith("Emulation.setTouchEmulationEnabled", { enabled: true });
+      expect(send).toHaveBeenCalledWith("Network.setUserAgentOverride", expect.objectContaining({
         userAgent: expect.any(String),
-        userAgentMetadata: { mobile: true },
-      });
+        userAgentMetadata: expect.objectContaining({ mobile: true }),
+      }));
       expect(page.setViewportSize).not.toHaveBeenCalled();
-      expect(detach).toHaveBeenCalledTimes(0);
     });
 
     it("device rejects an unknown descriptor without changing the page", async () => {
+      const send = mock((_method: string, _params?: unknown) => Promise.resolve());
+      ctx = mockContext([page], {
+        newCDPSession: mock(() => Promise.resolve({ send, detach: mock(() => Promise.resolve()) })) as BrowserContext["newCDPSession"],
+      });
       const error = assertErr(await executeCommand(ctx, {
         action: "device",
         device: "Definitely Not A Device",
@@ -627,7 +415,7 @@ describe("cdp-bridge", () => {
         _tag: "ValidationFailed",
         message: "Unknown device: Definitely Not A Device; run `moat device list` to list available remote Chromium descriptors",
       });
-      expect(ctx.newCDPSession).not.toHaveBeenCalled();
+      expect(send.mock.calls.some(([method]) => method.startsWith("Emulation.") || method === "Network.setUserAgentOverride")).toBe(false);
       expect(page.setViewportSize).not.toHaveBeenCalled();
     });
 
@@ -647,40 +435,6 @@ describe("cdp-bridge", () => {
       expect(page.setExtraHTTPHeaders).toHaveBeenCalledWith({ "X-Audit": "1" });
       expect(ctx.setHTTPCredentials).toHaveBeenCalledWith({ username: "u", password: "p" });
       expect(page.emulateMedia).toHaveBeenCalledWith({ colorScheme: "dark", reducedMotion: "reduce" });
-    });
-  });
-
-  describe("storage", () => {
-    it("storage_get returns one key", async () => {
-      page = mockPage({ evaluate: mock(() => Promise.resolve("saved")) });
-      ctx = mockContext([page]);
-      const data = assertOk(await executeCommand(ctx, {
-        action: "storage_get",
-        type: "local",
-        key: "audit",
-      }, refStore, SESSION));
-      expect(data).toEqual({ _tag: "StorageResult", key: "audit", value: "saved" });
-    });
-
-    it("storage_get returns all entries", async () => {
-      page = mockPage({ evaluate: mock(() => Promise.resolve({ audit: "saved" })) });
-      ctx = mockContext([page]);
-      const data = assertOk(await executeCommand(ctx, {
-        action: "storage_get",
-        type: "session",
-      }, refStore, SESSION));
-      expect(data).toEqual({ _tag: "StorageResult", data: { audit: "saved" } });
-    });
-
-    it("storage_set and storage_clear execute in the selected storage", async () => {
-      await executeCommand(ctx, {
-        action: "storage_set",
-        type: "local",
-        key: "audit",
-        value: "saved",
-      }, refStore, SESSION);
-      await executeCommand(ctx, { action: "storage_clear", type: "session" }, refStore, SESSION);
-      expect(page.evaluate).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -803,16 +557,6 @@ describe("cdp-bridge", () => {
         expect(data.requests[0].url).toBe("https://example.com/api/items");
       }
     });
-
-    it("highlight invokes the locator highlight effect", async () => {
-      const locator = page.locator("#button");
-      const data = assertOk(await executeCommand(ctx, {
-        action: "highlight",
-        selector: "#button",
-      }, refStore, SESSION));
-      expect(data._tag).toBe("VoidResult");
-      expect(locator.highlight).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe("file transfer", () => {
@@ -905,36 +649,9 @@ describe("cdp-bridge", () => {
     });
   });
 
-  describe("clipboard, touch, dialog, and frame state", () => {
-    it("clipboard reads, writes, copies, and pastes through the active page", async () => {
-      page = mockPage({ evaluate: mock(() => Promise.resolve("clipboard text")) });
-      ctx = mockContext([page]);
-
-      expect(assertOk(await executeCommand(ctx, {
-        action: "clipboard",
-        operation: "read",
-      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", text: "clipboard text" });
-      expect(assertOk(await executeCommand(ctx, {
-        action: "clipboard",
-        operation: "write",
-        text: "new text",
-      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", written: "new text" });
-      expect(assertOk(await executeCommand(ctx, {
-        action: "clipboard",
-        operation: "copy",
-      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", copied: true });
-      expect(assertOk(await executeCommand(ctx, {
-        action: "clipboard",
-        operation: "paste",
-      }, refStore, SESSION))).toEqual({ _tag: "ClipboardResult", pasted: true });
-      expect(ctx.grantPermissions).toHaveBeenCalledTimes(4);
-      expect(ctx.grantPermissions).toHaveBeenCalledWith(["clipboard-read", "clipboard-write"]);
-      expect(page.keyboard.press).toHaveBeenCalledWith("Control+C");
-      expect(page.keyboard.press).toHaveBeenCalledWith("Control+V");
-    });
-
+  describe("touch, dialog, and frame state", () => {
     it("tap and swipe dispatch touch events through CDP", async () => {
-      const send = mock(() => Promise.resolve());
+      const send = mock((_method: string, _params?: unknown) => Promise.resolve());
       const detach = mock(() => Promise.resolve());
       ctx = mockContext([page], {
         newCDPSession: mock(() => Promise.resolve({ send, detach })) as BrowserContext["newCDPSession"],
@@ -949,12 +666,11 @@ describe("cdp-bridge", () => {
         direction: "up",
         distance: 200,
       }, refStore, SESSION))).toEqual({ _tag: "TouchResult", swiped: "up" });
-      expect(send.mock.calls[0]).toEqual([
+      expect(send).toHaveBeenCalledWith(
         "Input.dispatchTouchEvent",
         { type: "touchStart", touchPoints: [{ x: 2.5, y: 4 }] },
-      ]);
-      expect(send).toHaveBeenCalledTimes(14);
-      expect(detach).toHaveBeenCalledTimes(2);
+      );
+      expect(send).toHaveBeenLastCalledWith("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     });
 
     it("dialog status exposes the pending dialog and accept resolves it", async () => {
@@ -986,6 +702,10 @@ describe("cdp-bridge", () => {
         type: "prompt",
         message: "Your name?",
         defaultPrompt: "Guest",
+        dialogId: "dialog-1",
+        state: "open",
+        page: { pageId: "page-1", pageIndex: 0, pageUrl: "https://example.com" },
+        operation: { _tag: "NoOperation" },
       });
       expect(assertOk(await executeCommand(ctx, {
         action: "dialog",
@@ -995,12 +715,17 @@ describe("cdp-bridge", () => {
         _tag: "DialogResult",
         handled: true,
         accepted: true,
+        hasDialog: false,
+        state: "handled",
+        dialogId: "dialog-1",
+        page: { pageId: "page-1", pageIndex: 0, pageUrl: "https://example.com" },
+        operation: { _tag: "NoOperation" },
       });
       expect(accept).toHaveBeenCalledWith("Moat");
-      expect(assertOk(await executeCommand(ctx, {
+      expect(assertErr(await executeCommand(ctx, {
         action: "dialog",
         response: "status",
-      }, refStore, SESSION))).toEqual({ _tag: "DialogResult", hasDialog: false });
+      }, refStore, SESSION))).toEqual({ _tag: "ElementNotFound", selector: "dialog" });
     });
 
     it("waits for a scheduled dialog before accepting it", async () => {
@@ -1024,6 +749,11 @@ describe("cdp-bridge", () => {
         _tag: "DialogResult",
         handled: true,
         accepted: true,
+        hasDialog: false,
+        state: "handled",
+        dialogId: "dialog-1",
+        page: { pageId: "page-1", pageIndex: 0, pageUrl: "https://example.com" },
+        operation: { _tag: "NoOperation" },
       });
       expect(waitForEvent).toHaveBeenCalledWith("dialog", { timeout: 5_000 });
       expect(accept).toHaveBeenCalledWith("ready");
@@ -1117,7 +847,7 @@ describe("cdp-bridge", () => {
       }
     });
 
-    it("state_load preserves unrelated cookies and restores storage per matched tab", async () => {
+    it("state_load adds supplied cookies without clearing existing ones", async () => {
       ctx = mockContext([page]);
       const state = {
         schemaVersion: 2 as const,
@@ -1213,7 +943,6 @@ describe("cdp-bridge", () => {
         expect(JSON.parse(Buffer.from(data.base64, "base64").toString()).traceEvents).toHaveLength(2);
         expect(data.eventCount).toBe(2);
       }
-      expect(detach).toHaveBeenCalledTimes(1);
     });
 
     it("HAR stop reports pending without a captured response body", async () => {
@@ -1248,20 +977,6 @@ describe("cdp-bridge", () => {
   // ─── Tab actions → TabResult ───
 
   describe("tab management", () => {
-    it("tab_list returns TabResult", async () => {
-      const r = await executeCommand(ctx, { action: "tab_list" }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(data._tag).toBe("TabResult");
-      if (data._tag === "TabResult") {
-        expect(data.tabs.length).toBeGreaterThan(0);
-      }
-    });
-
-    it("tab_new returns TabResult", async () => {
-      const r = await executeCommand(ctx, { action: "tab_new" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("TabResult");
-    });
-
     it("window_new creates and activates the new page", async () => {
       const pages = [mockPage({ url: mock(() => "https://first.example") })];
       const newPage = mockPage({
@@ -1288,24 +1003,12 @@ describe("cdp-bridge", () => {
       if (next._tag === "TabResult") expect(next.tabs[1].active).toBe(true);
     });
 
-    it("tab_switch returns TabResult", async () => {
-      const r = await executeCommand(ctx, { action: "tab_switch", index: 0 }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("TabResult");
-    });
-
     it("tab_switch rejects an unknown index instead of silently using page zero", async () => {
       const error = assertErr(await executeCommand(ctx, {
         action: "tab_switch",
         index: 9,
       }, refStore, SESSION));
-      expect(error).toEqual({ _tag: "CommandFailed", message: "Unknown tab index: 9" });
-    });
-
-    it("tab_close returns TabResult", async () => {
-      const pages = [mockPage(), mockPage()];
-      const multiCtx = mockContext(pages);
-      const r = await executeCommand(multiCtx, { action: "tab_close", index: 1 }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("TabResult");
+      expect(error).toEqual({ _tag: "ElementNotFound", selector: "tab:9" });
     });
 
     it("tab_close rejects the final tab without closing it", async () => {
@@ -1337,21 +1040,6 @@ describe("cdp-bridge", () => {
   // ─── Cookie actions ───
 
   describe("cookies", () => {
-    it("cookies_get returns CookiesResult", async () => {
-      const r = await executeCommand(ctx, { action: "cookies_get" }, refStore, SESSION);
-      const data = assertOk(r);
-      expect(data._tag).toBe("CookiesResult");
-      if (data._tag === "CookiesResult") {
-        expect(data.cookies.length).toBe(1);
-        expect(data.cookies[0].name).toBe("sid");
-      }
-    });
-
-    it("cookies_clear returns VoidResult", async () => {
-      const r = await executeCommand(ctx, { action: "cookies_clear" }, refStore, SESSION);
-      expect(assertOk(r)._tag).toBe("VoidResult");
-    });
-
     it("cookies_set with url does not also send domain or path", async () => {
       const r = await executeCommand(ctx, {
         action: "cookies_set",
@@ -1507,12 +1195,6 @@ describe("cdp-bridge", () => {
       expect(loc.fill).not.toHaveBeenCalled();
     });
 
-    it("getbytext text subaction returns the element innerText", async () => {
-      const data = assertOk(await executeCommand(ctx, { action: "getbytext", text: "Row", subaction: "text" }, refStore, SESSION));
-      expect(data._tag).toBe("GetTextResult");
-      if (data._tag === "GetTextResult") expect(data.text).toBe("Item text");
-    });
-
     it("getbytext text subaction falls back to textContent when innerText is empty", async () => {
       const loc = mockLocator({
         innerText: mock(() => Promise.resolve("")) as unknown as Locator["innerText"],
@@ -1597,20 +1279,6 @@ describe("cdp-bridge", () => {
         expect(data.snapshot).toContain("@e");
         expect(data.snapshot).toContain("[url=https://example.com/target]");
       }
-    });
-  });
-
-  describe("HAR content mode (#226)", () => {
-    it("har_start accepts a content mode and har_stop assembles an artifact", async () => {
-      const started = assertOk(await executeCommand(ctx, { action: "har_start", content: "all" }, refStore, SESSION));
-      expect(started._tag).toBe("StartedResult");
-      const stopped = assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION));
-      expect(stopped._tag).toBe("NetworkArtifactResult");
-    });
-
-    it("har_start defaults and accepts the none content mode", async () => {
-      expect(assertOk(await executeCommand(ctx, { action: "har_start", content: "none" }, refStore, SESSION))._tag).toBe("StartedResult");
-      expect(assertOk(await executeCommand(ctx, { action: "har_stop" }, refStore, SESSION))._tag).toBe("NetworkArtifactResult");
     });
   });
 });

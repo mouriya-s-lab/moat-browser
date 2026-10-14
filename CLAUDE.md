@@ -45,7 +45,7 @@
 |`cli/UPSTREAM.md`|与 upstream agent-browser 的差异和同步记录|
 |`packages/types/`|wire 协议与 ADT 的 TypeScript 定义 + arktype schema|
 |`packages/controller/`|Controller：`ws-server.ts`、`session-registry.ts`、`session-admission.ts`、`container-manager.ts`、`cdp-bridge.ts`、`browser-anchor.ts`|
-|`packages/e2e/`|E2E 测试、`profile-guard.ts`、测试用 `docker-compose.test.yml`|
+|`packages/e2e/`|真实 profile 继承护栏 `profile-guard.ts` 与本地认证 fixture|
 |`images/user-chrome/`|neko base + Chrome for Testing，人的登录入口|
 |`images/agent-chrome/`|Debian + Xorg + openbox + Chrome for Testing + socat CDP 转发|
 |`images/chrome-anchor.mjs`|从 Patchright 派生 Chrome 版本|
@@ -68,7 +68,7 @@
 
 - TS typecheck：`bun run build`（在 `packages/controller` 或 `packages/types` 下）
 - TS 单元测试：`bun test packages/controller/`、`bun test packages/types/`
-- E2E：`bun test packages/e2e/`（本地环境用 `packages/e2e` 的 `compose:up` / `compose:down`）
+- E2E：按下方 Profile 护栏命令运行；护栏自建并清理隔离容器、网络与临时 profile。浏览器行为必须在原生 amd64 上用真实镜像验证。
 - Rust：`cd cli && cargo build --release`、`cd cli && cargo test`
 - Profile 护栏（推进 Patchright 锚或发布前必跑）：`MOAT=cli/target/release/moat bun run packages/e2e/profile-guard.ts --controller-image <c> --user-image <u> --agent-image <a>`（README §11.4）
 - 浏览器镜像以仓库根目录为 context 构建：`docker build --platform linux/amd64 -f images/<user-chrome|agent-chrome>/Dockerfile .`；三方版本校验：`scripts/verify-chrome-versions.sh <controller 镜像> <user 镜像> <agent 镜像>`

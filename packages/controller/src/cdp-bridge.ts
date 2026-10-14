@@ -3580,6 +3580,23 @@ function withOperationTimeout<T>(
     );
   });
 }
+
+async function hasHistoryEntry(
+  context: BrowserContext,
+  page: Page,
+  offset: number,
+  options: CommandExecutionOptions | undefined,
+): Promise<boolean> {
+  const cdp = await withOperationTimeout(() => context.newCDPSession(page), options);
+  try {
+    const history = await withOperationTimeout(() => cdp.send("Page.getNavigationHistory"), options);
+    const index = history.currentIndex + offset;
+    return index >= 0 && index < history.entries.length;
+  } finally {
+    await withOperationTimeout(() => cdp.detach(), options);
+  }
+}
+
 function normalizedUserAgentVersion(userAgent: string): string {
   return userAgent.replace(/_/g, ".");
 }
@@ -4171,32 +4188,39 @@ export async function executeCommand(
       }
 
       case "back": {
+        if (!await hasHistoryEntry(context, page, -1, options)) {
+          return err({ _tag: "CommandFailed", message: "No back history" } as const);
+        }
         invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         const timeout = operationTimeout(options);
         const response = await page.goBack({
-          waitUntil: "domcontentloaded",
+          waitUntil: "commit",
           ...(timeout === undefined ? {} : { timeout }),
         });
-        if (response === null) {
-          return err({ _tag: "CommandFailed", message: "No back history" } as const);
+        // A cached document restore has no network response or new DOM event.
+        if (response !== null) {
+          await page.waitForLoadState("domcontentloaded", { timeout: operationTimeout(options) });
         }
         await reapplySessionPageEnvironment(context, page, runtimeState, options);
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
         return ok(result);
       }
       case "forward": {
+        if (!await hasHistoryEntry(context, page, 1, options)) {
+          return err({ _tag: "CommandFailed", message: "No forward history" } as const);
+        }
         invalidateRefs(refStore, sessionId, "navigation");
         runtimeState.activeFrame = undefined;
         runtimeState.activeFrameSelector = undefined;
         const timeout = operationTimeout(options);
         const response = await page.goForward({
-          waitUntil: "domcontentloaded",
+          waitUntil: "commit",
           ...(timeout === undefined ? {} : { timeout }),
         });
-        if (response === null) {
-          return err({ _tag: "CommandFailed", message: "No forward history" } as const);
+        if (response !== null) {
+          await page.waitForLoadState("domcontentloaded", { timeout: operationTimeout(options) });
         }
         await reapplySessionPageEnvironment(context, page, runtimeState, options);
         const result: NavigateResult = { _tag: "NavigateResult", url: page.url(), title: await page.title() };
@@ -5704,6 +5728,7 @@ export async function executeCommand(
         if (command.clear) {
           runtimeState.consoleMessages.splice(0);
           const r: ClearedResult = { _tag: "ClearedResult", cleared: true };
+          return ok(r);
         }
         const r: ConsoleResult = {
           _tag: "ConsoleResult",

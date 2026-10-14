@@ -260,7 +260,6 @@ pub enum ControllerOverride {
     EmptyValue,
 }
 
-
 pub fn load_config(args: &[String]) -> Result<Config, String> {
     let explicit = extract_config_path(args)
         .map(|p| ("--config", p))
@@ -885,36 +884,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_idle_timeout_raw_ms() {
-        assert_eq!(parse_idle_timeout("10").unwrap(), "10");
-    }
-
-    #[test]
-    fn test_parse_idle_timeout_seconds() {
-        assert_eq!(parse_idle_timeout("10s").unwrap(), "10000");
-    }
-
-    #[test]
-    fn test_parse_idle_timeout_minutes() {
-        assert_eq!(parse_idle_timeout("3m").unwrap(), "180000");
-    }
-
-    #[test]
-    fn test_parse_idle_timeout_hours() {
-        assert_eq!(parse_idle_timeout("1h").unwrap(), "3600000");
-    }
-
-    #[test]
-    fn test_parse_idle_timeout_rejects_capital_m() {
-        assert!(parse_idle_timeout("10M").is_err());
-    }
-
-    #[test]
-    fn test_parse_idle_timeout_rejects_unknown_unit() {
-        assert!(parse_idle_timeout("10x").is_err());
-    }
-
-    #[test]
     fn test_parse_headers_flag_with_spaces() {
         // Headers JSON is passed as a single quoted argument in shell
         let input: Vec<String> = vec![
@@ -973,7 +942,6 @@ mod tests {
         assert_eq!(clean_args(&input), vec!["init", "-j"]);
     }
 
-
     #[test]
     fn test_parse_controller_empty_value() {
         let input = vec![
@@ -985,7 +953,6 @@ mod tests {
         assert_eq!(flags.controller, ControllerOverride::EmptyValue);
         assert_eq!(clean_args(&input), vec!["init"]);
     }
-
 
     #[test]
     fn test_clean_args_removes_headers() {
@@ -1019,94 +986,20 @@ mod tests {
             "--headers".to_string(),
             r#"{"Auth":"token"}"#.to_string(),
             "--json".to_string(),
-            "--headed".to_string(),
         ];
         let flags = parse_flags(&input);
         assert_eq!(flags.headers, Some(r#"{"Auth":"token"}"#.to_string()));
         assert!(flags.json);
-        assert!(flags.headed);
 
         let clean = clean_args(&input);
         assert_eq!(clean, vec!["open", "example.com"]);
     }
 
     #[test]
-    fn test_parse_executable_path_flag() {
-        let flags = parse_flags(&args(
-            "--executable-path /path/to/chromium open example.com",
-        ));
-        assert_eq!(flags.executable_path, Some("/path/to/chromium".to_string()));
-    }
-
-    #[test]
-    fn test_parse_executable_path_flag_no_value() {
-        let flags = parse_flags(&args("--executable-path"));
-        assert_eq!(flags.executable_path, None);
-    }
-
-    #[test]
-    fn test_clean_args_removes_executable_path() {
-        let cleaned = clean_args(&args(
-            "--executable-path /path/to/chromium open example.com",
-        ));
-        assert_eq!(cleaned, vec!["open", "example.com"]);
-    }
-
-    #[test]
-    fn test_clean_args_removes_executable_path_with_other_flags() {
-        let cleaned = clean_args(&args(
-            "--json --executable-path /path/to/chromium --headed open example.com",
-        ));
-        assert_eq!(cleaned, vec!["open", "example.com"]);
-    }
-
-    #[test]
-    fn test_clean_args_removes_idle_timeout_before_command() {
-        let cleaned = clean_args(&args("--idle-timeout 10s open example.com"));
-        assert_eq!(cleaned, vec!["open", "example.com"]);
-    }
-
-    #[test]
-    fn test_parse_idle_timeout_flag_converts_to_ms() {
-        let flags = parse_flags(&args("--idle-timeout 10s open example.com"));
-        assert_eq!(flags.idle_timeout.as_deref(), Some("10000"));
-    }
-
-    #[test]
-    fn test_parse_flags_with_session_and_executable_path() {
-        let flags = parse_flags(&args(
-            "--session test --executable-path /custom/chrome open example.com",
-        ));
-        assert_eq!(flags.session, "test");
-        assert_eq!(flags.executable_path, Some("/custom/chrome".to_string()));
-    }
-
-    #[test]
-    fn test_cli_executable_path_tracking() {
-        // When --executable-path is passed via CLI, cli_executable_path should be true
-        let flags = parse_flags(&args("--executable-path /path/to/chrome snapshot"));
-        assert!(flags.cli_executable_path);
-        assert_eq!(flags.executable_path, Some("/path/to/chrome".to_string()));
-    }
-
-    #[test]
-    fn test_cli_executable_path_not_set_without_flag() {
-        // When no --executable-path is passed, cli_executable_path should be false
-        // (even if env var sets executable_path to Some value, which we can't test here)
-        let flags = parse_flags(&args("snapshot"));
-        assert!(!flags.cli_executable_path);
-    }
-
-    #[test]
-    fn test_cli_extension_tracking() {
-        let flags = parse_flags(&args("--extension /path/to/ext snapshot"));
-        assert!(flags.cli_extensions);
-    }
-
-    #[test]
     fn test_cli_profile_tracking() {
-        let flags = parse_flags(&args("--profile /path/to/profile snapshot"));
+        let flags = parse_flags(&args("--profile named-fixture connect"));
         assert!(flags.cli_profile);
+        assert_eq!(flags.profile.as_deref(), Some("named-fixture"));
     }
 
     #[test]
@@ -1122,309 +1015,7 @@ mod tests {
         assert!(!flags.cli_annotate);
     }
 
-    #[test]
-    fn test_cli_download_path_tracking() {
-        let flags = parse_flags(&args("--download-path /tmp/dl snapshot"));
-        assert!(flags.cli_download_path);
-        assert_eq!(flags.download_path, Some("/tmp/dl".to_string()));
-    }
-
-    #[test]
-    fn test_cli_download_path_not_set_without_flag() {
-        let flags = parse_flags(&args("snapshot"));
-        assert!(!flags.cli_download_path);
-    }
-
-    #[test]
-    fn test_cli_multiple_flags_tracking() {
-        let flags = parse_flags(&args(
-            "--executable-path /chrome --profile /profile --proxy http://proxy snapshot",
-        ));
-        assert!(flags.cli_executable_path);
-        assert!(flags.cli_profile);
-        assert!(flags.cli_proxy);
-        assert!(!flags.cli_extensions);
-        assert!(!flags.cli_state);
-    }
-
-    // === Config file tests ===
-
-    #[test]
-    fn test_config_deserialize_full() {
-        let json = r#"{
-            "headed": true,
-            "json": true,
-            "debug": true,
-            "session": "test-session",
-            "sessionName": "my-app",
-            "executablePath": "/usr/bin/chromium",
-            "extensions": ["/ext1", "/ext2"],
-            "profile": "/tmp/profile",
-            "state": "/tmp/state.json",
-            "proxy": "http://proxy:8080",
-            "proxyBypass": "localhost",
-            "args": "--no-sandbox",
-            "userAgent": "test-agent",
-            "provider": "ios",
-            "device": "iPhone 15",
-            "ignoreHttpsErrors": true,
-            "allowFileAccess": true,
-            "cdp": "9222",
-            "autoConnect": true,
-            "headers": "{\"Auth\":\"token\"}"
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.headed, Some(true));
-        assert_eq!(config.json, Some(true));
-        assert_eq!(config.debug, Some(true));
-        assert_eq!(config.session.as_deref(), Some("test-session"));
-        assert_eq!(config.session_name.as_deref(), Some("my-app"));
-        assert_eq!(config.executable_path.as_deref(), Some("/usr/bin/chromium"));
-        assert_eq!(
-            config.extensions,
-            Some(vec!["/ext1".to_string(), "/ext2".to_string()])
-        );
-        assert_eq!(config.profile.as_deref(), Some("/tmp/profile"));
-        assert_eq!(config.state.as_deref(), Some("/tmp/state.json"));
-        assert_eq!(config.proxy.as_deref(), Some("http://proxy:8080"));
-        assert_eq!(config.proxy_bypass.as_deref(), Some("localhost"));
-        assert_eq!(config.args.as_deref(), Some("--no-sandbox"));
-        assert_eq!(config.user_agent.as_deref(), Some("test-agent"));
-        assert_eq!(config.provider.as_deref(), Some("ios"));
-        assert_eq!(config.device.as_deref(), Some("iPhone 15"));
-        assert_eq!(config.ignore_https_errors, Some(true));
-        assert_eq!(config.allow_file_access, Some(true));
-        assert_eq!(config.cdp.as_deref(), Some("9222"));
-        assert_eq!(config.auto_connect, Some(true));
-        assert_eq!(config.headers.as_deref(), Some("{\"Auth\":\"token\"}"));
-    }
-
-    #[test]
-    fn test_config_deserialize_partial() {
-        let json = r#"{"headed": true, "proxy": "http://localhost:8080"}"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.headed, Some(true));
-        assert_eq!(config.proxy.as_deref(), Some("http://localhost:8080"));
-        assert_eq!(config.session, None);
-        assert_eq!(config.extensions, None);
-        assert_eq!(config.debug, None);
-    }
-
-    #[test]
-    fn test_config_deserialize_empty() {
-        let config: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(config.headed, None);
-        assert_eq!(config.session, None);
-        assert_eq!(config.proxy, None);
-    }
-
-    #[test]
-    fn test_config_ignores_unknown_keys() {
-        let json = r#"{"headed": true, "unknownFutureKey": "value", "anotherOne": 42}"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.headed, Some(true));
-    }
-
-    #[test]
-    fn test_config_merge_project_overrides_user() {
-        let user = Config {
-            headed: Some(true),
-            proxy: Some("http://user-proxy:8080".to_string()),
-            profile: Some("/user/profile".to_string()),
-            ..Config::default()
-        };
-        let project = Config {
-            proxy: Some("http://project-proxy:9090".to_string()),
-            debug: Some(true),
-            ..Config::default()
-        };
-        let merged = user.merge(project);
-        assert_eq!(merged.headed, Some(true)); // kept from user
-        assert_eq!(merged.proxy.as_deref(), Some("http://project-proxy:9090")); // overridden by project
-        assert_eq!(merged.profile.as_deref(), Some("/user/profile")); // kept from user
-        assert_eq!(merged.debug, Some(true)); // added by project
-    }
-
-    #[test]
-    fn test_config_merge_none_does_not_override() {
-        let user = Config {
-            headed: Some(true),
-            proxy: Some("http://proxy:8080".to_string()),
-            ..Config::default()
-        };
-        let project = Config::default();
-        let merged = user.merge(project);
-        assert_eq!(merged.headed, Some(true));
-        assert_eq!(merged.proxy.as_deref(), Some("http://proxy:8080"));
-    }
-
-    #[test]
-    fn test_load_config_from_file() {
-        use std::io::Write;
-        let dir = std::env::temp_dir().join("ab-test-config");
-        let _ = fs::create_dir_all(&dir);
-        let config_path = dir.join("test-config.json");
-        let mut f = fs::File::create(&config_path).unwrap();
-        writeln!(f, r#"{{"headed": true, "proxy": "http://test:1234"}}"#).unwrap();
-
-        let config = read_config_file(&config_path).unwrap();
-        assert_eq!(config.headed, Some(true));
-        assert_eq!(config.proxy.as_deref(), Some("http://test:1234"));
-
-        let _ = fs::remove_file(&config_path);
-        let _ = fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn test_load_config_from_file_parses_idle_timeout() {
-        use std::io::Write;
-        let dir = std::env::temp_dir().join("ab-test-idle-timeout-config");
-        let _ = fs::create_dir_all(&dir);
-        let config_path = dir.join("test-config.json");
-        let mut f = fs::File::create(&config_path).unwrap();
-        writeln!(f, r#"{{"idleTimeout": "10s"}}"#).unwrap();
-
-        let config = read_config_file(&config_path).unwrap();
-        assert_eq!(config.idle_timeout.as_deref(), Some("10000"));
-
-        let _ = fs::remove_file(&config_path);
-        let _ = fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn test_load_config_missing_file_returns_none() {
-        let result = read_config_file(&PathBuf::from("/nonexistent/agent-browser.json"));
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_load_config_malformed_json_returns_none() {
-        use std::io::Write;
-        let dir = std::env::temp_dir().join("ab-test-malformed");
-        let _ = fs::create_dir_all(&dir);
-        let config_path = dir.join("bad-config.json");
-        let mut f = fs::File::create(&config_path).unwrap();
-        writeln!(f, "{{not valid json}}").unwrap();
-
-        let result = read_config_file(&config_path);
-        assert!(result.is_none());
-
-        let _ = fs::remove_file(&config_path);
-        let _ = fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn test_extract_config_path() {
-        assert_eq!(
-            extract_config_path(&args("--config ./my-config.json open example.com")),
-            Some(Some("./my-config.json".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_config_path_missing() {
-        assert_eq!(extract_config_path(&args("open example.com")), None);
-    }
-
-    #[test]
-    fn test_extract_config_path_no_value() {
-        assert_eq!(extract_config_path(&args("--config")), Some(None));
-    }
-
-    #[test]
-    fn test_extract_config_path_skips_flag_values() {
-        assert_eq!(extract_config_path(&args("--args --config open")), None);
-    }
-
-    #[test]
-    fn test_clean_args_removes_config() {
-        let cleaned = clean_args(&args("--config ./config.json open example.com"));
-        assert_eq!(cleaned, vec!["open", "example.com"]);
-    }
-
-    #[test]
-    fn test_load_config_with_config_flag() {
-        use std::io::Write;
-        let dir = std::env::temp_dir().join("ab-test-flag-config");
-        let _ = fs::create_dir_all(&dir);
-        let config_path = dir.join("custom.json");
-        let mut f = fs::File::create(&config_path).unwrap();
-        writeln!(f, r#"{{"headed": true, "session": "custom"}}"#).unwrap();
-
-        let flag_args = vec![
-            "--config".to_string(),
-            config_path.to_string_lossy().to_string(),
-            "open".to_string(),
-            "example.com".to_string(),
-        ];
-        let config = load_config(&flag_args).unwrap();
-        assert_eq!(config.headed, Some(true));
-        assert_eq!(config.session.as_deref(), Some("custom"));
-
-        let _ = fs::remove_file(&config_path);
-        let _ = fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn test_load_config_error_missing_config_value() {
-        let result = load_config(&args("--config"));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("requires a file path"));
-    }
-
-    #[test]
-    fn test_load_config_error_nonexistent_file() {
-        let result = load_config(&args("--config /nonexistent/config.json open"));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("config file not found"));
-    }
-
-    #[test]
-    fn test_load_config_error_malformed_explicit() {
-        use std::io::Write;
-        let dir = std::env::temp_dir().join("ab-test-explicit-malformed");
-        let _ = fs::create_dir_all(&dir);
-        let config_path = dir.join("bad.json");
-        let mut f = fs::File::create(&config_path).unwrap();
-        writeln!(f, "{{not valid}}").unwrap();
-
-        let flag_args = vec![
-            "--config".to_string(),
-            config_path.to_string_lossy().to_string(),
-        ];
-        let result = load_config(&flag_args);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("failed to load config"));
-
-        let _ = fs::remove_file(&config_path);
-        let _ = fs::remove_dir(&dir);
-    }
-
     // === Boolean flag value tests ===
-
-    #[test]
-    fn test_headed_false() {
-        let flags = parse_flags(&args("--headed false open example.com"));
-        assert!(!flags.headed);
-    }
-
-    #[test]
-    fn test_headed_true_explicit() {
-        let flags = parse_flags(&args("--headed true open example.com"));
-        assert!(flags.headed);
-    }
-
-    #[test]
-    fn test_headed_bare_defaults_true() {
-        let flags = parse_flags(&args("--headed open example.com"));
-        assert!(flags.headed);
-    }
-
-    #[test]
-    fn test_debug_false() {
-        let flags = parse_flags(&args("--debug false open example.com"));
-        assert!(!flags.debug);
-    }
 
     #[test]
     fn test_json_false() {
@@ -1433,101 +1024,14 @@ mod tests {
     }
 
     #[test]
-    fn test_ignore_https_errors_false() {
-        let flags = parse_flags(&args("--ignore-https-errors false open"));
-        assert!(!flags.ignore_https_errors);
-    }
-
-    #[test]
-    fn test_allow_file_access_false() {
-        let flags = parse_flags(&args("--allow-file-access false open"));
-        assert!(!flags.allow_file_access);
-        assert!(flags.cli_allow_file_access);
-    }
-
-    #[test]
-    fn test_auto_connect_false() {
-        let flags = parse_flags(&args("--auto-connect false open"));
-        assert!(!flags.auto_connect);
-    }
-
-    #[test]
     fn test_clean_args_removes_bool_flag_with_value() {
-        let cleaned = clean_args(&args("--headed false --debug true open example.com"));
-        assert_eq!(cleaned, vec!["open", "example.com"]);
+        let cleaned = clean_args(&args("--json false --annotate true screenshot"));
+        assert_eq!(cleaned, vec!["screenshot"]);
     }
 
     #[test]
     fn test_clean_args_removes_bare_bool_flag() {
-        let cleaned = clean_args(&args("--headed --debug open example.com"));
-        assert_eq!(cleaned, vec!["open", "example.com"]);
-    }
-
-    // === Extensions merge tests ===
-
-    #[test]
-    fn test_config_merge_extensions_concatenated() {
-        let user = Config {
-            extensions: Some(vec!["/ext1".to_string()]),
-            ..Config::default()
-        };
-        let project = Config {
-            extensions: Some(vec!["/ext2".to_string(), "/ext3".to_string()]),
-            ..Config::default()
-        };
-        let merged = user.merge(project);
-        assert_eq!(
-            merged.extensions,
-            Some(vec![
-                "/ext1".to_string(),
-                "/ext2".to_string(),
-                "/ext3".to_string()
-            ])
-        );
-    }
-
-    #[test]
-    fn test_config_merge_extensions_user_only() {
-        let user = Config {
-            extensions: Some(vec!["/ext1".to_string()]),
-            ..Config::default()
-        };
-        let project = Config::default();
-        let merged = user.merge(project);
-        assert_eq!(merged.extensions, Some(vec!["/ext1".to_string()]));
-    }
-
-    #[test]
-    fn test_config_merge_extensions_project_only() {
-        let user = Config::default();
-        let project = Config {
-            extensions: Some(vec!["/ext2".to_string()]),
-            ..Config::default()
-        };
-        let merged = user.merge(project);
-        assert_eq!(merged.extensions, Some(vec!["/ext2".to_string()]));
-    }
-
-    #[test]
-    fn test_no_auto_dialog_flag() {
-        let flags = parse_flags(&args("open example.com --no-auto-dialog"));
-        assert!(flags.no_auto_dialog);
-    }
-
-    #[test]
-    fn test_no_auto_dialog_default_false() {
-        let flags = parse_flags(&args("open example.com"));
-        assert!(!flags.no_auto_dialog);
-    }
-
-    #[test]
-    fn test_clean_args_removes_no_auto_dialog() {
-        let input: Vec<String> = vec![
-            "open".to_string(),
-            "example.com".to_string(),
-            "--no-auto-dialog".to_string(),
-        ];
-        let clean = clean_args(&input);
-        assert_eq!(clean, vec!["open", "example.com"]);
+        let cleaned = clean_args(&args("--json --annotate screenshot"));
+        assert_eq!(cleaned, vec!["screenshot"]);
     }
 }

@@ -4,9 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test",
-    "compose:up": "docker compose -f docker-compose.test.yml up -d --build",
-    "compose:down": "docker compose -f docker-compose.test.yml down -v"
+    "profile-guard": "bun run profile-guard.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

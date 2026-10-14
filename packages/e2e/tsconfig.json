@@ -3,8 +3,12 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": ".",
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "noEmit": true
   },
-  "include": ["*.test.ts", "profile-guard.ts"]
+  "include": [
+    "profile-guard.ts"
+  ]
 }

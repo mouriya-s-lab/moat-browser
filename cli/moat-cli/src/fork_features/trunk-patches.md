@@ -16,3 +16,8 @@ narrow, tracked patch that emits the existing wire action names.
 | `commands.rs` `tab` branch | Upstream tab parser assumes string tab IDs/labels; moat's protocol is numeric `index`. | The fork keeps numeric tab requests and rejects `--label`/label references before a request is sent. |
 | `commands.rs` `batch` branch + `main.rs` `run_batch` | Upstream `run_batch` emits a native result array and depends on its local daemon sender. | The moat transport needs one `{success,data:{results}}` envelope, existing stdin argv arrays, inline shell-split commands (`shell_words_split`), per-item unsupported command/flag boundaries, `--bail`, and continue-by-default with exit 1 on any failure. |
 | `fork_features/unsupported_commands.rs` / `unsupported_flags.rs` | Upstream has no moat capability-boundary registration API. | These modules reject target syntax whose local daemon/plugin/read runtime is absent, preventing parser acceptance from becoming silent no-op behaviour, while `is_positional_operand` preserves arbitrary text/script operands. |
+
+Test modules in `commands.rs`, `flags.rs`, `color.rs`, and `output.rs` omit positive coverage of
+unsupported local launcher/configuration/stream features and literal-only ANSI
+assertions. Supported parser and output contracts remain tested. This is a test
+boundary patch; upstream synchronization must not restore those obsolete tests.

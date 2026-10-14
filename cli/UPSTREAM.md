@@ -95,3 +95,12 @@ here; it is injected only when a wait-family request has no explicit
 - Batch output remains one moat response envelope even though upstream prints a
   native JSON array. This is a CLI output compatibility boundary, not a wire
   protocol migration.
+
+## Test boundary maintenance (2026-10-14)
+
+The fork retains tests for supported CLI grammar, SDK file materialization,
+output contracts, and explicit `unsupported_in_moat` rejection. Positive tests
+for upstream local launch/configuration flags, record/stream/inspect parsing, and stream output have been
+removed because moat rejects those capabilities. ANSI tests that only formatted
+literals without calling production functions have also been removed. Preserve
+this boundary when importing upstream tests. No Rust runtime behavior changed.
