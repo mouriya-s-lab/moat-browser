@@ -346,7 +346,7 @@ MOAT=cli/target/release/moat bun run packages/e2e/profile-guard.ts \
   --controller-image <controller 镜像> --user-image <user 镜像> --agent-image <agent 镜像>
 ```
 
-护栏的流程：用 user 镜像的浏览器在临时容器里登录本地 fixture，产出源 profile；再由候选 Controller 真实拷贝并启动 agent。它检查关键条目与哨兵文件在拷贝后是否保留、候选 Controller 的拷贝与同浏览器 `cp -a` 对照组的差异、SIGTRAP、`basic` password store，以及登录凭据在 agent 侧是否直接有效（含空 profile 负对照）；它不对整份 profile 逐文件校验。浏览器可能保留缓存文件的 mtime 却改写内容；只有独立对照组也改写了同一文件时，护栏才接受这种变化，哨兵始终要求 mtime/hash 不变。末行为 `PASS profile-guard …`（exit 0）才算通过；任何阶段失败都会输出一行 `FAIL [stage] 原因` 并以非 0 退出。在 Apple Silicon 上经 OrbStack 转译运行 amd64 Chrome 时，可以加 `--emulation-memory-1g` 诊断额外的内存开销（只放宽护栏自建的容器）；正式发布验收使用原生 amd64 主机和默认 768MiB 预算。
+护栏的流程：用 user 镜像的浏览器在临时容器里登录本地 fixture，产出源 profile；再由候选 Controller 真实拷贝并启动 agent。它检查关键条目与哨兵文件在拷贝后是否保留、候选 Controller 的拷贝与同浏览器 `cp -a` 对照组的差异、SIGTRAP、`basic` password store，以及登录凭据在 agent 侧是否直接有效（含空 profile 负对照）；浏览器启动后会改写部分 profile，因此护栏不要求每个文件都原样不变。浏览器可能保留缓存文件的 mtime 却改写内容；只有独立对照组也改写了同一文件时，护栏才接受这种变化，哨兵始终要求 mtime/hash 不变。末行为 `PASS profile-guard …`（exit 0）才算通过；任何阶段失败都会输出一行 `FAIL [stage] 原因` 并以非 0 退出。在 Apple Silicon 上经 OrbStack 转译运行 amd64 Chrome 时，可以加 `--emulation-memory-1g` 诊断额外的内存开销（只放宽护栏自建的容器）；正式发布验收使用原生 amd64 主机和默认 768MiB 预算。
 
 ### 11.5 Bun 需要 host CPU
 
