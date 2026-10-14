@@ -11,8 +11,8 @@ function makeActive(sessionId: string): void {
   registry.transition(sessionId, {
     _tag: "Active",
     containerId: "ctr-1",
-    containerIp: "172.17.0.2",
-    cdpUrl: "ws://172.17.0.2:9222",
+    containerIp: "agent-chrome.test",
+    cdpUrl: "ws://agent-chrome.test:9222",
     createdAt: now,
     lastActivity: now,
   });

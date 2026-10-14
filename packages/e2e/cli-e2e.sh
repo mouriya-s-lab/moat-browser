@@ -10,7 +10,8 @@ set -uo pipefail
 # No assertions — human reviews log output.
 
 MOAT="${MOAT:-$(command -v moat 2>/dev/null || echo ./cli/target/release/moat)}"
-export MOAT_CONTROLLER="${MOAT_CONTROLLER:-ws://browser.hb.lan:3000}"
+: "${MOAT_CONTROLLER:?set MOAT_CONTROLLER to the Controller WebSocket URL}"
+export MOAT_CONTROLLER
 
 TOTAL=0
 PASS=0

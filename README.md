@@ -363,7 +363,7 @@ user-chrome 的 Chrome 常驻运行，Controller 拷贝时不会暂停它，也�
 
 ### 11.8 session id 就是访问凭证
 
-Controller 不认证客户端，也不把 session 绑定到发起的连接：能访问 `:3000` 并持有 session id 的一方就能操作或销毁该 session。访问边界完全依赖网络（LAN / NetBird）。
+Controller 不认证客户端，也不把 session 绑定到发起的连接：能访问 `:3000` 并持有 session id 的一方就能操作或销毁该 session。访问边界完全依赖网络，只应放在受信的内网或 VPN 内。
 
 ### 11.9 wire 协议两端定义没有机械校验
 

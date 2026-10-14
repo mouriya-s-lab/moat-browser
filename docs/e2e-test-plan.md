@@ -13,7 +13,7 @@
 ```mermaid
 flowchart LR
   CLI["本机 moat CLI（Rust binary）"] -- WebSocket --> Controller
-  subgraph VM["Browser VM 104（browser.hb.lan）"]
+  subgraph VM["Browser VM"]
     Controller["Controller :3000"]
     User["user-chrome :8080"]
     Agent["agent-chrome（每 session 一个）"]
@@ -23,9 +23,9 @@ flowchart LR
 ```
 
 前置条件：
-- 目标版本已部署到 Browser VM（维护者经私有部署仓库发布），Controller + user-chrome 在运行
+- 目标版本已部署，Controller + user-chrome 在运行
 - 本机有编译好的 `moat` 二进制：`cli/target/release/moat`
-- 环境变量：`export MOAT_CONTROLLER="ws://browser.hb.lan:3000"`
+- 环境变量（必填，脚本不内置默认地址）：`export MOAT_CONTROLLER="ws://<controller-host>:3000"`
 
 ## 3. 测试工具
 
@@ -246,7 +246,8 @@ packages/e2e/
 set -euo pipefail
 
 MOAT="${MOAT:-./cli/target/release/moat}"
-export MOAT_CONTROLLER="${MOAT_CONTROLLER:-ws://browser.hb.lan:3000}"
+: "${MOAT_CONTROLLER:?set MOAT_CONTROLLER to the Controller WebSocket URL}"
+export MOAT_CONTROLLER
 
 PASS=0
 FAIL=0
@@ -312,7 +313,7 @@ done
 
 ## 8. 执行步骤
 
-1. 确认 Controller 运行中：`km ps -s Browser`
+1. 确认 Controller 运行且 `MOAT_CONTROLLER` 可达
 2. 编写 `cli-e2e.sh` 测试脚本
 3. 执行：`bash packages/e2e/cli-e2e.sh 2>&1 | tee packages/e2e/cli-e2e-results.log`
 4. 人工 review 输出，填写 `cli-e2e-results.md`

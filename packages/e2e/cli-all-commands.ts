@@ -28,7 +28,11 @@ type TopLevelResult = { name: string; kind: TopLevelKind; argv: string[]; exit: 
 
 const root = resolve(import.meta.dir, "../..");
 const moat = resolve(process.env.MOAT ?? join(root, "cli/target/release/moat"));
-const controller = process.env.MOAT_CONTROLLER ?? "ws://browser.hb.lan:3000";
+const controller = process.env.MOAT_CONTROLLER;
+if (!controller) {
+  console.error("set MOAT_CONTROLLER to the Controller WebSocket URL");
+  process.exit(78);
+}
 const resultPath = join(import.meta.dir, "cli-all-commands-results.json");
 const ownHome = !process.env.HOME || process.argv.includes("--verify-isolation");
 const home = ownHome ? await mkdtemp(join(tmpdir(), "moat-cli-e2e-")) : process.env.HOME!;
@@ -532,8 +536,6 @@ const inventoryGaps = Object.entries(contract.gaps).flatMap(([kind, actions]) =>
 const internalDiagnostics = results.filter(r=>r.internalDiagnostic).map(r=>({name:r.name, diagnostic:r.internalDiagnostic}));
 const report = {
   generatedAt:new Date().toISOString(),
-  controller,
-  moat,
   contractCounts:contract.counts,
   actionInventory:contractEntries,
   expectedActions:expected.length,

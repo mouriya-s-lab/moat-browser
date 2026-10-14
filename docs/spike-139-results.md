@@ -7,7 +7,7 @@
 
 | # | Dimension | Check | Result | Notes |
 |---|-----------|-------|--------|-------|
-| 1 | environment | Controller container running | **PASS** | `moat-browser-controller-1` and `moat-browser-user-chrome-1` both running (verified via Komodo API ListDockerContainers). |
+| 1 | environment | Controller container running | **PASS** | `moat-browser-controller-1` and `moat-browser-user-chrome-1` both running (verified through the deployment tooling's container listing). |
 | 2 | environment | CLI binary exists and runs | **PASS** | `./cli/target/release/moat --help` exits 0, prints full help text. |
 | 3 | assumption | WebSocket reachable | **PASS** | `moat status` exits 77 with "No active session" — no connection errors. |
 | 4 | integration | Session register round-trip | **PASS** | `moat connect` exits 0, prints session ID (e.g. `56cebaec-b07f-4d05-8375-c4fdb2ef1bee`). Controller creates agent-chrome container, connects CDP, returns success. |
@@ -32,7 +32,7 @@ When the CLI's WebSocket disconnects (process exits after `moat connect`), the C
 
 ### 3. Missing `moat-agent-chrome` Docker image (iteration 1)
 
-The agent-chrome image had never been built on VM 104. Built via Komodo API `RunBuild`.
+The agent-chrome image had never been built on the deployment host. Built through the deployment tooling.
 
 ## Key Findings
 

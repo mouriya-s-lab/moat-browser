@@ -12,8 +12,11 @@
 
 |Repo|Role|Relationship|
 |---|---|---|
-|moat-browser-deploy（`mouriya-s-lab/moat-browser-deploy`，私有）|CI/CD + 生产部署声明|全部 workflow（镜像构建推送与部署、CLI 发布、Komodo 同步）、Komodo stack 声明、生产 compose、GitHub Actions secrets。发版在该仓库打 tag，它 checkout 本仓库同名 ref 构建|
-|homelab-tf (`~/work/homelab-tf`)|IaC (OpenTofu + Ansible + Komodo)|生产主机与 Komodo Core/Periphery、ResourceSync 对象|
+|私有部署仓库（维护者本地 `*.rule.md` 记录，不入库）|CI/CD + 生产部署声明|全部 workflow、生产 compose、GitHub Actions secrets。发版在该仓库打 tag，它 checkout 本仓库同名 ref 构建|
+
+## Sensitive Information
+
+本仓库开源。被 git 跟踪的任何内容（代码、文档、脚本、fixture、生成的结果文件、commit message、PR/issue 正文）都不得出现任何 IP（含内网与 docker bridge 地址）、内网主机名、内部域名、VM 编号、内部服务名与私有部署仓库的内部结构，也不得出现本机绝对路径或 secret。需要这些值时用占位符（`<controller-host>`）或必填环境变量；生成的结果文件不得写入运行环境的地址或路径。真实值只写进被 `.gitignore` 忽略的 `*.rule.md`（例如本机的 `deploy.rule.md`）；该文件永不提交、永不推送。
 
 ## Issues
 
@@ -47,7 +50,7 @@
 |`images/agent-chrome/`|Debian + Xorg + openbox + Chrome for Testing + socat CDP 转发|
 |`images/chrome-anchor.mjs`|从 Patchright 派生 Chrome 版本|
 |`compose.yaml`|从源码本地构建并运行全部服务（README §9）|
-|`scripts/`|`verify-chrome-versions.sh`（三镜像版本校验）、`cli-command-contract.py`、`install.sh`（从 moat-browser-deploy 的 release 下载 CLI）|
+|`scripts/`|`verify-chrome-versions.sh`（三镜像版本校验）、`cli-command-contract.py`、`install.sh`（从维护者的私有 release 下载 CLI，需要访问权限）|
 |`skills/moat/SKILL.md`|面向 agent 的 CLI 使用说明，随仓库分发|
 |`docs/`|容器、Controller、Rust SDK 设计，E2E 方案，spike 历史报告|
 
@@ -70,7 +73,7 @@
 - Profile 护栏（推进 Patchright 锚或发布前必跑）：`MOAT=cli/target/release/moat bun run packages/e2e/profile-guard.ts --controller-image <c> --user-image <u> --agent-image <a>`（README §11.4）
 - 浏览器镜像以仓库根目录为 context 构建：`docker build --platform linux/amd64 -f images/<user-chrome|agent-chrome>/Dockerfile .`；三方版本校验：`scripts/verify-chrome-versions.sh <controller 镜像> <user 镜像> <agent 镜像>`
 - 本地整套运行：`docker compose up -d --build`（需要的环境变量见 `compose.yaml` 顶部注释与 README §9）
-- 发布与生产部署不在本仓库：见 moat-browser-deploy。本仓库不得加入 workflow、私有 registry 镜像引用或 secret 文件
+- 发布与生产部署不在本仓库，记录在本机 `*.rule.md`。本仓库不得加入 workflow、私有 registry 镜像引用或 secret 文件
 
 ## 运行约束
 

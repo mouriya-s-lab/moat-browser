@@ -1,2 +1,5 @@
 node_modules/
 dist/
+*.rule.md
+packages/e2e/*-results.json
+packages/e2e/*-results.log

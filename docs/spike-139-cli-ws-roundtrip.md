@@ -6,9 +6,9 @@
 ## Summary
 
 The moat CLI binary can establish a WebSocket connection to the deployed
-Controller on Browser VM (192.168.1.211:3000) and exchange structured wire
+Controller (`ws://<controller-host>:3000`) and exchange structured wire
 protocol messages. The full session lifecycle (connect → command → disconnect)
-is blocked by a missing `moat-agent-chrome` Docker image on the VM.
+is blocked by a missing `moat-agent-chrome` Docker image on the deployment host.
 
 ## Checkpoint Results
 
@@ -28,7 +28,7 @@ is blocked by a missing `moat-agent-chrome` Docker image on the VM.
 ### Transport Layer: VERIFIED
 
 The Rust SDK WebSocket transport works end-to-end:
-1. `tokio-tungstenite` connects to `ws://192.168.1.211:3000`
+1. `tokio-tungstenite` connects to `ws://<controller-host>:3000`
 2. `WireRequest::Register` serializes and sends correctly
 3. Controller responds with `WireResponse::RegisterResult` (structured JSON)
 4. Error contains actionable detail: Docker image name + HTTP 404
@@ -36,13 +36,13 @@ The Rust SDK WebSocket transport works end-to-end:
 ### Blocker: Missing agent-chrome Image
 
 The Controller's register flow creates a Docker container per session.
-The `moat-agent-chrome:latest` image has never been built on VM 104.
+The `moat-agent-chrome:latest` image has never been built on the deployment host.
 
 **Available images**: `moat-controller:latest`, `moat-user-chrome:latest`
 **Missing**: `moat-agent-chrome:latest`
 
-**Fix**: Build the agent-chrome image via `km x run-build moat-agent-chrome`
-(requires km CLI access or Komodo dashboard).
+**Fix**: Build the agent-chrome image on the deployment host
+(requires access to the deployment tooling).
 
 ## Conclusion
 
